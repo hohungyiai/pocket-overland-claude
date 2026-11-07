@@ -4,6 +4,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { clamp, fbm, lerp, mulberry32, smoothstep, valueNoise } from '../noise';
 import { SURFACES, type Course, type MapData, type Surface, type XZ } from './types';
 import * as D from './detail';
+import { Traffic, type Lane } from '../traffic';
 
 type Rapier = typeof RAPIER_NS;
 
@@ -54,8 +55,8 @@ const CARPARKS: Rect[] = [
 ];
 const HAWKER = { x: 240, z: -60, w: 34, d: 18 };
 const JETTY = { x: 560, len: 190, w: 4.5, deck: 2.6 };
-// Campsite hooks (from the campsite research): marked on the map, with deep
-// beach sand around Area G. The camp loop itself comes later.
+// Campsites (from the campsite research): marked on the map, with deep
+// beach sand around Area G. Area G is a working camp (rest and save).
 const CAMPS = [
   { x: -380, label: 'Camp Area D' },
   { x: 470, label: 'Camp Area G' },
@@ -702,6 +703,40 @@ export function buildEastCoastCourse(
   cars.castShadow = true;
   scene.add(cars);
 
+  // ---------- Traffic: the expressway, and a few slow cars in the park ----------
+  const lanes: Lane[] = [];
+  {
+    const ecpZ = -98;
+    const y = PARK_H + 0.27;
+    for (const [dz, dir, speed] of [[-7.5, 1, 25], [-2.5, 1, 21], [2.5, -1, 21], [7.5, -1, 25]] as const) {
+      const pts: THREE.Vector3[] = [];
+      for (let x = X0; x <= X1; x += 50) pts.push(new THREE.Vector3(x, y, ecpZ + dz));
+      if (dir < 0) pts.reverse();
+      lanes.push({ pts, speed, cars: 9 });
+    }
+    // Park road loop: drive on the left, eastbound then back westbound.
+    const side = (k: number) =>
+      road.map((p, i) => {
+        const a = road[Math.max(0, i - 1)];
+        const b = road[Math.min(n - 1, i + 1)];
+        const len = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+        const x = p.x + (-(b.z - a.z) / len) * k;
+        const z = p.z + ((b.x - a.x) / len) * k;
+        return new THREE.Vector3(x, heightAt(x, z) + 0.05, z);
+      });
+    const loop = [...side(-1.8), ...side(1.8).reverse()];
+    loop.push(loop[0].clone());
+    lanes.push({ pts: loop, speed: 7, cars: 3, local: true });
+  }
+  const traffic = new Traffic(
+    scene,
+    world,
+    RAPIER,
+    lanes,
+    { geometry: carGeo, material: cars.material as THREE.Material, colors: carColors, halfExtents: [2.1, 0.75, 0.88] },
+    randDetail,
+  );
+
   // ---------- Lagoon Food Village (hawker centre) ----------
   {
     const g: THREE.BufferGeometry[] = [];
@@ -889,6 +924,7 @@ export function buildEastCoastCourse(
   return {
     name: 'East Coast Park',
     styles: true,
+    camps: [{ id: 'ecp-g', label: 'Camp Area G', x: campG.x, z: beachTopZ(campG.x) + 8, radius: 26 }],
     start: startPose.pos.clone().setY(startPose.pos.y + 1.4),
     startYaw: startPose.yaw,
     heightAt,
@@ -905,8 +941,9 @@ export function buildEastCoastCourse(
     trackT: (x, z) => nearestRoad(x, z).t,
     map,
     sky: { background: 0xc9dbe6, fog: 0xd6dfe2, fogNear: 150, fogFar: 1700 },
-    update(time, _dt, cam) {
+    update(time, dt, cam, player) {
       wind.value = time;
+      traffic.update(dt, player ?? null);
       if (cam) for (const g of nearOnly) g.mesh.visible = Math.abs(g.x - cam.x) < 130;
       placeShips(time);
     },
