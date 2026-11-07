@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#b9d3df" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <title>Pocket Overland</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="touch"></div>
+      <div id="steer-base" class="stick"><div id="steer-knob" class="knob"></div></div>
+      <div id="pedal-base" class="stick vertical"><div id="pedal-knob" class="knob"></div></div>
+
+      <div id="hud">
+        <div class="speed"><span id="hud-speed">0</span><small>km/h</small></div>
+        <div id="hud-surface" class="surface">Gravel</div>
+        <div id="hud-zone" class="zone"></div>
+      </div>
+      <div id="hud-fps" class="fps"></div>
+
+      <button id="btn-cam" class="btn cam">Chase</button>
+      <div class="right-buttons">
+        <button id="btn-low" class="btn">LOW</button>
+        <button id="btn-diff" class="btn">DIFF</button>
+        <button id="btn-reset" class="btn" aria-label="Recover">&#8634;</button>
+      </div>
+
+      <div id="hint">
+        <p><b>Left thumb</b>: drag sideways to steer</p>
+        <p><b>Right thumb</b>: drag up to go, down to brake or reverse</p>
+        <p class="small">LOW = low range for climbs and rocks · DIFF = locks the differential · Keyboard: WASD, L, K, R, C</p>
+      </div>
+      <div id="rotate">Turn your phone sideways to drive</div>
+      <div id="loading">Loading Pocket Overland…</div>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

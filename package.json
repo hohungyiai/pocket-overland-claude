@@ -1,0 +1,30 @@
+{
+  "name": "pocket-overland",
+  "version": "0.1.0",
+  "description": "Calm, scenic overland driving game for mobile web",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hohungyiai/pocket-overland-claude.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hohungyiai/pocket-overland-claude/issues"
+  },
+  "homepage": "https://github.com/hohungyiai/pocket-overland-claude#readme",
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  },
+  "private": true,
+  "type": "module"
+}
