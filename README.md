@@ -4,7 +4,7 @@ A calm, scenic overland driving game for phones, played in the browser. You driv
 
 Two drives so far, picked from the start menu (or with `?course=eastcoast` / `?course=ubin`):
 
-- **East Coast Park**: a stylized ~1.6 km stretch of Singapore's East Coast Park, the first piece of the real journey. Service road, carparks, beach with rock groynes, jogging path, the lagoon and its food village, Bedok Jetty, the East Coast Parkway and Marine Parade's HDB blocks, with ships at anchor in the strait. Camp Areas D and G are marked on the map; the beach sand gets softer toward the water and around Area G. This is the "stylized and dense" half of the art test.
+- **East Coast Park**: a stylized ~1.6 km stretch of Singapore's East Coast Park, the first piece of the real journey. Service road, carparks, beach with rock groynes, jogging path, the lagoon and its food village, Bedok Jetty, the East Coast Parkway and Marine Parade's HDB blocks, with ships at anchor in the strait. Camp Areas D and G are marked on the map; the beach sand gets softer toward the water and around Area G. This is the "stylized and dense" half of the art test. The **Stylized / Detailed** button (top right) rebuilds the same park in the higher-detail style at the same spot: textured ground, leaf-card trees, rippled sand, a painted sky with reflections on the water. Add `&style=detailed` to the URL to start in it.
 - **Ubin test track**: the driving prototype, a gravel loop with a climb, rock garden, water crossing, sand wash and off-camber section.
 
 The game never fails you: there's no game over, the car self-rights after a roll, ↺ puts it back on its wheels, and if you sit stuck the HUD suggests low range and the diff lock.
@@ -59,6 +59,7 @@ A gravel loop through low hills with five sections, shown on screen as you reach
 | `src/courses/eastcoast.ts` | East Coast Park: hand-placed anchors (coast, road, carparks, jetty, lagoon, food village, camps) plus seeded detail (trees, shrubs, furniture, HDB blocks). Terrain is built in chunks from one height function, so chunk edges always match |
 | `src/courses/ubin.ts` | Ubin test track: road spline, terrain conformed to the road, surfaces, rocks, water, vegetation |
 | `src/minimap.ts` | Heading-up round minimap, pre-painted once from each course's map data |
+| `src/courses/detail.ts` | The detailed art style: generated textures (ground, asphalt, water, foliage atlas, facades, sky) and leaf-card plants |
 | `src/fullmap.ts` | Full-screen north-up map opened from the minimap; the place route planning will grow from |
 | `src/perf.ts` | Frame-time graph (tap the fps label) |
 | `src/controls.ts` | Relative-drag thumb sticks and keyboard input |
@@ -68,4 +69,4 @@ For debugging, `window.game` exposes the car, course, controls and physics world
 
 ## Not in this prototype yet
 
-The higher-detail half of the art test, moving traffic, weather, campsites you can drive into, audio, the rest of Singapore East, route planning on the map and the expedition loop. See the roadmap in the design doc.
+Moving traffic, weather, campsites you can drive into, audio, the rest of Singapore East, route planning on the map and the expedition loop. See the roadmap in the design doc.

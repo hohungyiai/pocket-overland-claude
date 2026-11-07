@@ -53,7 +53,7 @@ function buildTrackPoints(): THREE.Vector3[] {
   return curve.getSpacedPoints(520).slice(0, 520);
 }
 
-export function buildUbinCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: Rapier): Course {
+export function buildUbinCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: Rapier, _opts: object = {}): Course {
   const pts = buildTrackPoints();
   const n = pts.length;
   const at = (t: number) => pts[((Math.round(t * n) % n) + n) % n];
