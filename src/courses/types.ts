@@ -46,6 +46,10 @@ export interface Course {
   styles?: boolean;
   /** Optional per-frame animation (sea, swaying trees, ships). */
   update?(time: number, dt: number, camera?: { x: number; z: number }, player?: { x: number; z: number }): void;
+  /** Load the world around a point right away (before placing the car there). */
+  prepareAt?(x: number, z: number): void;
+  /** Tile streaming counters, for the debug overlay. */
+  streamStats?: () => { near: number; far: number; pending: number; maxStepMs: number };
   /** Places where you can make camp (rest and save). */
   camps?: import('../camp').CampSpot[];
   sky: { background: number; fog: number; fogNear: number; fogFar: number };

@@ -94,6 +94,9 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
     fullMap.open(car.mesh.position.x, car.mesh.position.z, carHeading());
   };
   const minimap = new Minimap($('app'), course.map, openMap);
+  // Streamed courses load the ground around where the car will appear first.
+  const spawn = at ?? { x: course.start.x, z: course.start.z };
+  course.prepareAt?.(spawn.x, spawn.z);
   const car = new Vehicle(world, RAPIER, course);
   scene.add(car.mesh, ...car.wheels);
 
