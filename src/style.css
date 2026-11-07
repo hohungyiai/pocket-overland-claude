@@ -65,6 +65,10 @@ canvas { display: block; }
 .btn.cam {
   position: absolute; top: max(10px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
 }
+.btn.style {
+  position: absolute; top: max(10px, env(safe-area-inset-top)); right: calc(max(12px, env(safe-area-inset-right)) + 92px);
+}
+.btn[hidden] { display: none; }
 .right-buttons {
   position: absolute; right: max(12px, env(safe-area-inset-right)); top: 50%; transform: translateY(-50%);
   display: flex; flex-direction: column; gap: 10px;

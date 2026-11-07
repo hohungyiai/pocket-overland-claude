@@ -42,7 +42,9 @@ export interface Course {
   /** Position (0..1) of the nearest main-road point. */
   trackT(x: number, z: number): number;
   map: MapData;
+  /** True when the course can be built in both art styles. */
+  styles?: boolean;
   /** Optional per-frame animation (sea, swaying trees, ships). */
-  update?(time: number, dt: number): void;
+  update?(time: number, dt: number, camera?: { x: number; z: number }): void;
   sky: { background: number; fog: number; fogNear: number; fogFar: number };
 }

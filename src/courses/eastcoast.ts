@@ -3,6 +3,7 @@ import type RAPIER_NS from '@dimforge/rapier3d-compat';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clamp, fbm, lerp, mulberry32, smoothstep, valueNoise } from '../noise';
 import { SURFACES, type Course, type MapData, type Surface, type XZ } from './types';
+import * as D from './detail';
 
 type Rapier = typeof RAPIER_NS;
 
@@ -70,8 +71,17 @@ function buildRoad(): THREE.Vector3[] {
   return curve.getSpacedPoints(800);
 }
 
-export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: Rapier): Course {
+export function buildEastCoastCourse(
+  scene: THREE.Scene,
+  world: RAPIER_NS.World,
+  RAPIER: Rapier,
+  opts: { style?: D.ArtStyle } = {},
+): Course {
+  // Both styles share one layout: the same seed drives every placement, and
+  // detail-only extras draw from their own generator so nothing moves.
+  const detailed = opts.style === 'detailed';
   const rand = mulberry32(SEED);
+  const randDetail = mulberry32(SEED + 1000);
   const road = buildRoad();
   const n = road.length;
 
@@ -161,6 +171,15 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
 
   // ---------- Terrain, built in chunks that share their edge vertices ----------
   const groundMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
+  const DETAIL_M = 2.5; // metres per repeat of the ground detail texture
+  if (detailed) {
+    const tex = D.groundDetailTexture();
+    groundMat.map = tex;
+    groundMat.bumpMap = tex;
+    groundMat.bumpScale = 1.6;
+    groundMat.color.setScalar(0.82); // the sky light is brighter in this style
+    D.patchGroundMaterial(groundMat);
+  }
   const C = {
     grass: new THREE.Color(0.24, 0.46, 0.17),
     grassDry: new THREE.Color(0.4, 0.5, 0.22),
@@ -181,6 +200,7 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
     const h = rows + 1;
     const pos = new Float32Array(w * h * 3);
     const clr = new Float32Array(w * h * 3);
+    const uvs = new Float32Array(w * h * 2);
     for (let j = 0; j < h; j++) {
       for (let i = 0; i < w; i++) {
         const x = X0 + (c0 + i) * STEP;
@@ -190,6 +210,8 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
         pos[k] = x;
         pos[k + 1] = y;
         pos[k + 2] = z;
+        uvs[(j * w + i) * 2] = x / DETAIL_M;
+        uvs[(j * w + i) * 2 + 1] = z / DETAIL_M;
         const top = beachTopZ(x);
         if (z > top) {
           col.copy(C.sand).lerp(C.wetSand, smoothstep(coastZ(x) - 6, coastZ(x), z));
@@ -220,6 +242,7 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(clr, 3));
+    if (detailed) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeVertexNormals();
     geo.computeBoundingSphere();
@@ -249,9 +272,13 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
   }
 
   // ---------- Ribbons: road, lane markings, jogging path ----------
-  const ribbon = (pts: THREE.Vector3[], half: number, lift: number, color: number, dashed = false) => {
+  const asphaltTex = detailed ? D.asphaltTexture() : null;
+  const tartanTex = detailed ? D.tartanTexture() : null;
+  const ribbon = (pts: THREE.Vector3[], half: number, lift: number, color: number, dashed = false, tex: THREE.Texture | null = null) => {
     const verts: number[] = [];
+    const uvs: number[] = [];
     const ids: number[] = [];
+    let along = 0;
     for (let i = 0; i < pts.length; i++) {
       const a = pts[Math.max(0, i - 1)];
       const b = pts[Math.min(pts.length - 1, i + 1)];
@@ -261,10 +288,12 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
       const nx = -tz / tl;
       const nz = tx / tl;
       const p = pts[i];
+      if (i > 0) along += Math.hypot(p.x - pts[i - 1].x, p.z - pts[i - 1].z);
       for (const s of [-1, 1]) {
         const x = p.x + nx * half * s;
         const z = p.z + nz * half * s;
         verts.push(x, heightAt(x, z) + lift, z);
+        uvs.push(((s + 1) / 2) * (half * 2) / 6, along / 6);
       }
       if (i > 0 && (!dashed || i % 4 < 2)) {
         const k = i * 2;
@@ -273,25 +302,40 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     g.setIndex(ids);
     g.computeVertexNormals();
-    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2 }));
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2 });
+    if (tex) {
+      mat.map = mat.bumpMap = tex;
+      mat.bumpScale = 0.8;
+      mat.color.multiplyScalar(1.35); // the texture darkens on average
+    }
+    const m = new THREE.Mesh(g, mat);
     m.receiveShadow = true;
     scene.add(m);
   };
-  ribbon(road, ROAD_HALF, 0.04, 0x4a4c50);
+  ribbon(road, ROAD_HALF, 0.04, 0x4a4c50, false, asphaltTex);
   ribbon(road, 0.08, 0.06, 0xf2efe4, true);
   ribbon(road.map((p) => p.clone()), ROAD_HALF + 0.35, 0.02, 0xb9b5aa); // kerb edge
   const pathPts: THREE.Vector3[] = [];
   for (let x = -1060; x <= 1060; x += 2) pathPts.push(new THREE.Vector3(x, 0, pathZ(x)));
-  ribbon(pathPts, PATH_HALF, 0.04, 0xa45b49); // red cycling/jogging track
+  ribbon(pathPts, PATH_HALF, 0.04, 0xa45b49, false, tartanTex); // red cycling/jogging track
   ribbon(pathPts, 0.06, 0.06, 0xf2efe4, true);
 
   // Carparks: asphalt slab + white bay lines.
   const lotMat = new THREE.MeshStandardMaterial({ color: 0x55575b, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2 });
+  if (asphaltTex) {
+    lotMat.map = lotMat.bumpMap = asphaltTex;
+    lotMat.bumpScale = 0.8;
+    lotMat.color.multiplyScalar(1.35);
+  }
   const lineGeos: THREE.BufferGeometry[] = [];
   for (const c of CARPARKS) {
-    const lot = new THREE.Mesh(new THREE.PlaneGeometry(c.x1 - c.x0, c.z1 - c.z0), lotMat);
+    const lotGeo = new THREE.PlaneGeometry(c.x1 - c.x0, c.z1 - c.z0);
+    const luv = lotGeo.attributes.uv as THREE.BufferAttribute;
+    for (let i = 0; i < luv.count; i++) luv.setXY(i, (luv.getX(i) * (c.x1 - c.x0)) / 6, (luv.getY(i) * (c.z1 - c.z0)) / 6);
+    const lot = new THREE.Mesh(lotGeo, lotMat);
     lot.rotation.x = -Math.PI / 2;
     lot.position.set((c.x0 + c.x1) / 2, PARK_H + 0.14, (c.z0 + c.z1) / 2);
     lot.receiveShadow = true;
@@ -324,13 +368,27 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
          transformed.y += wv;`,
       );
   };
+  if (detailed) {
+    const wn = D.waterNormalTexture();
+    wn.repeat.set(5200 / 22, 2600 / 22);
+    Object.assign(seaMat, { normalMap: wn, roughness: 0.06, metalness: 0, opacity: 0.92 });
+    seaMat.color.set(0x1d6874);
+    seaMat.normalScale.set(0.55, 0.55);
+    D.patchWaterMaterial(seaMat, wind);
+  }
   const sea = new THREE.Mesh(seaGeo, seaMat);
   sea.receiveShadow = true;
   scene.add(sea);
-  const lagoon = new THREE.Mesh(
-    new THREE.PlaneGeometry(LAGOON.x1 - LAGOON.x0, LAGOON.z1 - LAGOON.z0),
-    new THREE.MeshStandardMaterial({ color: 0x3f8f96, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.85 }),
-  );
+  const lagoonMat = new THREE.MeshStandardMaterial({ color: 0x3f8f96, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.85 });
+  if (detailed) {
+    const wn = D.waterNormalTexture();
+    wn.repeat.set((LAGOON.x1 - LAGOON.x0) / 14, (LAGOON.z1 - LAGOON.z0) / 14);
+    Object.assign(lagoonMat, { normalMap: wn, roughness: 0.05, metalness: 0 });
+    lagoonMat.color.set(0x2f7477);
+    lagoonMat.normalScale.set(0.25, 0.25);
+    D.patchWaterMaterial(lagoonMat, wind);
+  }
+  const lagoon = new THREE.Mesh(new THREE.PlaneGeometry(LAGOON.x1 - LAGOON.x0, LAGOON.z1 - LAGOON.z0), lagoonMat);
   lagoon.rotation.x = -Math.PI / 2;
   lagoon.position.set((LAGOON.x0 + LAGOON.x1) / 2, LAGOON.level, (LAGOON.z0 + LAGOON.z1) / 2);
   scene.add(lagoon);
@@ -403,7 +461,7 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
 
   interface Kind {
     geo: THREE.BufferGeometry;
-    mat: THREE.Material;
+    mat: THREE.Material | THREE.Material[];
     shadow: boolean;
     collide?: number; // trunk radius
     hues?: [number, number, number, number]; // h, s, l, jitter
@@ -417,6 +475,25 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
     flowers: { geo: shrub, mat: swayMat(0.02), shadow: false, hues: [0.92, 0.6, 0.6, 0.04] },
     grass: { geo: grassClump, mat: plainMat, shadow: false },
   };
+  if (detailed) {
+    // Leaf-card foliage from one generated atlas; smooth shading; alpha-cut
+    // leaves (and their shadows). Instance tints are lighter because the
+    // atlas already carries the leaf shading.
+    const atlas = D.foliageAtlas();
+    const leafOpts = { map: atlas, alphaTest: 0.45, side: THREE.DoubleSide, flatShading: false, roughness: 0.8 };
+    const foliage = (strength: number) => [
+      swayMat(strength, { map: atlas, flatShading: false, roughness: 0.85 }),
+      swayMat(strength, leafOpts),
+    ];
+    Object.assign(kinds.rain, { geo: D.rainTreeGeo(1), mat: foliage(0.012), hues: [0.27, 0.45, 0.62, 0.05] });
+    Object.assign(kinds.palm, { geo: D.palmGeo(2), mat: foliage(0.02), hues: [0.2, 0.5, 0.66, 0.04] });
+    Object.assign(kinds.casuarina, { geo: D.casuarinaGeo(3), mat: foliage(0.015), hues: [0.28, 0.35, 0.6, 0.03] });
+    Object.assign(kinds.almond, { geo: D.almondGeo(4), mat: foliage(0.01), hues: [0.25, 0.48, 0.62, 0.06] });
+    const shrubD = D.shrubGeo(5);
+    Object.assign(kinds.shrub, { geo: shrubD, mat: foliage(0.02), hues: [0.27, 0.45, 0.55, 0.05] });
+    Object.assign(kinds.flowers, { geo: shrubD, mat: foliage(0.02), hues: [0.93, 0.65, 0.72, 0.04] });
+    Object.assign(kinds.grass, { geo: D.grassTuftGeo(), mat: swayMat(0.04, leafOpts), hues: [0.23, 0.32, 0.6, 0.04] });
+  }
   type Placement = { x: number; y: number; z: number; s: number; r: number };
   const placements: Record<string, Placement[][]> = {};
   for (const k of Object.keys(kinds)) placements[k] = Array.from({ length: CHUNKS }, () => []);
@@ -467,6 +544,26 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
     else if (r < 0.5) put('grass', x, z, 0.7 + rand() * 0.7);
   }
 
+  if (detailed) {
+    // Denser grass tufts: the most visible gain up close.
+    for (let i = 0; i < 70000; i++) {
+      const x = -VEG_X + randDetail() * VEG_X * 2;
+      const z = FENCE_Z + 3 + randDetail() * (beachTopZ(x) - FENCE_Z - 7);
+      if (blocked(x, z, 0.4)) continue;
+      placements.grass[chunkOf(x)].push({ x, y: heightAt(x, z), z, s: 0.7 + randDetail() * 0.8, r: randDetail() * Math.PI * 2 });
+    }
+  }
+
+  // Detailed grass is dense, so it is binned finely along the park and only
+  // the bins near the camera are drawn (see update()).
+  const nearOnly: { mesh: THREE.InstancedMesh; x: number }[] = [];
+  if (detailed) {
+    const all = placements.grass.flat();
+    const BINS = 60;
+    placements.grass = Array.from({ length: BINS }, () => []);
+    for (const p of all) placements.grass[clamp(Math.floor(((p.x - X0) / (X1 - X0)) * BINS), 0, BINS - 1)].push(p);
+  }
+
   const dummy = new THREE.Object3D();
   const hsl = new THREE.Color();
   for (const [name, kind] of Object.entries(kinds)) {
@@ -481,8 +578,10 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
         dummy.updateMatrix();
         im.setMatrixAt(i, dummy.matrix);
         if (kind.hues) {
+          // Grass only has tints in the detailed style; keep it off the layout seed.
+          const rr = name === 'grass' ? randDetail : rand;
           const [hh, ss, ll, j] = kind.hues;
-          hsl.setHSL(hh + (rand() - 0.5) * j, ss + (rand() - 0.5) * 0.1, ll + (rand() - 0.5) * 0.1);
+          hsl.setHSL(hh + (rr() - 0.5) * j, ss + (rr() - 0.5) * 0.1, ll + (rr() - 0.5) * 0.1);
           im.setColorAt(i, hsl);
         }
         if (kind.collide) {
@@ -494,12 +593,15 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
       im.receiveShadow = !kind.shadow;
       im.computeBoundingSphere();
       scene.add(im);
+      if (detailed && name === 'grass') nearOnly.push({ mesh: im, x: list.reduce((a, p) => a + p.x, 0) / list.length });
     }
   }
 
   // ---------- Groynes: rock breakwaters into the sea ----------
-  const rockGeo = new THREE.IcosahedronGeometry(1, 0);
-  const rockMat = new THREE.MeshStandardMaterial({ color: 0x8b857c, roughness: 1, flatShading: true });
+  const rockGeo = detailed ? D.boulderGeo(1) : new THREE.IcosahedronGeometry(1, 0);
+  const rockMat = detailed
+    ? new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 })
+    : new THREE.MeshStandardMaterial({ color: 0x8b857c, roughness: 1, flatShading: true });
   const rockSpots: Placement[] = [];
   for (const gx of GROYNES) {
     for (let d = -4; d < 32; d += 1.6) {
@@ -663,7 +765,7 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
 
   // ---------- Marine Parade HDB estate (generated) ----------
   {
-    const tex = (() => {
+    const tex = detailed ? D.facadeTexture() : (() => {
       const c = document.createElement('canvas');
       c.width = 64;
       c.height = 64;
@@ -711,7 +813,7 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
         roofs.push(tint(new THREE.BoxGeometry(len + 0.6, 0.6, depth + 0.6).translate(0, hgt + 0.3, 0).rotateY(rot).translate(x, PARK_H + 0.2, z), 0xb7563c));
       }
     }
-    const wallMesh = new THREE.Mesh(mergeGeometries(walls.map((g) => g.toNonIndexed())), new THREE.MeshStandardMaterial({ map: tex, vertexColors: true, roughness: 0.85 }));
+    const wallMesh = new THREE.Mesh(mergeGeometries(walls.map((g) => g.toNonIndexed())), new THREE.MeshStandardMaterial({ map: tex, vertexColors: true, roughness: 0.85, ...(detailed ? { bumpMap: tex, bumpScale: 1.2 } : {}) }));
     const roofMesh = new THREE.Mesh(mergeGeometries(roofs.map((g) => g.toNonIndexed())), plainMat);
     wallMesh.castShadow = roofMesh.castShadow = true;
     wallMesh.receiveShadow = true;
@@ -786,6 +888,7 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
 
   return {
     name: 'East Coast Park',
+    styles: true,
     start: startPose.pos.clone().setY(startPose.pos.y + 1.4),
     startYaw: startPose.yaw,
     heightAt,
@@ -802,8 +905,9 @@ export function buildEastCoastCourse(scene: THREE.Scene, world: RAPIER_NS.World,
     trackT: (x, z) => nearestRoad(x, z).t,
     map,
     sky: { background: 0xc9dbe6, fog: 0xd6dfe2, fogNear: 150, fogFar: 1700 },
-    update(time) {
+    update(time, _dt, cam) {
       wind.value = time;
+      if (cam) for (const g of nearOnly) g.mesh.visible = Math.abs(g.x - cam.x) < 130;
       placeShips(time);
     },
   };

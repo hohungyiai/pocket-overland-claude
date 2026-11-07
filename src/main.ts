@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { buildUbinCourse } from './courses/ubin';
 import { buildEastCoastCourse } from './courses/eastcoast';
+import { skyTexture, type ArtStyle } from './courses/detail';
 import { Minimap } from './minimap';
 import { FullMap } from './fullmap';
 import { Vehicle } from './vehicle';
@@ -17,7 +18,7 @@ const COURSES = {
 } as const;
 type CourseId = keyof typeof COURSES;
 
-async function start(courseId: CourseId) {
+async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: number; yaw: number; cam: number } | null) {
   await RAPIER.init();
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -31,10 +32,12 @@ async function start(courseId: CourseId) {
 
   const scene = new THREE.Scene();
 
-  scene.add(new THREE.HemisphereLight(0xdfeefa, 0x5a5236, 1.1));
+  const detailed = style === 'detailed';
+  const hemi = new THREE.HemisphereLight(0xdfeefa, 0x5a5236, 1.1);
+  scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xfff1d6, 2.4);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.mapSize.setScalar(detailed ? 2048 : 1024);
   const sc = sun.shadow.camera;
   sc.left = sc.bottom = -32;
   sc.right = sc.top = 32;
@@ -48,9 +51,20 @@ async function start(courseId: CourseId) {
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 3000);
 
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
-  const course = COURSES[courseId](scene, world, RAPIER);
+  const course = COURSES[courseId](scene, world, RAPIER, { style });
   scene.background = new THREE.Color(course.sky.background);
   scene.fog = new THREE.Fog(course.sky.fog, course.sky.fogNear, course.sky.fogFar);
+  if (detailed && course.styles) {
+    // Painted sky as backdrop and as the reflection environment (water, car paint).
+    const sky = skyTexture(sunOffset.clone().normalize());
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.background = sky;
+    scene.environment = pmrem.fromEquirectangular(sky).texture;
+    scene.environmentIntensity = 0.4;
+    pmrem.dispose();
+    hemi.intensity = 0.55;
+    (scene.fog as THREE.Fog).color.set(0xcfdbe0);
+  }
   camera.far = Math.max(400, course.sky.fogFar + 100);
   camera.updateProjectionMatrix();
   const fwdMap = new THREE.Vector3();
@@ -98,6 +112,26 @@ async function start(courseId: CourseId) {
   tap(btnDiff, () => car.toggleDiffLock());
   tap($('btn-reset'), () => car.recover());
   tap(btnCam, () => (camMode = (camMode + 1) % camModes.length));
+  // Art style switch: rebuild the same course in the other look, keeping the
+  // car where it is (a reload, so the old world is fully freed).
+  const btnStyle = $('btn-style');
+  if (course.styles) {
+    btnStyle.hidden = false;
+    btnStyle.textContent = detailed ? 'Detailed' : 'Stylized';
+    tap(btnStyle, () => {
+      const p = car.mesh.position;
+      const q = new URLSearchParams({
+        course: courseId,
+        style: detailed ? 'stylized' : 'detailed',
+        at: [p.x, p.z, carHeading(), camMode].map((v) => +v.toFixed(2)).join(','),
+      });
+      location.replace(`${location.pathname}?${q}`);
+    });
+  }
+  if (at) {
+    car.placeAt(new THREE.Vector3(at.x, course.heightAt(at.x, at.z), at.z), at.yaw);
+    camMode = at.cam % camModes.length;
+  }
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (k === 'm') return fullMap.isOpen ? fullMap.close() : openMap();
@@ -217,7 +251,7 @@ async function start(courseId: CourseId) {
 
     const p = car.mesh.position;
     placeSun(p);
-    course.update?.(now / 1000, dt);
+    course.update?.(now / 1000, dt, camera.position);
     minimap.draw(p.x, p.z, carHeading());
 
     hudTimer -= dt;
@@ -248,7 +282,7 @@ async function start(courseId: CourseId) {
   $('loading').remove();
 
   // Handy for testing in the console.
-  Object.assign(window, { game: { car, course, controls, world } });
+  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera } });
 }
 
 // ---- Course picker ----
@@ -259,7 +293,7 @@ const go = (id: CourseId) => {
   // Let the loading screen paint before the (blocking) world build.
   requestAnimationFrame(() =>
     setTimeout(() =>
-      start(id).catch((err) => {
+      start(id, style, at).catch((err) => {
         console.error(err);
         $('loading').textContent = 'Could not start: ' + (err?.message ?? err);
       }),
@@ -267,6 +301,9 @@ const go = (id: CourseId) => {
   );
 };
 const chosen = params.get('course');
+const style: ArtStyle = params.get('style') === 'detailed' ? 'detailed' : 'stylized';
+const atParts = (params.get('at') ?? '').split(',').map(Number);
+const at = atParts.length === 4 && atParts.every(Number.isFinite) ? { x: atParts[0], z: atParts[1], yaw: atParts[2], cam: atParts[3] } : null;
 if (chosen && chosen in COURSES) go(chosen as CourseId);
 else {
   $('loading').style.display = 'none';
