@@ -151,11 +151,12 @@ async function start() {
     while (acc >= STEP && steps < 4) {
       car.update(STEP, controls.input);
       world.step();
+      car.capture();
       acc -= STEP;
       steps++;
     }
     if (steps === 4) acc = 0;
-    car.sync();
+    car.sync(acc / STEP);
     placeCamera(dt, false);
 
     const p = car.mesh.position;
