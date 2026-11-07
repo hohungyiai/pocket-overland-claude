@@ -1,0 +1,10 @@
+{
+  "name": "Pocket Overland",
+  "short_name": "Overland",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#b9d3df",
+  "theme_color": "#b9d3df",
+  "icons": [{ "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
