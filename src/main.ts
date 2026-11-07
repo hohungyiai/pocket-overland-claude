@@ -8,6 +8,8 @@ import { FullMap } from './fullmap';
 import { Vehicle } from './vehicle';
 import { Controls } from './controls';
 import { PerfOverlay } from './perf';
+import { Weather } from './weather';
+import { Camps, loadSave } from './camp';
 import './style.css';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -67,6 +69,19 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   }
   camera.far = Math.max(400, course.sky.fogFar + 100);
   camera.updateProjectionMatrix();
+  // Weather (style-neutral): showers come and go; wet ground grips a little less.
+  const weather = new Weather({ scene, sun, hemi, sunOffset });
+  const rawSurface = course.surfaceAt;
+  course.surfaceAt = (x, z, y) => weather.feel(rawSurface(x, z, y));
+  let toast: string | null = null;
+  let toastTime = 0;
+  const say = (text: string, secs = 4) => {
+    toast = text;
+    toastTime = secs;
+  };
+  weather.onChange = (text) => say(text);
+  const camps = course.camps?.length ? new Camps(scene, course.camps, course.heightAt) : null;
+
   const fwdMap = new THREE.Vector3();
   const carHeading = () => Math.atan2(-fwdMap.set(1, 0, 0).applyQuaternion(car.mesh.quaternion).z, fwdMap.x);
   // The drive pauses while the full map is open, so nothing moves while you look.
@@ -128,6 +143,39 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       location.replace(`${location.pathname}?${q}`);
     });
   }
+  // ---- Camp: stop inside a camp to rest (evening) and save; leave in the morning ----
+  const btnCamp = $('btn-camp');
+  const fade = $('fade');
+  let fading = false;
+  const fadeThen = (fn: () => void) => {
+    if (fading) return;
+    fading = true;
+    fade.classList.add('on');
+    setTimeout(() => {
+      fn();
+      fade.classList.remove('on');
+      setTimeout(() => (fading = false), 900);
+    }, 900);
+  };
+  const breakCamp = (msg: string) =>
+    fadeThen(() => {
+      camps?.strike();
+      weather.setTime('morning');
+      say(msg);
+    });
+  tap(btnCamp, () => {
+    if (!camps) return;
+    if (camps.active) return breakCamp('Morning. On the road again.');
+    const spot = camps.at(car.mesh.position.x, car.mesh.position.z);
+    if (!spot) return;
+    fadeThen(() => {
+      const p = car.mesh.position;
+      const saved = camps.pitch(spot, { x: p.x, z: p.z, yaw: carHeading() }, courseId, style);
+      weather.setTime('evening');
+      say(saved ? `Evening at ${spot.label}. Journey saved.` : `Evening at ${spot.label}.`, 6);
+    });
+  });
+
   if (at) {
     car.placeAt(new THREE.Vector3(at.x, course.heightAt(at.x, at.z), at.z), at.yaw);
     camMode = at.cam % camModes.length;
@@ -186,12 +234,17 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   // The sun follows the car, but moving the shadow map by fractions of a
   // texel makes every shadow shimmer and crawl as soon as the car moves.
   // Snap its centre to whole shadow texels, measured in the light's own axes.
-  const lightFwd = sunOffset.clone().negate().normalize();
-  const lightRight = new THREE.Vector3().crossVectors(lightFwd, new THREE.Vector3(0, 1, 0)).normalize();
-  const lightUp = new THREE.Vector3().crossVectors(lightRight, lightFwd);
+  // (Recomputed each frame: the sun moves when the evening comes.)
+  const lightFwd = new THREE.Vector3();
+  const lightRight = new THREE.Vector3();
+  const lightUp = new THREE.Vector3();
+  const worldUp = new THREE.Vector3(0, 1, 0);
   const texel = (sc.right - sc.left) / sun.shadow.mapSize.x;
   const shadowCentre = new THREE.Vector3();
   const placeSun = (p: THREE.Vector3) => {
+    lightFwd.copy(sunOffset).negate().normalize();
+    lightRight.crossVectors(lightFwd, worldUp).normalize();
+    lightUp.crossVectors(lightRight, lightFwd);
     const r = Math.round(p.dot(lightRight) / texel) * texel;
     const u = Math.round(p.dot(lightUp) / texel) * texel;
     const f = p.dot(lightFwd);
@@ -251,7 +304,9 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
 
     const p = car.mesh.position;
     placeSun(p);
-    course.update?.(now / 1000, dt, camera.position);
+    course.update?.(now / 1000, dt, camera.position, p);
+    weather.update(dt, camera.position);
+    camps?.update(now / 1000);
     minimap.draw(p.x, p.z, carHeading());
 
     hudTimer -= dt;
@@ -262,7 +317,17 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       // Never a fail state: if the car sits stuck under throttle, offer a tip.
       stuckTime = Math.abs(car.speed) < 0.4 && Math.abs(controls.input.throttle) > 0.3 ? stuckTime + 0.1 : 0;
       const tip = stuckTime > 3 ? (car.lowRange && car.diffLock ? 'Tip: back up and take a run at it, or tap ↺' : 'Tip: try LOW range and DIFF lock') : null;
-      const zone = tip ?? course.zoneAt(p.x, p.z);
+      toastTime -= 0.1;
+      if (toastTime <= 0) toast = null;
+      const zone = tip ?? toast ?? course.zoneAt(p.x, p.z);
+      // Camp button: shown when stopped inside a camp, or while camped.
+      if (camps) {
+        const spot = camps.at(p.x, p.z);
+        if (camps.active && !spot && !fading) breakCamp('You packed up at first light.');
+        const show = !!camps.active || (!!spot && Math.abs(car.speed) < 0.8);
+        btnCamp.hidden = !show;
+        btnCamp.textContent = camps.active ? 'Break camp' : `Make camp`;
+      }
       hudZone.textContent = zone ?? '';
       hudZone.style.opacity = zone ? '1' : '0';
     }
@@ -282,7 +347,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   $('loading').remove();
 
   // Handy for testing in the console.
-  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera } });
+  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera, weather, camps } });
 }
 
 // ---- Course picker ----
@@ -307,6 +372,16 @@ const at = atParts.length === 4 && atParts.every(Number.isFinite) ? { x: atParts
 if (chosen && chosen in COURSES) go(chosen as CourseId);
 else {
   $('loading').style.display = 'none';
+  const save = loadSave();
+  if (save && save.course in COURSES) {
+    const b = document.createElement('button');
+    b.innerHTML = `<b>Continue</b><span>From ${save.label} · saved ${new Date(save.savedAt).toLocaleDateString()}</span>`;
+    b.addEventListener('click', () => {
+      const q = new URLSearchParams({ course: save.course, style: save.style ?? 'stylized', at: [save.x, save.z, save.yaw, 0].map((v) => +v.toFixed(2)).join(',') });
+      location.replace(`${location.pathname}?${q}`);
+    });
+    document.querySelector('#menu .choices')!.prepend(b);
+  }
   document.querySelectorAll<HTMLButtonElement>('#menu [data-course]').forEach((b) =>
     b.addEventListener('click', () => {
       const id = b.dataset.course as CourseId;
