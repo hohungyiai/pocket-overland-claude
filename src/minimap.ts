@@ -3,29 +3,28 @@ import type { MapData } from './courses/types';
 // A small round minimap, heading-up: the map turns as you turn, the car
 // arrow always points up. The whole course is painted once into an
 // off-screen canvas; each frame just draws a rotated window of it.
-// Tap it to switch between a close and a wide view.
+// Tap it to open the full map (see fullmap.ts).
 
-const PX_PER_M = 1; // resolution of the pre-painted map
+export const PX_PER_M = 1; // resolution of the pre-painted map
 
 export class Minimap {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private base: HTMLCanvasElement;
-  private zoomLevels = [0.55, 0.22]; // screen px per metre
-  private zoom = 0;
+  private zoom = 0.42; // screen px per metre
   private size = 0;
   private dpr = Math.min(window.devicePixelRatio || 1, 2);
 
-  constructor(parent: HTMLElement, private map: MapData) {
+  constructor(parent: HTMLElement, private map: MapData, onTap: () => void) {
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'minimap';
     parent.append(this.canvas);
     this.ctx = this.canvas.getContext('2d')!;
     this.canvas.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
-      this.zoom = (this.zoom + 1) % this.zoomLevels.length;
+      onTap();
     });
-    this.base = this.paint();
+    this.base = paintMap(map);
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
@@ -36,44 +35,12 @@ export class Minimap {
     this.canvas.width = this.canvas.height = Math.round(this.size * this.dpr);
   }
 
-  private paint(): HTMLCanvasElement {
-    const { bounds, areas, lines } = this.map;
-    const c = document.createElement('canvas');
-    c.width = Math.ceil((bounds.maxX - bounds.minX) * PX_PER_M);
-    c.height = Math.ceil((bounds.maxZ - bounds.minZ) * PX_PER_M);
-    const g = c.getContext('2d')!;
-    const tx = (x: number) => (x - bounds.minX) * PX_PER_M;
-    const tz = (z: number) => (z - bounds.minZ) * PX_PER_M;
-    g.fillStyle = this.map.background;
-    g.fillRect(0, 0, c.width, c.height);
-    for (const a of areas) {
-      g.fillStyle = a.color;
-      g.beginPath();
-      a.pts.forEach(([x, z], i) => (i ? g.lineTo(tx(x), tz(z)) : g.moveTo(tx(x), tz(z))));
-      g.closePath();
-      g.fill();
-    }
-    g.lineCap = g.lineJoin = 'round';
-    for (const l of lines) {
-      // Dark casing under each line so roads read against grass.
-      for (const [w, color] of [[l.width + 3, 'rgba(0,0,0,0.25)'], [l.width, l.color]] as const) {
-        g.strokeStyle = color;
-        g.lineWidth = w * PX_PER_M;
-        g.beginPath();
-        l.pts.forEach(([x, z], i) => (i ? g.lineTo(tx(x), tz(z)) : g.moveTo(tx(x), tz(z))));
-        if (l.closed) g.closePath();
-        g.stroke();
-      }
-    }
-    return c;
-  }
-
   /** heading: yaw in radians as used by the car (0 = facing +x / east). */
   draw(x: number, z: number, heading: number) {
     const { ctx, canvas, map } = this;
     const S = canvas.width;
     const r = S / 2;
-    const k = this.zoomLevels[this.zoom] * this.dpr;
+    const k = this.zoom * this.dpr;
     ctx.clearRect(0, 0, S, S);
     ctx.save();
     ctx.beginPath();
@@ -144,5 +111,49 @@ export class Minimap {
     ctx.lineWidth = 3 * this.dpr;
     ctx.strokeStyle = 'rgba(255,255,255,0.85)';
     ctx.stroke();
+  }
+}
+
+/** Paint a whole course map once, PX_PER_M canvas px per metre, for the minimap. */
+export function paintMap(map: MapData): HTMLCanvasElement {
+  const { bounds } = map;
+  const c = document.createElement('canvas');
+  c.width = Math.ceil((bounds.maxX - bounds.minX) * PX_PER_M);
+  c.height = Math.ceil((bounds.maxZ - bounds.minZ) * PX_PER_M);
+  const g = c.getContext('2d')!;
+  g.scale(PX_PER_M, PX_PER_M);
+  g.translate(-bounds.minX, -bounds.minZ);
+  drawMapShapes(g, map, PX_PER_M);
+  return c;
+}
+
+/**
+ * Draw the map's areas and lines in world metres (x right, z down = north up).
+ * The caller sets the transform; `scale` is screen px per metre, used to keep
+ * thin lines visible when zoomed far out.
+ */
+export function drawMapShapes(g: CanvasRenderingContext2D, map: MapData, scale: number) {
+  const { bounds, areas, lines } = map;
+  g.fillStyle = map.background;
+  g.fillRect(bounds.minX, bounds.minZ, bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
+  for (const a of areas) {
+    g.fillStyle = a.color;
+    g.beginPath();
+    a.pts.forEach(([x, z], i) => (i ? g.lineTo(x, z) : g.moveTo(x, z)));
+    g.closePath();
+    g.fill();
+  }
+  g.lineCap = g.lineJoin = 'round';
+  for (const l of lines) {
+    // Dark casing under each line so roads read against grass.
+    const w = Math.max(l.width, 2.2 / scale);
+    for (const [lw, color] of [[w + Math.max(3, 2 / scale), 'rgba(0,0,0,0.25)'], [w, l.color]] as const) {
+      g.strokeStyle = color;
+      g.lineWidth = lw;
+      g.beginPath();
+      l.pts.forEach(([x, z], i) => (i ? g.lineTo(x, z) : g.moveTo(x, z)));
+      if (l.closed) g.closePath();
+      g.stroke();
+    }
   }
 }

@@ -86,6 +86,17 @@ export class Controls {
     }
   };
 
+  /** Let go of both sticks and keys (used when the full map opens). */
+  reset() {
+    for (const key of ['steerStick', 'pedalStick'] as const) {
+      this[key]?.base.style.setProperty('display', 'none');
+      this[key] = null;
+    }
+    this.keys.clear();
+    this.keySteer = this.keyThrottle = 0;
+    this.input.steer = this.input.throttle = 0;
+  }
+
   update(dt: number) {
     const k = this.keys;
     const kl = k.has('a') || k.has('arrowleft');
