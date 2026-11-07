@@ -34,7 +34,7 @@ Other scripts: `npm run build` (typecheck + production build into `dist/`), `npm
 | Diff lock (keeps drive when a wheel lifts) | DIFF button | K |
 | Recover (put the car back on its wheels) | ↺ button | R |
 | Camera: chase, high, low | Top-right button | C |
-| Minimap zoom (close / wide) | Tap the minimap | |
+| Full map (drive pauses; drag to pan, pinch to zoom) | Tap the minimap | M, Esc to close |
 | Back to the menu | ☰ top-left | |
 
 Hill-hold is automatic when you're off the pedals. Rolling over self-recovers after two seconds.
@@ -59,6 +59,7 @@ A gravel loop through low hills with five sections, shown on screen as you reach
 | `src/courses/eastcoast.ts` | East Coast Park: hand-placed anchors (coast, road, carparks, jetty, lagoon, food village, camps) plus seeded detail (trees, shrubs, furniture, HDB blocks). Terrain is built in chunks from one height function, so chunk edges always match |
 | `src/courses/ubin.ts` | Ubin test track: road spline, terrain conformed to the road, surfaces, rocks, water, vegetation |
 | `src/minimap.ts` | Heading-up round minimap, pre-painted once from each course's map data |
+| `src/fullmap.ts` | Full-screen north-up map opened from the minimap; the place route planning will grow from |
 | `src/perf.ts` | Frame-time graph (tap the fps label) |
 | `src/controls.ts` | Relative-drag thumb sticks and keyboard input |
 | `src/noise.ts` | Seeded random and noise helpers |
@@ -67,4 +68,4 @@ For debugging, `window.game` exposes the car, course, controls and physics world
 
 ## Not in this prototype yet
 
-The higher-detail half of the art test, moving traffic, weather, campsites you can drive into, audio, the rest of Singapore East, the route map and the expedition loop. See the roadmap in the design doc.
+The higher-detail half of the art test, moving traffic, weather, campsites you can drive into, audio, the rest of Singapore East, route planning on the map and the expedition loop. See the roadmap in the design doc.

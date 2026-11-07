@@ -3,6 +3,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { buildUbinCourse } from './courses/ubin';
 import { buildEastCoastCourse } from './courses/eastcoast';
 import { Minimap } from './minimap';
+import { FullMap } from './fullmap';
 import { Vehicle } from './vehicle';
 import { Controls } from './controls';
 import { PerfOverlay } from './perf';
@@ -52,8 +53,18 @@ async function start(courseId: CourseId) {
   scene.fog = new THREE.Fog(course.sky.fog, course.sky.fogNear, course.sky.fogFar);
   camera.far = Math.max(400, course.sky.fogFar + 100);
   camera.updateProjectionMatrix();
-  const minimap = new Minimap($('app'), course.map);
   const fwdMap = new THREE.Vector3();
+  const carHeading = () => Math.atan2(-fwdMap.set(1, 0, 0).applyQuaternion(car.mesh.quaternion).z, fwdMap.x);
+  // The drive pauses while the full map is open, so nothing moves while you look.
+  const fullMap = new FullMap($('app'), course.map, course.name, () => {
+    last = performance.now();
+    acc = 0;
+  });
+  const openMap = () => {
+    controls.reset();
+    fullMap.open(car.mesh.position.x, car.mesh.position.z, carHeading());
+  };
+  const minimap = new Minimap($('app'), course.map, openMap);
   const car = new Vehicle(world, RAPIER, course);
   scene.add(car.mesh, ...car.wheels);
 
@@ -89,6 +100,8 @@ async function start(courseId: CourseId) {
   tap(btnCam, () => (camMode = (camMode + 1) % camModes.length));
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
+    if (k === 'm') return fullMap.isOpen ? fullMap.close() : openMap();
+    if (fullMap.isOpen) return;
     if (k === 'l') car.toggleLowRange();
     else if (k === 'k') car.toggleDiffLock();
     else if (k === 'r') car.recover();
@@ -180,6 +193,11 @@ async function start(courseId: CourseId) {
   placeCamera(0, true);
 
   const frame = (now: number) => {
+    if (fullMap.isOpen) {
+      fullMap.draw();
+      requestAnimationFrame(frame);
+      return;
+    }
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
     acc += dt;
@@ -200,7 +218,7 @@ async function start(courseId: CourseId) {
     const p = car.mesh.position;
     placeSun(p);
     course.update?.(now / 1000, dt);
-    minimap.draw(p.x, p.z, Math.atan2(-fwdMap.set(1, 0, 0).applyQuaternion(car.mesh.quaternion).z, fwdMap.x));
+    minimap.draw(p.x, p.z, carHeading());
 
     hudTimer -= dt;
     if (hudTimer <= 0) {
