@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type RAPIER_NS from '@dimforge/rapier3d-compat';
-import { clamp, fbm, lerp, mulberry32, smoothstep, valueNoise } from './noise';
+import { clamp, fbm, lerp, mulberry32, smoothstep, valueNoise } from '../noise';
+import { SURFACES, type Course, type MapData, type Surface, type XZ } from './types';
 
 type Rapier = typeof RAPIER_NS;
 
@@ -10,24 +11,6 @@ type Rapier = typeof RAPIER_NS;
 // terrain is conformed to it, so road and ground can never disagree, and the
 // render mesh and physics mesh are built from the same vertices, so there are
 // no seams or mismatches between what you see and what you drive on.
-
-export interface Surface {
-  name: string;
-  /** Tyre friction coefficient (Rapier friction slip). */
-  grip: number;
-  /** Rolling resistance, applied as a light per-wheel brake. */
-  drag: number;
-}
-
-export const SURFACES = {
-  gravel: { name: 'Gravel', grip: 0.85, drag: 1.5 },
-  dirt: { name: 'Dirt', grip: 0.8, drag: 2 },
-  grass: { name: 'Grass', grip: 0.7, drag: 4 },
-  rock: { name: 'Rock', grip: 1.05, drag: 1 },
-  sand: { name: 'Sand', grip: 0.6, drag: 30 },
-  mud: { name: 'Mud', grip: 0.5, drag: 22 },
-  water: { name: 'Water', grip: 0.55, drag: 24 },
-} satisfies Record<string, Surface>;
 
 const SEED = 1965;
 const SIZE = 300; // metres, square
@@ -47,19 +30,6 @@ const ZONES: Zone[] = [
   { from: 0.68, to: 0.8, label: 'Sand wash' },
   { from: 0.84, to: 0.94, label: 'Off-camber' },
 ];
-
-export interface Course {
-  start: THREE.Vector3;
-  startYaw: number;
-  waterLevel: number;
-  heightAt(x: number, z: number): number;
-  surfaceAt(x: number, z: number, y: number): Surface;
-  zoneAt(x: number, z: number): string | null;
-  /** Position (on the ground) and heading of the road at loop position t (0..1). */
-  poseAt(t: number): { pos: THREE.Vector3; yaw: number };
-  /** Loop position (0..1) of the nearest road point. */
-  trackT(x: number, z: number): number;
-}
 
 interface TrackHit {
   d: number; // distance to the road centreline
@@ -83,7 +53,7 @@ function buildTrackPoints(): THREE.Vector3[] {
   return curve.getSpacedPoints(520).slice(0, 520);
 }
 
-export function buildCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: Rapier): Course {
+export function buildUbinCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: Rapier): Course {
   const pts = buildTrackPoints();
   const n = pts.length;
   const at = (t: number) => pts[((Math.round(t * n) % n) + n) % n];
@@ -411,12 +381,28 @@ export function buildCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: 
     };
   };
 
+  const roadLine: XZ[] = pts.map((p) => [p.x, p.z]);
+  const circle = (cx: number, cz: number, r: number): XZ[] =>
+    Array.from({ length: 24 }, (_, i) => [cx + r * Math.cos((i / 24) * Math.PI * 2), cz + r * Math.sin((i / 24) * Math.PI * 2)]);
+  const map: MapData = {
+    bounds: { minX: -SIZE / 2, maxX: SIZE / 2, minZ: -SIZE / 2, maxZ: SIZE / 2 },
+    background: '#7f9f5c',
+    areas: [{ pts: circle(pond.x, pond.z, 16), color: '#4f8a8a' }],
+    lines: [{ pts: roadLine, width: 7, color: '#d8cfb8', closed: true }],
+    pois: ZONES.map((zn) => {
+      const p = at((zn.from + zn.to) / 2);
+      return { x: p.x, z: p.z, label: zn.label };
+    }),
+  };
+
   return {
+    name: 'Ubin test track',
+    map,
+    sky: { background: 0xb9d3df, fog: 0xc4d6dc, fogNear: 60, fogFar: 230 },
     poseAt,
     trackT: (x, z) => nearest(x, z).t,
     start,
     startYaw,
-    waterLevel,
     heightAt,
     surfaceAt: (x, z, y) => surfaceFrom(x, z, y, nearest(x, z)),
     zoneAt(x, z) {

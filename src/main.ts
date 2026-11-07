@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import { buildCourse } from './course';
+import { buildUbinCourse } from './courses/ubin';
+import { buildEastCoastCourse } from './courses/eastcoast';
+import { Minimap } from './minimap';
 import { Vehicle } from './vehicle';
 import { Controls } from './controls';
 import { PerfOverlay } from './perf';
@@ -8,7 +10,13 @@ import './style.css';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-async function start() {
+const COURSES = {
+  eastcoast: buildEastCoastCourse,
+  ubin: buildUbinCourse,
+} as const;
+type CourseId = keyof typeof COURSES;
+
+async function start(courseId: CourseId) {
   await RAPIER.init();
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -21,9 +29,6 @@ async function start() {
   $('app').prepend(renderer.domElement);
 
   const scene = new THREE.Scene();
-  const sky = new THREE.Color(0xb9d3df);
-  scene.background = sky;
-  scene.fog = new THREE.Fog(0xc4d6dc, 60, 230);
 
   scene.add(new THREE.HemisphereLight(0xdfeefa, 0x5a5236, 1.1));
   const sun = new THREE.DirectionalLight(0xfff1d6, 2.4);
@@ -39,10 +44,16 @@ async function start() {
   scene.add(sun, sun.target);
   const sunOffset = new THREE.Vector3(-40, 70, 30);
 
-  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 400);
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 3000);
 
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
-  const course = buildCourse(scene, world, RAPIER);
+  const course = COURSES[courseId](scene, world, RAPIER);
+  scene.background = new THREE.Color(course.sky.background);
+  scene.fog = new THREE.Fog(course.sky.fog, course.sky.fogNear, course.sky.fogFar);
+  camera.far = Math.max(400, course.sky.fogFar + 100);
+  camera.updateProjectionMatrix();
+  const minimap = new Minimap($('app'), course.map);
+  const fwdMap = new THREE.Vector3();
   const car = new Vehicle(world, RAPIER, course);
   scene.add(car.mesh, ...car.wheels);
 
@@ -148,6 +159,7 @@ async function start() {
   const hudZone = $('hud-zone');
   const hint = $('hint');
   let hudTimer = 0;
+  let stuckTime = 0;
   let fpsFrames = 0;
   let fpsTime = 0;
   const hudFps = $('hud-fps');
@@ -187,13 +199,18 @@ async function start() {
 
     const p = car.mesh.position;
     placeSun(p);
+    course.update?.(now / 1000, dt);
+    minimap.draw(p.x, p.z, Math.atan2(-fwdMap.set(1, 0, 0).applyQuaternion(car.mesh.quaternion).z, fwdMap.x));
 
     hudTimer -= dt;
     if (hudTimer <= 0) {
       hudTimer = 0.1;
       hudSpeed.textContent = `${Math.round(Math.abs(car.speed) * 3.6)}`;
       hudSurface.textContent = car.wheelsOnGround ? car.surface.name : 'Airborne';
-      const zone = course.zoneAt(p.x, p.z);
+      // Never a fail state: if the car sits stuck under throttle, offer a tip.
+      stuckTime = Math.abs(car.speed) < 0.4 && Math.abs(controls.input.throttle) > 0.3 ? stuckTime + 0.1 : 0;
+      const tip = stuckTime > 3 ? (car.lowRange && car.diffLock ? 'Tip: back up and take a run at it, or tap ↺' : 'Tip: try LOW range and DIFF lock') : null;
+      const zone = tip ?? course.zoneAt(p.x, p.z);
       hudZone.textContent = zone ?? '';
       hudZone.style.opacity = zone ? '1' : '0';
     }
@@ -216,7 +233,34 @@ async function start() {
   Object.assign(window, { game: { car, course, controls, world } });
 }
 
-start().catch((err) => {
-  console.error(err);
-  $('loading').textContent = 'Could not start: ' + (err?.message ?? err);
+// ---- Course picker ----
+const params = new URLSearchParams(location.search);
+const go = (id: CourseId) => {
+  $('menu').remove();
+  $('loading').style.display = 'flex';
+  // Let the loading screen paint before the (blocking) world build.
+  requestAnimationFrame(() =>
+    setTimeout(() =>
+      start(id).catch((err) => {
+        console.error(err);
+        $('loading').textContent = 'Could not start: ' + (err?.message ?? err);
+      }),
+    ),
+  );
+};
+const chosen = params.get('course');
+if (chosen && chosen in COURSES) go(chosen as CourseId);
+else {
+  $('loading').style.display = 'none';
+  document.querySelectorAll<HTMLButtonElement>('#menu [data-course]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const id = b.dataset.course as CourseId;
+      history.replaceState(null, '', `?course=${id}`);
+      go(id);
+    }),
+  );
+}
+$('btn-menu').addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  location.href = location.pathname;
 });

@@ -2,7 +2,12 @@
 
 A calm, scenic overland driving game for phones, played in the browser. You drive a rugged 4x4 the long way from Singapore toward London, region by region. The design doc lives in the project's Claude Doc ("Pocket Overland — Game Design & Plan").
 
-This repo currently holds the **core driving prototype**: one vehicle on a hand-made test course modeled loosely on Pulau Ubin's gravel tracks. It exists to prove the driving feels good on a phone before any world generation is built.
+Two drives so far, picked from the start menu (or with `?course=eastcoast` / `?course=ubin`):
+
+- **East Coast Park**: a stylized ~1.6 km stretch of Singapore's East Coast Park, the first piece of the real journey. Service road, carparks, beach with rock groynes, jogging path, the lagoon and its food village, Bedok Jetty, the East Coast Parkway and Marine Parade's HDB blocks, with ships at anchor in the strait. Camp Areas D and G are marked on the map; the beach sand gets softer toward the water and around Area G. This is the "stylized and dense" half of the art test.
+- **Ubin test track**: the driving prototype, a gravel loop with a climb, rock garden, water crossing, sand wash and off-camber section.
+
+The game never fails you: there's no game over, the car self-rights after a roll, ↺ puts it back on its wheels, and if you sit stuck the HUD suggests low range and the diff lock.
 
 ## Run it
 
@@ -29,6 +34,8 @@ Other scripts: `npm run build` (typecheck + production build into `dist/`), `npm
 | Diff lock (keeps drive when a wheel lifts) | DIFF button | K |
 | Recover (put the car back on its wheels) | ↺ button | R |
 | Camera: chase, high, low | Top-right button | C |
+| Minimap zoom (close / wide) | Tap the minimap | |
+| Back to the menu | ☰ top-left | |
 
 Hill-hold is automatic when you're off the pedals. Rolling over self-recovers after two seconds.
 
@@ -48,7 +55,11 @@ A gravel loop through low hills with five sections, shown on screen as you reach
 | --- | --- |
 | `src/main.ts` | Renderer, lights, camera modes, HUD, buttons, fixed 60 Hz physics loop |
 | `src/vehicle.ts` | The 4x4: Rapier ray-cast vehicle, suspension, engine, low range, open/locked diff, surfaces, self-recovery. Tuning values are in `TUNING` at the top |
-| `src/course.ts` | Test course: road spline, terrain conformed to the road, surfaces, rocks, water, vegetation. Render mesh and physics mesh share the same vertices, so there are no seams |
+| `src/courses/types.ts` | Shared course interface, surfaces and minimap data |
+| `src/courses/eastcoast.ts` | East Coast Park: hand-placed anchors (coast, road, carparks, jetty, lagoon, food village, camps) plus seeded detail (trees, shrubs, furniture, HDB blocks). Terrain is built in chunks from one height function, so chunk edges always match |
+| `src/courses/ubin.ts` | Ubin test track: road spline, terrain conformed to the road, surfaces, rocks, water, vegetation |
+| `src/minimap.ts` | Heading-up round minimap, pre-painted once from each course's map data |
+| `src/perf.ts` | Frame-time graph (tap the fps label) |
 | `src/controls.ts` | Relative-drag thumb sticks and keyboard input |
 | `src/noise.ts` | Seeded random and noise helpers |
 
@@ -56,4 +67,4 @@ For debugging, `window.game` exposes the car, course, controls and physics world
 
 ## Not in this prototype yet
 
-The art test (stylized-and-dense vs higher detail along an East Coast Park stretch), audio, Singapore East, procedural generation, the route map and the expedition loop. See the roadmap in the design doc.
+The higher-detail half of the art test, moving traffic, weather, campsites you can drive into, audio, the rest of Singapore East, the route map and the expedition loop. See the roadmap in the design doc.

@@ -37,7 +37,16 @@
         <p class="small">LOW = low range for climbs and rocks · DIFF = locks the differential · Keyboard: WASD, L, K, R, C</p>
       </div>
       <div id="rotate">Turn your phone sideways to drive</div>
-      <div id="loading">Loading Pocket Overland…</div>
+      <button id="btn-menu" class="btn menu" aria-label="Menu">&#9776;</button>
+      <div id="loading">Building the world…</div>
+      <div id="menu">
+        <h1>Pocket Overland</h1>
+        <p>Choose a drive</p>
+        <div class="choices">
+          <button data-course="eastcoast"><b>East Coast Park</b><span>Singapore · coastal park, beach, Bedok Jetty</span></button>
+          <button data-course="ubin"><b>Ubin test track</b><span>Gravel loop · climb, rocks, water, sand</span></button>
+        </div>
+      </div>
     </div>
     <script type="module" src="./src/main.ts"></script>
   </body>

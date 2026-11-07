@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import type RAPIER_NS from '@dimforge/rapier3d-compat';
-import type { Course, Surface } from './course';
-import { SURFACES } from './course';
+import { SURFACES, type Course, type Surface } from './courses/types';
 import { clamp, lerp } from './noise';
 
 type Rapier = typeof RAPIER_NS;
