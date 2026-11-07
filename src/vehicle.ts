@@ -117,18 +117,60 @@ export class Vehicle {
       this.mesh.add(m);
       return m;
     };
-    add(new THREE.BoxGeometry(4.3, 0.75, 1.84), paint, 0, 0.3, 0); // lower body
-    add(new THREE.BoxGeometry(2.6, 0.75, 1.74), paint, -0.45, 1.05, 0); // cabin
-    add(new THREE.BoxGeometry(0.05, 0.58, 1.6), glass, 0.86, 1.08, 0).rotation.z = 0.25; // windscreen
-    add(new THREE.BoxGeometry(2.3, 0.5, 1.78), glass, -0.45, 1.1, 0).scale.set(1, 1, 1.002); // side windows
-    add(new THREE.BoxGeometry(2.4, 0.08, 1.6), dark, -0.5, 1.48, 0); // roof rack
-    add(new THREE.BoxGeometry(1.2, 0.3, 0.5), accent, -0.9, 1.67, 0.35); // gear box on rack
-    add(new THREE.CylinderGeometry(0.28, 0.28, 0.9, 10), dark, -0.3, 1.66, -0.4).rotation.x = Math.PI / 2; // spare
+    // A box whose corners are moved: f gets each corner as (sx, sy, sz) in
+    // -1..1 plus its position, and returns the new position. Faces stay flat
+    // and keep their own normals, so it still reads as low-poly.
+    const shaped = (w: number, h: number, d: number, f: (p: THREE.Vector3, sx: number, sy: number, sz: number) => void) => {
+      const g = new THREE.BoxGeometry(w, h, d);
+      const pos = g.attributes.position;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        f(v, Math.sign(v.x), Math.sign(v.y), Math.sign(v.z));
+        pos.setXYZ(i, v.x, v.y, v.z);
+      }
+      g.computeVertexNormals();
+      return g;
+    };
+    // Lower body: slight tumblehome, and a bonnet that drops to a rounded nose.
+    add(shaped(4.3, 0.75, 1.84, (p, sx, sy) => {
+      if (sy > 0) p.z *= 0.95;
+      if (sx > 0) p.x -= sy > 0 ? 0.14 : 0.04;
+      if (sx > 0 && sy > 0) p.y -= 0.07;
+    }), paint, 0, 0.3, 0);
+    // Cabin: raked windscreen, narrower roof. Bottom spans x -1.75..0.85.
+    add(shaped(2.6, 0.75, 1.74, (p, sx, sy) => {
+      if (sy > 0) {
+        p.z *= 0.88;
+        p.x -= sx > 0 ? 0.4 : -0.06;
+      }
+    }), paint, -0.45, 1.05, 0);
+    // Glass: windscreen on the raked face, two side windows each side split
+    // by a pillar, and a rear window.
+    add(new THREE.BoxGeometry(0.03, 0.62, 1.42), glass, 0.665, 1.06, 0).rotation.z = 0.49; // windscreen
+    for (const side of [-1, 1]) {
+      const z = side * 0.835;
+      add(new THREE.BoxGeometry(0.78, 0.46, 0.03), glass, 0.04, 1.1, z).rotation.x = -side * 0.138; // front door
+      add(new THREE.BoxGeometry(1.05, 0.46, 0.03), glass, -1.05, 1.1, z).rotation.x = -side * 0.138; // rear door
+    }
+    add(new THREE.BoxGeometry(0.03, 0.44, 1.3), glass, -1.735, 1.12, 0).rotation.z = -0.08; // rear window
+    add(new THREE.BoxGeometry(2.0, 0.08, 1.4), dark, -0.62, 1.47, 0); // roof rack
+    add(new THREE.BoxGeometry(1.1, 0.3, 0.5), accent, -0.85, 1.66, 0.3); // gear box on rack
+    add(new THREE.BoxGeometry(0.5, 0.22, 0.4), accent, -0.15, 1.62, -0.35); // jerry can
     add(new THREE.BoxGeometry(0.22, 0.32, 1.9), dark, 2.2, 0.15, 0); // front bumper
     add(new THREE.BoxGeometry(0.22, 0.3, 1.9), dark, -2.2, 0.15, 0); // rear bumper
     const lampMat = new THREE.MeshStandardMaterial({ color: 0xfff3c4, emissive: 0x6b5f2a });
-    add(new THREE.BoxGeometry(0.06, 0.16, 0.3), lampMat, 2.16, 0.48, -0.65);
-    add(new THREE.BoxGeometry(0.06, 0.16, 0.3), lampMat, 2.16, 0.48, 0.65);
+    add(new THREE.BoxGeometry(0.06, 0.15, 0.3), lampMat, 2.05, 0.44, -0.62).rotation.z = 0.14;
+    add(new THREE.BoxGeometry(0.06, 0.15, 0.3), lampMat, 2.05, 0.44, 0.62).rotation.z = 0.14;
+    const tail = new THREE.MeshStandardMaterial({ color: 0xb8352a, emissive: 0x3a0d08 });
+    add(new THREE.BoxGeometry(0.05, 0.18, 0.14), tail, -2.16, 0.5, -0.78);
+    add(new THREE.BoxGeometry(0.05, 0.18, 0.14), tail, -2.16, 0.5, 0.78);
+
+    // Wheel-arch flares: open half-cylinder shells over each wheel.
+    const flare = new THREE.CylinderGeometry(0.54, 0.54, 0.28, 9, 1, true, Math.PI / 2, Math.PI);
+    flare.rotateX(Math.PI / 2);
+    const flareMat = new THREE.MeshStandardMaterial({ color: 0x34373b, roughness: 0.85, side: THREE.DoubleSide });
+    for (const w of WHEELS) add(flare, flareMat, w.x, -0.4, Math.sign(w.z) * 0.95);
 
     const tyre = new THREE.CylinderGeometry(TUNING.wheelRadius, TUNING.wheelRadius, 0.34, 14);
     tyre.rotateX(Math.PI / 2);
@@ -143,6 +185,14 @@ export class Vehicle {
       g.add(t, new THREE.Mesh(hub, hubMat));
       this.wheelMeshes.push(g);
     }
+    // Spare wheel on the back door, on a small bracket.
+    add(new THREE.BoxGeometry(0.1, 0.12, 0.5), dark, -2.2, 0.7, 0);
+    const spare = add(tyre, tyreMat, -2.33, 0.7, 0);
+    spare.rotation.y = Math.PI / 2;
+    spare.scale.set(0.88, 0.88, 0.78);
+    const spareHub = add(hub, hubMat, -2.33, 0.7, 0);
+    spareHub.rotation.y = Math.PI / 2;
+    spareHub.scale.set(0.88, 0.88, 0.78);
   }
 
   get wheels(): THREE.Object3D[] {
