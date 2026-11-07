@@ -3,7 +3,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { buildCourse } from './course';
 import { Vehicle } from './vehicle';
 import { Controls } from './controls';
-import { clamp } from './noise';
+import { PerfOverlay } from './perf';
 import './style.css';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -95,27 +95,51 @@ async function start() {
   const camPos = new THREE.Vector3();
   const camLook = new THREE.Vector3();
   let camYaw = course.startYaw;
+  // Reused every frame so the camera creates no garbage (GC pauses show up as hitches).
+  const fwd = new THREE.Vector3();
+  const ahead = new THREE.Vector3();
+  const want = new THREE.Vector3();
+  const look = new THREE.Vector3();
   const placeCamera = (dt: number, snap: boolean) => {
+    // Use the drawn (interpolated) car, not the latest physics state, so the
+    // camera and the car always agree within a frame.
     const p = car.mesh.position;
-    const f = car.forward;
-    const yaw = Math.atan2(-f.z, f.x);
+    fwd.set(1, 0, 0).applyQuaternion(car.mesh.quaternion);
+    const yaw = Math.atan2(-fwd.z, fwd.x);
     // Follow heading smoothly; when reversing, keep looking the same way.
     let d = yaw - camYaw;
     d = Math.atan2(Math.sin(d), Math.cos(d));
-    camYaw += d * (snap ? 1 : clamp(dt * 2.2, 0, 1));
-    const ahead = new THREE.Vector3(Math.cos(camYaw), 0, -Math.sin(camYaw));
+    camYaw += d * (snap ? 1 : 1 - Math.exp(-dt * 2.2));
+    ahead.set(Math.cos(camYaw), 0, -Math.sin(camYaw));
     const mode = camModes[camMode];
     const dist = mode === 'High' ? 11 : mode === 'Low' ? 4.2 : 7.5;
     const height = mode === 'High' ? 9 : mode === 'Low' ? 1.3 : 3.2;
-    const want = p.clone().addScaledVector(ahead, -dist);
+    want.copy(p).addScaledVector(ahead, -dist);
     want.y = Math.max(p.y + height, course.heightAt(want.x, want.z) + 1.2);
-    const look = p.clone().addScaledVector(ahead, mode === 'Low' ? 6 : 2.5);
+    look.copy(p).addScaledVector(ahead, mode === 'Low' ? 6 : 2.5);
     look.y += mode === 'Low' ? 0.9 : 0.8;
-    const k = snap ? 1 : clamp(dt * 5, 0, 1);
-    camPos.lerp(want, k);
-    camLook.lerp(look, snap ? 1 : clamp(dt * 8, 0, 1));
+    // Frame-rate independent smoothing.
+    camPos.lerp(want, snap ? 1 : 1 - Math.exp(-dt * 5));
+    camLook.lerp(look, snap ? 1 : 1 - Math.exp(-dt * 8));
     camera.position.copy(camPos);
     camera.lookAt(camLook);
+  };
+
+  // The sun follows the car, but moving the shadow map by fractions of a
+  // texel makes every shadow shimmer and crawl as soon as the car moves.
+  // Snap its centre to whole shadow texels, measured in the light's own axes.
+  const lightFwd = sunOffset.clone().negate().normalize();
+  const lightRight = new THREE.Vector3().crossVectors(lightFwd, new THREE.Vector3(0, 1, 0)).normalize();
+  const lightUp = new THREE.Vector3().crossVectors(lightRight, lightFwd);
+  const texel = (sc.right - sc.left) / sun.shadow.mapSize.x;
+  const shadowCentre = new THREE.Vector3();
+  const placeSun = (p: THREE.Vector3) => {
+    const r = Math.round(p.dot(lightRight) / texel) * texel;
+    const u = Math.round(p.dot(lightUp) / texel) * texel;
+    const f = p.dot(lightFwd);
+    shadowCentre.set(0, 0, 0).addScaledVector(lightRight, r).addScaledVector(lightUp, u).addScaledVector(lightFwd, f);
+    sun.target.position.copy(shadowCentre);
+    sun.position.copy(shadowCentre).add(sunOffset);
   };
 
   // ---- HUD ----
@@ -127,6 +151,7 @@ async function start() {
   let fpsFrames = 0;
   let fpsTime = 0;
   const hudFps = $('hud-fps');
+  const perf = new PerfOverlay($('app'), hudFps);
 
   const resize = () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -156,12 +181,12 @@ async function start() {
       steps++;
     }
     if (steps === 4) acc = 0;
+    perf.record(dt * 1000, steps, now);
     car.sync(acc / STEP);
     placeCamera(dt, false);
 
     const p = car.mesh.position;
-    sun.position.copy(p).add(sunOffset);
-    sun.target.position.copy(p);
+    placeSun(p);
 
     hudTimer -= dt;
     if (hudTimer <= 0) {
@@ -175,7 +200,7 @@ async function start() {
     fpsFrames++;
     fpsTime += dt;
     if (fpsTime > 1) {
-      hudFps.textContent = `${Math.round(fpsFrames / fpsTime)} fps`;
+      hudFps.textContent = `${Math.round(fpsFrames / fpsTime)} fps · build ${__BUILD_ID__}`;
       fpsFrames = 0;
       fpsTime = 0;
     }
