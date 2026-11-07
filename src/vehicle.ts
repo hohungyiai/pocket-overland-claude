@@ -55,6 +55,11 @@ export class Vehicle {
   private steerAngle = 0;
   private wheelMeshes: THREE.Object3D[] = [];
   private upsideDownTime = 0;
+  private prev = Vehicle.emptyState();
+  private curr = Vehicle.emptyState();
+  private static emptyState() {
+    return { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), susp: [0, 0, 0, 0], steer: [0, 0, 0, 0], spin: [0, 0, 0, 0] };
+  }
   private readonly tmpQ = new THREE.Quaternion();
   private readonly tmpV = new THREE.Vector3();
 
@@ -98,6 +103,7 @@ export class Vehicle {
       this.controller.setWheelSideFrictionStiffness(i, 1);
     }
     this.buildMesh();
+    this.snap();
   }
 
   private buildMesh() {
@@ -160,6 +166,7 @@ export class Vehicle {
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.upsideDownTime = 0;
+    this.snap();
   }
 
   /** Put the car back on its wheels a little above where it is. */
@@ -175,6 +182,7 @@ export class Vehicle {
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.upsideDownTime = 0;
+    this.snap();
   }
 
   update(dt: number, input: DriveInput) {
@@ -252,21 +260,48 @@ export class Vehicle {
     if (this.body.translation().y < -50) this.recover();
   }
 
-  /** Copy physics state to the visible meshes. */
-  sync() {
+  /**
+   * Record the physics state after a step. The renderer draws a blend of the
+   * last two recorded states (see sync), so motion stays smooth even when a
+   * display frame gets zero or two physics steps.
+   */
+  capture() {
+    const [prev, curr] = [this.curr, this.prev];
+    this.prev = prev;
+    this.curr = curr;
     const p = this.body.translation();
     const q = this.body.rotation();
-    this.mesh.position.set(p.x, p.y, p.z);
-    this.mesh.quaternion.set(q.x, q.y, q.z, q.w);
+    curr.pos.set(p.x, p.y, p.z);
+    curr.quat.set(q.x, q.y, q.z, q.w);
+    const c = this.controller;
+    for (let i = 0; i < 4; i++) {
+      curr.susp[i] = c.wheelSuspensionLength(i) ?? TUNING.restLength;
+      curr.steer[i] = c.wheelSteering(i) ?? 0;
+      curr.spin[i] = c.wheelRotation(i) ?? 0;
+    }
+  }
+
+  /** Forget the previous state, e.g. after teleporting, so nothing blends across the jump. */
+  private snap() {
+    this.capture();
+    this.capture();
+  }
+
+  /** Draw the car between the last two physics states (alpha 0 = previous, 1 = latest). */
+  sync(alpha = 1) {
+    const a = this.prev;
+    const b = this.curr;
+    this.mesh.position.lerpVectors(a.pos, b.pos, alpha);
+    this.mesh.quaternion.slerpQuaternions(a.quat, b.quat, alpha);
     const c = this.controller;
     for (let i = 0; i < 4; i++) {
       const w = this.wheelMeshes[i];
       const conn = c.wheelChassisConnectionPointCs(i)!;
-      const len = c.wheelSuspensionLength(i) ?? TUNING.restLength;
+      const len = lerp(a.susp[i], b.susp[i], alpha);
       w.position.set(conn.x, conn.y - len, conn.z).applyQuaternion(this.mesh.quaternion).add(this.mesh.position);
       w.quaternion.copy(this.mesh.quaternion);
-      w.rotateY(c.wheelSteering(i) ?? 0);
-      w.rotateZ(-(c.wheelRotation(i) ?? 0));
+      w.rotateY(lerp(a.steer[i], b.steer[i], alpha));
+      w.rotateZ(-lerp(a.spin[i], b.spin[i], alpha));
     }
   }
 
