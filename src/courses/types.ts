@@ -45,6 +45,8 @@ export interface Course {
   /** True when the course can be built in both art styles. */
   styles?: boolean;
   /** Optional per-frame animation (sea, swaying trees, ships). */
-  update?(time: number, dt: number, camera?: { x: number; z: number }): void;
+  update?(time: number, dt: number, camera?: { x: number; z: number }, player?: { x: number; z: number }): void;
+  /** Places where you can make camp (rest and save). */
+  camps?: import('../camp').CampSpot[];
   sky: { background: number; fog: number; fogNear: number; fogFar: number };
 }
