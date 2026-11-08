@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "description": "Calm, scenic overland driving game for mobile web",
   "scripts": {
-    "dev": "vite --host",
-    "build": "tsc && vite build",
+    "maps": "node tools/osm/import.mjs build east-sg",
+    "dev": "npm run maps && vite --host",
+    "build": "npm run maps && tsc && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc"
   },

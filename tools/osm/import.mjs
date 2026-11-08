@@ -216,7 +216,8 @@ export function build(raw, origin) {
     for (let i = 1; i < wy.nodes.length; i++) {
       cur.push(wy.nodes[i]);
       if (isJunction(wy.nodes[i], i, wy.nodes.length)) {
-        pieces.push({ ids: cur, cls: wy.tags.highway, rank, width: lanes ? Math.max(width * 0.6, lanes * 3.3) : width, oneway, name: wy.tags.name ?? '' });
+        const level = wy.tags.bridge && wy.tags.bridge !== 'no' ? 1 : wy.tags.tunnel && wy.tags.tunnel !== 'no' ? -1 : 0;
+        pieces.push({ ids: cur, cls: wy.tags.highway, rank, width: lanes ? Math.max(width * 0.6, lanes * 3.3) : width, oneway, level, name: wy.tags.name ?? '' });
         cur = [wy.nodes[i]];
       }
     }
@@ -238,7 +239,7 @@ export function build(raw, origin) {
     if (ia === ib) continue;
     const a = pieces[ia];
     const b = pieces[ib];
-    if (a.cls !== b.cls || a.oneway !== b.oneway || a.name !== b.name) continue;
+    if (a.cls !== b.cls || a.oneway !== b.oneway || a.name !== b.name || a.level !== b.level) continue;
     // Orient a to end at id, b to start at id.
     if (a.ids[a.ids.length - 1] !== id) a.ids.reverse();
     if (b.ids[0] !== id) {
@@ -304,19 +305,20 @@ export function build(raw, origin) {
     if (a === b && pts.length < 4) continue; // collapsed stub
     pts = simplify(pts, 0.8);
     pts = chaikin(pts, 2);
-    pts = resample(pts, 4);
+    // The game resamples evenly; ship only the points that shape the curve.
+    pts = simplify(pts, 0.12);
     let len = 0;
     for (let i = 1; i < pts.length; i++) len += dist(pts[i - 1], pts[i]);
     if (len < 3) continue;
-    edges.push({ a: a.i, b: b.i, cls: p.cls, w: q(p.width), one: p.oneway ? 1 : 0, name: p.name || undefined, pts: qp(pts) });
+    edges.push({ a: a.i, b: b.i, cls: p.cls, w: q(p.width), one: p.oneway ? 1 : 0, lv: p.level || undefined, name: p.name || undefined, pts: qp(pts) });
   }
   const jOut = [...junctions.values()].sort((u, v) => u.i - v.i).map((j) => [q(j.x), q(j.z)]);
 
   // --- Paths (park connectors, footpaths) ---
   const paths = ways
     .filter((wy) => PATHS.has(wy.tags?.highway) && wy.tags?.area !== 'yes')
-    .map((wy) => qp(resample(chaikin(simplify(wayPts(wy), 0.8), 1), 4)))
-    .filter((p) => p.length > 1);
+    .map((wy) => ({ k: wy.tags.highway === 'cycleway' || wy.tags.bicycle === 'designated' ? 'cycle' : 'foot', pts: qp(simplify(chaikin(simplify(wayPts(wy), 0.8), 1), 0.12)) }))
+    .filter((p) => p.pts.length > 1);
 
   // --- Areas ---
   const kindOf = (t = {}) => {
@@ -342,7 +344,7 @@ export function build(raw, origin) {
     const kind = kindOf(wy.tags);
     if (!kind) continue;
     const pts = simplifyRing(wayPts(wy), 1);
-    if (pts.length > 3) areas.push({ kind, pts: qp(pts.slice(0, -1)) });
+    if (pts.length > 3) areas.push({ kind, name: wy.tags.name, pts: qp(pts.slice(0, -1)) });
   }
   // Multipolygon relations: stitch outer ways into rings.
   for (const r of rels) {
@@ -351,7 +353,7 @@ export function build(raw, origin) {
     const outers = r.members.filter((m) => m.type === 'way' && m.role !== 'inner').map((m) => byId.get(m.ref)).filter(Boolean);
     for (const ring of stitch(outers.map((wy) => wy.nodes))) {
       const pts = simplifyRing(ring.map(proj).filter(Boolean), 1);
-      if (pts.length > 3) areas.push({ kind, pts: qp(pts.slice(0, -1)) });
+      if (pts.length > 3) areas.push({ kind, name: r.tags.name, pts: qp(pts.slice(0, -1)) });
     }
   }
 
