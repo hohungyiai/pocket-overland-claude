@@ -50,6 +50,7 @@ export class Vehicle {
   /** Signed forward speed, m/s. */
   speed = 0;
   surface: Surface = SURFACES.gravel;
+  private waterTime = 0;
   wheelsOnGround = 4;
   private steerAngle = 0;
   private wheelMeshes: THREE.Object3D[] = [];
@@ -218,12 +219,23 @@ export class Vehicle {
     this.snap();
   }
 
-  /** Put the car back on its wheels a little above where it is. */
+  /**
+   * Put the car back on its wheels a little above where it is, or, if it is
+   * in the water, on the nearest road (the course's safe spot).
+   */
   recover() {
-    const p = this.body.translation();
+    const p = { ...this.body.translation() };
     const q = this.body.rotation();
     const fwd = this.tmpV.set(1, 0, 0).applyQuaternion(this.tmpQ.set(q.x, q.y, q.z, q.w));
-    const yaw = Math.atan2(-fwd.z, fwd.x);
+    let yaw = Math.atan2(-fwd.z, fwd.x);
+    const wet = /water/i.test(this.course.surfaceAt(p.x, p.z, this.course.heightAt(p.x, p.z)).name) || p.y < -50;
+    const spot = wet ? this.course.safeSpot?.(p.x, p.z) : null;
+    if (spot) {
+      p.x = spot.x;
+      p.z = spot.z;
+      yaw = spot.yaw;
+    }
+    this.waterTime = 0;
     const r = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
     const y = this.course.heightAt(p.x, p.z) + 1.5;
     this.body.setTranslation({ x: p.x, y, z: p.z }, true);
@@ -305,6 +317,10 @@ export class Vehicle {
     if (up.y < 0.25 && absV < 2) this.upsideDownTime += dt;
     else this.upsideDownTime = 0;
     if (this.upsideDownTime > 2) this.recover();
+    // Never stranded: sitting still in deep water for a few seconds tows the car back to a road.
+    if (/water/i.test(this.surface.name) && absV < 3) this.waterTime += dt;
+    else this.waterTime = 0;
+    if (this.waterTime > 5) this.recover();
     // Fell out of the world somehow.
     if (this.body.translation().y < -50) this.recover();
   }

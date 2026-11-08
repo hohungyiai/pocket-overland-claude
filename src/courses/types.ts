@@ -50,6 +50,8 @@ export interface Course {
   styles?: boolean;
   /** Optional per-frame animation (sea, swaying trees, ships). */
   update?(time: number, dt: number, camera?: { x: number; z: number }, player?: { x: number; z: number }): void;
+  /** Nearest safe place to put the car back (on a road, out of the water), if the course knows one. */
+  safeSpot?(x: number, z: number): { x: number; z: number; yaw: number } | null;
   /** Load the world around a point right away (before placing the car there). */
   prepareAt?(x: number, z: number): void;
   /** Tile streaming counters, for the debug overlay. */

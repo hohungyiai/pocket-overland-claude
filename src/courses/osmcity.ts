@@ -195,7 +195,7 @@ export async function buildPasirRisCourse(
     }
     for (const b of M.buildings) fillPoly(b.pts, (k) => (code[k] |= BLD));
     edges.forEach((e, i) => strokeLine(EP[i], e.w / 2 + 4, (k) => (code[k] |= NEAR_ROAD)));
-    for (const p of paths) strokeLine(p.pts, 2.4, (k) => (code[k] |= NEAR_PATH));
+    for (const p of paths) strokeLine(p.pts, 5, (k) => (code[k] |= NEAR_PATH));
     for (const c of canals) strokeLine(c.pts, c.w / 2 + 7, (k) => (code[k] |= NEAR_WET));
     for (const w of waterAreas) {
       fillPoly(w, (k) => (code[k] |= NEAR_WET));
@@ -241,11 +241,14 @@ export async function buildPasirRisCourse(
       probe.w = w;
       if (w < 6) {
         const cut = w > 0 ? lerp(WL + 0.15, h, smoothstep(0, 5, w)) : lerp(WL + 0.15, WL - 1.1, smoothstep(0, 3, -w));
-        // Roads cross on fill (culverts and bridges in real life).
-        const r = roads.nearest(x, z, 20);
-        const fill = r ? smoothstep(EHALF[r.line] + 6, EHALF[r.line] + 1.5, r.d) : 0;
-        h = lerp(Math.min(h, cut), h, fill);
+        h = Math.min(h, cut);
       }
+    }
+    // Roads always stay on level ground: over canals, tidal river mouths and
+    // beaches they run on an embankment (bridges and culverts in real life).
+    if (h < LAND - 0.02) {
+      const r = roads.nearest(x, z, 24);
+      if (r) h = lerp(h, LAND, smoothstep(EHALF[r.line] + 8, EHALF[r.line] + 1.5, r.d));
     }
     if (s > BEACH) {
       const o = openness(x, z);
@@ -483,13 +486,14 @@ export async function buildPasirRisCourse(
     cum: number[],
     k0: number,
     k1: number,
-    half: number,
+    halfIn: number | ((k: number) => number),
     lift: number,
-    o: { off?: number; y?: number; keep?: (k: number) => boolean } = {},
+    o: { off?: number | ((k: number) => number); y?: number; keep?: (k: number) => boolean } = {},
   ) => {
     const base = acc.pos.length / 3;
-    const off = o.off ?? 0;
     for (let k = k0; k <= k1; k++) {
+      const half = typeof halfIn === 'number' ? halfIn : halfIn(k);
+      const off = o.off === undefined ? 0 : typeof o.off === 'number' ? o.off : o.off(k);
       const a = pts[Math.max(0, k - 1)];
       const b = pts[Math.min(pts.length - 1, k + 1)];
       const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
@@ -512,7 +516,7 @@ export async function buildPasirRisCourse(
   };
   const disc = (acc: Acc, x: number, z: number, r: number, lift: number, y?: number) => {
     const base = acc.pos.length / 3;
-    const yc = (y ?? heightAt(x, z)) + lift;
+    const yc = (y ?? Math.max(heightAt(x, z), WL + 0.15)) + lift;
     acc.pos.push(x, yc, z);
     acc.uv.push(0, 0);
     const n = 16;
@@ -520,7 +524,7 @@ export async function buildPasirRisCourse(
       const a = (i / n) * Math.PI * 2;
       const px = x + Math.cos(a) * r;
       const pz = z + Math.sin(a) * r;
-      acc.pos.push(px, (y ?? heightAt(px, pz)) + lift, pz);
+      acc.pos.push(px, (y ?? Math.max(heightAt(px, pz), WL + 0.15)) + lift, pz);
       acc.uv.push(Math.cos(a) * (r / 6), Math.sin(a) * (r / 6));
     }
     // Counter-clockwise seen from above, so the pad faces up.
@@ -589,6 +593,13 @@ export async function buildPasirRisCourse(
     if (e.b !== e.a) jEdges[e.b]?.push(i);
   });
   const jRadius = jEdges.map((list) => Math.max(0, ...list.map((i) => EHALF[i])));
+  // At a two-way joint, the half width of the other piece.
+  const other = (j: number, me: number) => {
+    const l = jEdges[j];
+    const o = l[0] === me ? l[1] : l[0];
+    return o === undefined ? EHALF[me] : EHALF[o];
+  };
+  const jHalf2 = jEdges.map((_, j) => (me: number) => other(j, me));
   const jDegree = jEdges.map((l) => l.length);
 
   // Each edge's segments go to the tile holding their midpoint, in runs.
@@ -624,8 +635,13 @@ export async function buildPasirRisCourse(
         const half = EHALF[line];
         const rank = rankOf(e.cls);
         const len = cum[cum.length - 1];
-        strip(road, pts, cum, k0, k1, half, 0.05);
-        if (rank >= 1) strip(kerb, pts, cum, k0, k1, half + 0.35, 0.03);
+        // Where two pieces of one road meet with different widths (OSM lane
+        // counts change), taper both to the average so the edge doesn't step.
+        const ha = jDegree[e.a] === 2 ? (jHalf2[e.a](line) - half) / 2 : 0;
+        const hb = jDegree[e.b] === 2 ? (jHalf2[e.b](line) - half) / 2 : 0;
+        const halfAt = (kk: number) => half + ha * (1 - smoothstep(0, 16, cum[kk])) + hb * (1 - smoothstep(0, 16, len - cum[kk]));
+        strip(road, pts, cum, k0, k1, halfAt, 0.09);
+        if (rank >= 1) strip(kerb, pts, cum, k0, k1, (kk) => halfAt(kk) + 0.35, 0.07);
         if (rank < 1 || len < 12) continue;
         // Markings stop short of the junction pads.
         const ca = (jDegree[e.a] > 2 ? jRadius[e.a] : 0) + 2;
@@ -633,21 +649,23 @@ export async function buildPasirRisCourse(
         const inside = (kk: number) => cum[kk] > ca && cum[kk + 1] < len - cb;
         const dash = (kk: number) => inside(kk) && kk % 3 === 0;
         if (rank >= 2) {
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.07, { off: half - 0.35, keep: inside });
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.07, { off: -(half - 0.35), keep: inside });
+          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: (kk) => halfAt(kk) - 0.35, keep: inside });
+          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: (kk) => -(halfAt(kk) - 0.35), keep: inside });
         }
         const lanes = Math.max(1, Math.round((e.w - 0.7) / 3.3));
         if (e.one) {
-          for (let l = 1; l < lanes; l++) strip(white, pts, cum, k0, k1, 0.07, 0.07, { off: -half + (l * e.w) / lanes, keep: dash });
+          for (let l = 1; l < lanes; l++) strip(white, pts, cum, k0, k1, 0.07, 0.11, { off: -half + (l * e.w) / lanes, keep: dash });
         } else if (rank >= 1 && e.w >= 6) {
-          strip(white, pts, cum, k0, k1, 0.07, 0.07, { keep: rank >= 3 ? inside : dash });
+          strip(white, pts, cum, k0, k1, 0.07, 0.11, { keep: rank >= 3 ? inside : dash });
         }
       }
     });
   // Junction pads.
   const padsByTile = new Map<string, number[]>();
   M.junctions.forEach(([x, z], j) => {
-    if (!jDegree[j] || jDegree[j] === 2) return;
+    // Every joint gets a pad (at a bend between two pieces, the narrower
+    // width): it fills the wedge where two ribbons meet at an angle.
+    if (!jDegree[j]) return;
     const k = tileKey(x, z);
     const l = padsByTile.get(k);
     if (l) l.push(j);
@@ -659,8 +677,9 @@ export async function buildPasirRisCourse(
       const kerb = acc('kerb');
       for (const j of list) {
         const [x, z] = M.junctions[j];
-        disc(road, x, z, jRadius[j], 0.05);
-        if (jEdges[j].some((i) => rankOf(edges[i].cls) >= 1)) disc(kerb, x, z, jRadius[j] + 0.35, 0.03);
+        const r = jDegree[j] === 2 ? (EHALF[jEdges[j][0]] + EHALF[jEdges[j][1]]) / 2 : jRadius[j];
+        disc(road, x, z, r, 0.09);
+        if (jEdges[j].some((i) => rankOf(edges[i].cls) >= 1)) disc(kerb, x, z, r + 0.35, 0.07);
       }
     });
   // Footpaths and park connectors.
@@ -673,7 +692,14 @@ export async function buildPasirRisCourse(
     inChunks('far', k, all, 40, (list, _kit, acc) => {
       const foot = acc('foot');
       const cyc = acc('cycle');
-      for (const { line, k0, k1 } of list) strip(paths[line].k === 'cycle' ? cyc : foot, paths[line].pts, PCUM[line], k0, k1, PHALF[line], 0.035);
+      for (const { line, k0, k1 } of list) {
+        const pa = paths[line];
+        const into = pa.k === 'cycle' ? cyc : foot;
+        strip(into, pa.pts, PCUM[line], k0, k1, PHALF[line], 0.06);
+        // Round ends, so paths that meet or branch join without a notch.
+        if (k0 === 0) disc(into, pa.pts[0][0], pa.pts[0][1], PHALF[line], 0.06);
+        if (k1 === pa.pts.length - 1) disc(into, pa.pts[k1][0], pa.pts[k1][1], PHALF[line], 0.06);
+      }
     });
 
   // ---------- Water ----------
@@ -1404,6 +1430,21 @@ export async function buildPasirRisCourse(
     sky: { background: 0xc9dbe6, fog: 0xd6dfe2, fogNear: 150, fogFar: 1700 },
     prepareAt(x, z) {
       streamer.prepare(x, z);
+    },
+    safeSpot(x, z) {
+      // The nearest point on a proper road (not a service lane), on dry ground.
+      for (const R of [60, 200, 600, 2000]) {
+        const r = roads.nearest(x, z, R, (i) => rankOf(edges[i].cls) >= 1);
+        if (!r) continue;
+        const pts = EP[r.line];
+        const a = pts[r.seg];
+        const b = pts[r.seg + 1];
+        const px = a[0] + (b[0] - a[0]) * r.u;
+        const pz = a[1] + (b[1] - a[1]) * r.u;
+        if (heightAt(px, pz) < LAND - 0.1) continue;
+        return { x: px, z: pz, yaw: Math.atan2(-(b[1] - a[1]), b[0] - a[0]) };
+      }
+      return null;
     },
     streamStats: () => streamer.stats,
     update(time, _dt, cam, player) {
