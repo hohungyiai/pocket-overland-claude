@@ -317,7 +317,7 @@ export function build(raw, origin) {
   // --- Paths (park connectors, footpaths) ---
   const paths = ways
     .filter((wy) => PATHS.has(wy.tags?.highway) && wy.tags?.area !== 'yes')
-    .map((wy) => ({ k: wy.tags.highway === 'cycleway' || wy.tags.bicycle === 'designated' ? 'cycle' : 'foot', pts: qp(simplify(chaikin(simplify(wayPts(wy), 0.8), 1), 0.12)) }))
+    .map((wy) => ({ k: wy.tags.highway === 'cycleway' || wy.tags.bicycle === 'designated' ? 'cycle' : 'foot', pts: qp(simplify(chaikin(simplify(wayPts(wy), 0.8), 2), 0.1)) }))
     .filter((p) => p.pts.length > 1);
 
   // --- Areas ---
