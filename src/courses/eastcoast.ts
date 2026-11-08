@@ -5,6 +5,7 @@ import { clamp, fbm, lerp, mulberry32, smoothstep, valueNoise } from '../noise';
 import { SURFACES, type Course, type MapData, type Surface, type XZ } from './types';
 import * as D from './detail';
 import { Traffic, type Lane } from '../traffic';
+import { TILE, TileStreamer, type TileKit } from '../world/stream';
 
 type Rapier = typeof RAPIER_NS;
 
@@ -118,6 +119,35 @@ export function buildEastCoastCourse(
   const rectDist = (r: { x0: number; x1: number; z0: number; z1: number }, x: number, z: number) =>
     Math.hypot(Math.max(r.x0 - x, 0, x - r.x1), Math.max(r.z0 - z, 0, z - r.z1));
 
+  // ---------- Tiles ----------
+  // Layout is planned for the whole park up front (cheap: positions only);
+  // meshes and colliders are built per tile as the streamer loads it.
+  // "far" jobs: what you see from a distance. "near" jobs: detail + solids.
+  type Job = (kit: TileKit) => void;
+  const jobs = { near: new Map<string, Job[]>(), far: new Map<string, Job[]>() };
+  const tileKey = (x: number, z: number) => `${Math.floor(x / TILE)},${Math.floor(z / TILE)}`;
+  const onTile = (layer: 'near' | 'far', x: number, z: number, job: Job) => {
+    const k = tileKey(x, z);
+    const list = jobs[layer].get(k);
+    if (list) list.push(job);
+    else jobs[layer].set(k, [job]);
+  };
+  /** Group items by the tile they stand in. */
+  const byTile = <T extends { x: number; z: number }>(items: T[]) => {
+    const m = new Map<string, T[]>();
+    for (const it of items) {
+      const k = tileKey(it.x, it.z);
+      const l = m.get(k);
+      if (l) l.push(it);
+      else m.set(k, [it]);
+    }
+    return m;
+  };
+  const tileCentre = (k: string) => {
+    const [i, j] = k.split(',').map(Number);
+    return { x: (i + 0.5) * TILE, z: (j + 0.5) * TILE };
+  };
+
   // ---------- Ground height ----------
   const parkGround = (x: number, z: number) =>
     PARK_H + 0.35 * fbm(x / 70, z / 70, SEED) + 0.6 * Math.max(0, fbm(x / 35, z / 35, SEED + 9));
@@ -191,21 +221,37 @@ export function buildEastCoastCourse(
     lagoonFloor: new THREE.Color(0.5, 0.65, 0.66),
   };
   const col = new THREE.Color();
-  const cols = Math.round((X1 - X0) / STEP);
-  const rows = Math.round((Z1 - Z0) / STEP);
-  const perChunk = Math.ceil(cols / CHUNKS);
-  for (let ci = 0; ci < CHUNKS; ci++) {
-    const c0 = ci * perChunk;
-    const c1 = Math.min(cols, c0 + perChunk);
-    const w = c1 - c0 + 1;
-    const h = rows + 1;
+  // Terrain patches sit on one global vertex lattice (X0 + k * STEP), and
+  // neighbouring tiles share their edge columns and rows, so there are no seams.
+  const lattice = (v0: number, lo: number, hi: number, t0: number, t1: number) => {
+    const k0 = Math.max(0, Math.floor((t0 - v0) / STEP));
+    const k1 = Math.min(Math.round((hi - v0) / STEP), Math.floor((t1 - v0) / STEP));
+    return lo + k0 * STEP <= hi && k1 > k0 ? [k0, k1] : null;
+  };
+  type Patch = { w: number; h: number; pos: Float32Array; clr: Float32Array; uvs: Float32Array; idx: Uint32Array } | null;
+  const patchCache = new Map<string, Patch>();
+  const terrainPatch = (ti: number, tj: number) => patchCache.get(`${ti},${tj}`) ?? null;
+  /** Compute (or reuse) a tile's ground, a few rows per step. */
+  function* ensurePatch(ti: number, tj: number): Generator<void, void, void> {
+    const k = `${ti},${tj}`;
+    if (patchCache.has(k)) return;
+    const t = yield* computePatch(ti, tj);
+    patchCache.set(k, t);
+    if (patchCache.size > 24) patchCache.delete(patchCache.keys().next().value!);
+  }
+  function* computePatch(ti: number, tj: number): Generator<void, Patch, void> {
+    const cx = lattice(X0, X0, X1, ti * TILE, (ti + 1) * TILE);
+    const cz = lattice(Z0, Z0, Z1, tj * TILE, (tj + 1) * TILE);
+    if (!cx || !cz) return null;
+    const w = cx[1] - cx[0] + 1;
+    const h = cz[1] - cz[0] + 1;
     const pos = new Float32Array(w * h * 3);
     const clr = new Float32Array(w * h * 3);
     const uvs = new Float32Array(w * h * 2);
     for (let j = 0; j < h; j++) {
       for (let i = 0; i < w; i++) {
-        const x = X0 + (c0 + i) * STEP;
-        const z = Z0 + j * STEP;
+        const x = X0 + (cx[0] + i) * STEP;
+        const z = Z0 + (cz[0] + j) * STEP;
         const y = heightAt(x, z);
         const k = (j * w + i) * 3;
         pos[k] = x;
@@ -222,7 +268,7 @@ export function buildEastCoastCourse(
         } else {
           col.copy(C.grass).lerp(C.grassDry, valueNoise(x / 25, z / 25, SEED + 2) * 0.6);
           col.lerp(C.sand, smoothstep(top - 4, top, z));
-          // Worn grass beside the road and path, and the paved estate north of the fence.
+          // The paved estate north of the fence.
           if (z < FENCE_Z - 2) col.copy(C.hard);
         }
         const v = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
@@ -230,6 +276,7 @@ export function buildEastCoastCourse(
         clr[k + 1] = col.g * v;
         clr[k + 2] = col.b * v;
       }
+      if (j % 12 === 11) yield;
     }
     const idx = new Uint32Array((w - 1) * (h - 1) * 6);
     let q = 0;
@@ -240,19 +287,40 @@ export function buildEastCoastCourse(
         q += 6;
       }
     }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(clr, 3));
-    if (detailed) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    return { w, h, pos, clr, uvs, idx };
+  }
+  const terrainFar = (ti: number, tj: number, kit: TileKit) => {
+    const t = terrainPatch(ti, tj);
+    if (!t) return;
+    const geo = kit.own(new THREE.BufferGeometry());
+    geo.setAttribute('position', new THREE.BufferAttribute(t.pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(t.clr, 3));
+    if (detailed) geo.setAttribute('uv', new THREE.BufferAttribute(t.uvs, 2));
+    geo.setIndex(new THREE.BufferAttribute(t.idx, 1));
     geo.computeVertexNormals();
     geo.computeBoundingSphere();
     const mesh = new THREE.Mesh(geo, groundMat);
     mesh.receiveShadow = true;
-    scene.add(mesh);
-    const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-    world.createCollider(RAPIER.ColliderDesc.trimesh(pos, idx).setFriction(0.9), body);
-  }
+    kit.add(mesh);
+  };
+  const terrainNear = (ti: number, tj: number, kit: TileKit) => {
+    const t = terrainPatch(ti, tj);
+    if (!t) return;
+    // A heightfield is far cheaper to build than a trimesh, and its cells
+    // split along the same diagonal as the drawn ground. Rapier wants the
+    // heights column-major (x outer, z inner), with the grid centred.
+    const { w, h, pos } = t;
+    const hts = new Float32Array(w * h);
+    for (let i = 0; i < w; i++) for (let j = 0; j < h; j++) hts[i * h + j] = pos[(j * w + i) * 3 + 1];
+    const sx = (w - 1) * STEP;
+    const sz = (h - 1) * STEP;
+    world.createCollider(
+      RAPIER.ColliderDesc.heightfield(h - 1, w - 1, hts, { x: sx, y: 1, z: sz })
+        .setTranslation(pos[0] + sx / 2, 0, pos[2] + sz / 2)
+        .setFriction(0.9),
+      kit.body(),
+    );
+  };
 
   // ---------- Play boundaries (invisible walls) ----------
   const fixed = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
@@ -275,12 +343,53 @@ export function buildEastCoastCourse(
   // ---------- Ribbons: road, lane markings, jogging path ----------
   const asphaltTex = detailed ? D.asphaltTexture() : null;
   const tartanTex = detailed ? D.tartanTexture() : null;
+  const ribbonMat = (color: number, tex: THREE.Texture | null) => {
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2 });
+    if (tex) {
+      mat.map = mat.bumpMap = tex;
+      mat.bumpScale = 0.8;
+      mat.color.multiplyScalar(1.35); // the texture darkens on average
+    }
+    return mat;
+  };
+  /**
+   * A flat strip along a polyline, draped on the ground. Split per tile: each
+   * tile draws the segments whose midpoint lies in it (plus one point of
+   * overlap), and the dash pattern follows the global point index.
+   */
   const ribbon = (pts: THREE.Vector3[], half: number, lift: number, color: number, dashed = false, tex: THREE.Texture | null = null) => {
+    const mat = ribbonMat(color, tex);
+    const along = [0];
+    for (let i = 1; i < pts.length; i++) along.push(along[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z));
+    const runs = new Map<string, number[]>();
+    for (let i = 1; i < pts.length; i++) {
+      const k = tileKey((pts[i].x + pts[i - 1].x) / 2, (pts[i].z + pts[i - 1].z) / 2);
+      const r = runs.get(k);
+      if (r) r.push(i);
+      else runs.set(k, [i]);
+    }
+    for (const [k, segs] of runs) {
+      const c = tileCentre(k);
+      onTile('far', c.x, c.z, (kit) => kit.add(ribbonMesh(pts, along, segs, half, lift, mat, dashed, kit)));
+    }
+  };
+  const ribbonMesh = (
+    pts: THREE.Vector3[],
+    alongAll: number[],
+    segs: number[],
+    half: number,
+    lift: number,
+    mat: THREE.Material,
+    dashed: boolean,
+    kit: TileKit,
+  ) => {
     const verts: number[] = [];
     const uvs: number[] = [];
     const ids: number[] = [];
-    let along = 0;
-    for (let i = 0; i < pts.length; i++) {
+    // Points used by these segments, each once.
+    const used = [...new Set(segs.flatMap((i) => [i - 1, i]))].sort((a, b) => a - b);
+    const slot = new Map(used.map((pi, k) => [pi, k]));
+    for (const i of used) {
       const a = pts[Math.max(0, i - 1)];
       const b = pts[Math.min(pts.length - 1, i + 1)];
       const tx = b.x - a.x;
@@ -289,32 +398,27 @@ export function buildEastCoastCourse(
       const nx = -tz / tl;
       const nz = tx / tl;
       const p = pts[i];
-      if (i > 0) along += Math.hypot(p.x - pts[i - 1].x, p.z - pts[i - 1].z);
       for (const s of [-1, 1]) {
         const x = p.x + nx * half * s;
         const z = p.z + nz * half * s;
         verts.push(x, heightAt(x, z) + lift, z);
-        uvs.push(((s + 1) / 2) * (half * 2) / 6, along / 6);
-      }
-      if (i > 0 && (!dashed || i % 4 < 2)) {
-        const k = i * 2;
-        ids.push(k - 2, k - 1, k, k - 1, k + 1, k);
+        uvs.push(((s + 1) / 2) * (half * 2) / 6, alongAll[i] / 6);
       }
     }
-    const g = new THREE.BufferGeometry();
+    for (const i of segs) {
+      if (dashed && i % 4 >= 2) continue;
+      const a = slot.get(i - 1)! * 2;
+      const b = slot.get(i)! * 2;
+      ids.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+    const g = kit.own(new THREE.BufferGeometry());
     g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     g.setIndex(ids);
     g.computeVertexNormals();
-    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2 });
-    if (tex) {
-      mat.map = mat.bumpMap = tex;
-      mat.bumpScale = 0.8;
-      mat.color.multiplyScalar(1.35); // the texture darkens on average
-    }
     const m = new THREE.Mesh(g, mat);
     m.receiveShadow = true;
-    scene.add(m);
+    return m;
   };
   ribbon(road, ROAD_HALF, 0.04, 0x4a4c50, false, asphaltTex);
   ribbon(road, 0.08, 0.06, 0xf2efe4, true);
@@ -331,8 +435,9 @@ export function buildEastCoastCourse(
     lotMat.bumpScale = 0.8;
     lotMat.color.multiplyScalar(1.35);
   }
-  const lineGeos: THREE.BufferGeometry[] = [];
+  const bayMat = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
   for (const c of CARPARKS) {
+    const lineGeos: THREE.BufferGeometry[] = [];
     const lotGeo = new THREE.PlaneGeometry(c.x1 - c.x0, c.z1 - c.z0);
     const luv = lotGeo.attributes.uv as THREE.BufferAttribute;
     for (let i = 0; i < luv.count; i++) luv.setXY(i, (luv.getX(i) * (c.x1 - c.x0)) / 6, (luv.getY(i) * (c.z1 - c.z0)) / 6);
@@ -340,7 +445,6 @@ export function buildEastCoastCourse(
     lot.rotation.x = -Math.PI / 2;
     lot.position.set((c.x0 + c.x1) / 2, PARK_H + 0.14, (c.z0 + c.z1) / 2);
     lot.receiveShadow = true;
-    scene.add(lot);
     for (let x = c.x0 + 2; x < c.x1 - 2; x += 2.6) {
       for (const zc of [c.z0 + 3, c.z1 - 3]) {
         const l = new THREE.PlaneGeometry(0.12, 5);
@@ -349,8 +453,12 @@ export function buildEastCoastCourse(
         lineGeos.push(l);
       }
     }
+    const bays = new THREE.Mesh(mergeGeometries(lineGeos), bayMat);
+    onTile('far', (c.x0 + c.x1) / 2, (c.z0 + c.z1) / 2, (kit) => {
+      kit.add(lot);
+      kit.add(bays);
+    });
   }
-  scene.add(new THREE.Mesh(mergeGeometries(lineGeos), new THREE.MeshBasicMaterial({ color: 0xeeeeee })));
 
   // ---------- Sea and lagoon ----------
   const wind = { value: 0 };
@@ -495,7 +603,7 @@ export function buildEastCoastCourse(
     Object.assign(kinds.flowers, { geo: shrubD, mat: foliage(0.02), hues: [0.93, 0.65, 0.72, 0.04] });
     Object.assign(kinds.grass, { geo: D.grassTuftGeo(), mat: swayMat(0.04, leafOpts), hues: [0.23, 0.32, 0.6, 0.04] });
   }
-  type Placement = { x: number; y: number; z: number; s: number; r: number };
+  type Placement = { x: number; y: number; z: number; s: number; r: number; c?: THREE.Color };
   const placements: Record<string, Placement[][]> = {};
   for (const k of Object.keys(kinds)) placements[k] = Array.from({ length: CHUNKS }, () => []);
   const chunkOf = (x: number) => clamp(Math.floor(((x - X0) / (X1 - X0)) * CHUNKS), 0, CHUNKS - 1);
@@ -555,47 +663,51 @@ export function buildEastCoastCourse(
     }
   }
 
-  // Detailed grass is dense, so it is binned finely along the park and only
-  // the bins near the camera are drawn (see update()).
-  const nearOnly: { mesh: THREE.InstancedMesh; x: number }[] = [];
-  if (detailed) {
-    const all = placements.grass.flat();
-    const BINS = 60;
-    placements.grass = Array.from({ length: BINS }, () => []);
-    for (const p of all) placements.grass[clamp(Math.floor(((p.x - X0) / (X1 - X0)) * BINS), 0, BINS - 1)].push(p);
-  }
-
-  const dummy = new THREE.Object3D();
-  const hsl = new THREE.Color();
+  // Tints, drawn in the same order as before so the layout seed lines up.
   for (const [name, kind] of Object.entries(kinds)) {
-    for (const list of placements[name]) {
-      if (!list.length) continue;
-      const im = new THREE.InstancedMesh(kind.geo, kind.mat, list.length);
-      list.forEach((p, i) => {
-        dummy.position.set(p.x, p.y - 0.05, p.z);
-        dummy.rotation.set(0, p.r, 0);
-        if (name === 'shrub' || name === 'flowers') dummy.scale.set(p.s * 1.3, p.s * 0.8, p.s * 1.3);
-        else dummy.scale.setScalar(p.s);
-        dummy.updateMatrix();
-        im.setMatrixAt(i, dummy.matrix);
-        if (kind.hues) {
-          // Grass only has tints in the detailed style; keep it off the layout seed.
-          const rr = name === 'grass' ? randDetail : rand;
-          const [hh, ss, ll, j] = kind.hues;
-          hsl.setHSL(hh + (rr() - 0.5) * j, ss + (rr() - 0.5) * 0.1, ll + (rr() - 0.5) * 0.1);
-          im.setColorAt(i, hsl);
-        }
-        if (kind.collide) {
-          const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, p.y + 1.5, p.z));
-          world.createCollider(RAPIER.ColliderDesc.cylinder(1.5, kind.collide * p.s), b);
-        }
-      });
-      im.castShadow = kind.shadow;
-      im.receiveShadow = !kind.shadow;
-      im.computeBoundingSphere();
-      scene.add(im);
-      if (detailed && name === 'grass') nearOnly.push({ mesh: im, x: list.reduce((a, p) => a + p.x, 0) / list.length });
+    if (!kind.hues) continue;
+    // Grass only has tints in the detailed style; keep it off the layout seed.
+    const rr = name === 'grass' ? randDetail : rand;
+    const [hh, ss, ll, j] = kind.hues;
+    for (const list of placements[name]) for (const p of list) p.c = new THREE.Color().setHSL(hh + (rr() - 0.5) * j, ss + (rr() - 0.5) * 0.1, ll + (rr() - 0.5) * 0.1);
+  }
+  // Detailed grass is dense, so it is only drawn on tiles near the camera.
+  const nearOnly = new Set<{ mesh: THREE.InstancedMesh; x: number; z: number }>();
+  const dummy = new THREE.Object3D();
+  const vegByTile = new Map<string, Map<string, Placement[]>>();
+  for (const name of Object.keys(kinds)) {
+    for (const [k, list] of byTile(placements[name].flat())) {
+      if (!vegByTile.has(k)) vegByTile.set(k, new Map());
+      vegByTile.get(k)!.set(name, list);
     }
+  }
+  for (const [k, perKind] of vegByTile) {
+    const c = tileCentre(k);
+    // One job per species, so each build step stays short.
+    for (const [name, list] of perKind)
+      onTile('near', c.x, c.z, (kit) => {
+        const kind = kinds[name];
+        const im = new THREE.InstancedMesh(kind.geo, kind.mat, list.length);
+        list.forEach((p, i) => {
+          dummy.position.set(p.x, p.y - 0.05, p.z);
+          dummy.rotation.set(0, p.r, 0);
+          if (name === 'shrub' || name === 'flowers') dummy.scale.set(p.s * 1.3, p.s * 0.8, p.s * 1.3);
+          else dummy.scale.setScalar(p.s);
+          dummy.updateMatrix();
+          im.setMatrixAt(i, dummy.matrix);
+          if (p.c) im.setColorAt(i, p.c);
+        });
+        if (kind.collide) {
+          // One body per tile; each trunk is a collider on it.
+          const b = kit.body();
+          for (const p of list) world.createCollider(RAPIER.ColliderDesc.cylinder(1.5, kind.collide * p.s).setTranslation(p.x, p.y + 1.5, p.z), b);
+        }
+        im.castShadow = kind.shadow;
+        im.receiveShadow = !kind.shadow;
+        im.computeBoundingSphere();
+        kit.add(im);
+        if (detailed && name === 'grass') nearOnly.add({ mesh: im, ...c });
+      });
   }
 
   // ---------- Groynes: rock breakwaters into the sea ----------
@@ -612,23 +724,31 @@ export function buildEastCoastCourse(
       rockSpots.push({ x, z, y: heightAt(x, z) + s * 0.3, s, r: rand() * 6 });
     }
   }
-  const rocks = new THREE.InstancedMesh(rockGeo, rockMat, rockSpots.length);
-  rockSpots.forEach((p, i) => {
-    dummy.position.set(p.x, p.y, p.z);
-    dummy.rotation.set(p.r, p.r * 2, 0);
-    dummy.scale.setScalar(p.s);
-    dummy.updateMatrix();
-    rocks.setMatrixAt(i, dummy.matrix);
-    const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, p.y, p.z));
-    world.createCollider(RAPIER.ColliderDesc.ball(p.s * 0.9), b);
-  });
-  rocks.castShadow = rocks.receiveShadow = true;
-  scene.add(rocks);
+  for (const [k, list] of byTile(rockSpots)) {
+    const c = tileCentre(k);
+    onTile('near', c.x, c.z, (kit) => {
+      const rocks = new THREE.InstancedMesh(rockGeo, rockMat, list.length);
+      const b = kit.body();
+      list.forEach((p, i) => {
+        dummy.position.set(p.x, p.y, p.z);
+        dummy.rotation.set(p.r, p.r * 2, 0);
+        dummy.scale.setScalar(p.s);
+        dummy.updateMatrix();
+        rocks.setMatrixAt(i, dummy.matrix);
+        world.createCollider(RAPIER.ColliderDesc.ball(p.s * 0.9).setTranslation(p.x, p.y, p.z), b);
+      });
+      rocks.castShadow = rocks.receiveShadow = true;
+      rocks.computeBoundingSphere();
+      kit.add(rocks);
+    });
+  }
 
   // ---------- Park furniture: lamp posts, benches, shelters ----------
-  const furniture: THREE.BufferGeometry[] = [];
+  const furniture = new Map<string, THREE.BufferGeometry[]>();
   const addAt = (g: THREE.BufferGeometry, x: number, z: number, rot = 0, lift = 0) => {
-    furniture.push(g.clone().rotateY(rot).translate(x, heightAt(x, z) + lift, z));
+    const k = tileKey(x, z);
+    if (!furniture.has(k)) furniture.set(k, []);
+    furniture.get(k)!.push(g.clone().rotateY(rot).translate(x, heightAt(x, z) + lift, z));
   };
   const lamp = merge([
     tint(new THREE.CylinderGeometry(0.07, 0.1, 6, 6).translate(0, 3, 0), 0x3c4146),
@@ -667,13 +787,21 @@ export function buildEastCoastCourse(
     if (blocked(x, z, 6)) continue;
     addAt(shelter, x, z, rand());
     shelterSpots.push([x, z]);
-    const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, heightAt(x, z) + 1.3, z));
-    for (const [px, pz] of [[-2.2, -2.2], [2.2, -2.2], [-2.2, 2.2], [2.2, 2.2]])
-      world.createCollider(RAPIER.ColliderDesc.cylinder(1.3, 0.15).setTranslation(px, 0, pz), b);
+    const y = heightAt(x, z) + 1.3;
+    onTile('near', x, z, (kit) => {
+      const b = kit.body(RAPIER.RigidBodyDesc.fixed().setTranslation(x, y, z));
+      for (const [px, pz] of [[-2.2, -2.2], [2.2, -2.2], [-2.2, 2.2], [2.2, 2.2]])
+        world.createCollider(RAPIER.ColliderDesc.cylinder(1.3, 0.15).setTranslation(px, 0, pz), b);
+    });
   }
-  const furnitureMesh = new THREE.Mesh(mergeGeometries(furniture), plainMat);
-  furnitureMesh.castShadow = furnitureMesh.receiveShadow = true;
-  scene.add(furnitureMesh);
+  for (const [k, parts] of furniture) {
+    const c = tileCentre(k);
+    onTile('near', c.x, c.z, (kit) => {
+      const m = new THREE.Mesh(kit.own(mergeGeometries(parts)), plainMat);
+      m.castShadow = m.receiveShadow = true;
+      kit.add(m);
+    });
+  }
 
   // ---------- Parked cars ----------
   const carGeo = merge([
@@ -689,19 +817,30 @@ export function buildEastCoastCourse(
       for (const zc of [c.z0 + 3, c.z1 - 3]) if (rand() < 0.55) carSpots.push({ x, z: zc, r: Math.PI / 2 + (rand() - 0.5) * 0.06 });
     }
   }
-  const cars = new THREE.InstancedMesh(carGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.2 }), carSpots.length);
-  carSpots.forEach((p, i) => {
-    dummy.position.set(p.x, PARK_H + 0.14, p.z);
-    dummy.rotation.set(0, p.r, 0);
-    dummy.scale.setScalar(1);
-    dummy.updateMatrix();
-    cars.setMatrixAt(i, dummy.matrix);
-    cars.setColorAt(i, new THREE.Color(carColors[Math.floor(rand() * carColors.length)]));
-    const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, PARK_H + 0.9, p.z).setRotation({ x: 0, y: Math.sin(p.r / 2), z: 0, w: Math.cos(p.r / 2) }));
-    world.createCollider(RAPIER.ColliderDesc.cuboid(2.1, 0.75, 0.88), b);
-  });
-  cars.castShadow = true;
-  scene.add(cars);
+  const carMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.2 });
+  const parked = carSpots.map((p) => ({ ...p, color: new THREE.Color(carColors[Math.floor(rand() * carColors.length)]) }));
+  for (const [k, list] of byTile(parked)) {
+    const c = tileCentre(k);
+    onTile('near', c.x, c.z, (kit) => {
+      const cars = new THREE.InstancedMesh(carGeo, carMat, list.length);
+      const b = kit.body();
+      list.forEach((p, i) => {
+        dummy.position.set(p.x, PARK_H + 0.14, p.z);
+        dummy.rotation.set(0, p.r, 0);
+        dummy.scale.setScalar(1);
+        dummy.updateMatrix();
+        cars.setMatrixAt(i, dummy.matrix);
+        cars.setColorAt(i, p.color);
+        world.createCollider(
+          RAPIER.ColliderDesc.cuboid(2.1, 0.75, 0.88).setTranslation(p.x, PARK_H + 0.9, p.z).setRotation({ x: 0, y: Math.sin(p.r / 2), z: 0, w: Math.cos(p.r / 2) }),
+          b,
+        );
+      });
+      cars.castShadow = true;
+      cars.computeBoundingSphere();
+      kit.add(cars);
+    });
+  }
 
   // ---------- Traffic: the expressway, and a few slow cars in the park ----------
   const lanes: Lane[] = [];
@@ -733,7 +872,7 @@ export function buildEastCoastCourse(
     world,
     RAPIER,
     lanes,
-    { geometry: carGeo, material: cars.material as THREE.Material, colors: carColors, halfExtents: [2.1, 0.75, 0.88] },
+    { geometry: carGeo, material: carMat, colors: carColors, halfExtents: [2.1, 0.75, 0.88] },
     randDetail,
   );
 
@@ -756,9 +895,10 @@ export function buildEastCoastCourse(
     const m = new THREE.Mesh(merge(g), plainMat);
     m.position.set(x, PARK_H + 0.1, z);
     m.castShadow = m.receiveShadow = true;
-    scene.add(m);
-    const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, PARK_H + 2.5, z));
-    world.createCollider(RAPIER.ColliderDesc.cuboid(w / 2, 2.5, d / 2), b);
+    onTile('far', x, z, (kit) => kit.add(m));
+    onTile('near', x, z, (kit) =>
+      world.createCollider(RAPIER.ColliderDesc.cuboid(w / 2, 2.5, d / 2), kit.body(RAPIER.RigidBodyDesc.fixed().setTranslation(x, PARK_H + 2.5, z))),
+    );
   }
 
   // ---------- Bedok Jetty ----------
@@ -778,10 +918,12 @@ export function buildEastCoastCourse(
     const m = new THREE.Mesh(merge(g), plainMat);
     m.position.x = JETTY.x;
     m.castShadow = m.receiveShadow = true;
-    scene.add(m);
+    const mid = startZ + JETTY.len / 2;
+    onTile('far', JETTY.x, mid, (kit) => kit.add(m));
     // Solid from the seabed to the deck so it reads as a wall, not a ramp.
-    const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(JETTY.x, JETTY.deck - 2, startZ + JETTY.len / 2));
-    world.createCollider(RAPIER.ColliderDesc.cuboid(JETTY.w / 2, 2.2, JETTY.len / 2), b);
+    onTile('near', JETTY.x, mid, (kit) =>
+      world.createCollider(RAPIER.ColliderDesc.cuboid(JETTY.w / 2, 2.2, JETTY.len / 2), kit.body(RAPIER.RigidBodyDesc.fixed().setTranslation(JETTY.x, JETTY.deck - 2, mid))),
+    );
   }
 
   // ---------- East Coast Parkway (traffic comes later) ----------
@@ -820,8 +962,12 @@ export function buildEastCoastCourse(
       t.anisotropy = 4;
       return t;
     })();
-    const walls: THREE.BufferGeometry[] = [];
-    const roofs: THREE.BufferGeometry[] = [];
+    const walls = new Map<string, THREE.BufferGeometry[]>();
+    const roofs = new Map<string, THREE.BufferGeometry[]>();
+    const push = (m: Map<string, THREE.BufferGeometry[]>, k: string, g: THREE.BufferGeometry) => {
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(g.toNonIndexed());
+    };
     const palette = [0xf3e9d2, 0xf6d8c4, 0xd8e6ef, 0xdcebd7, 0xe9e2f2, 0xf1f1ee];
     for (let row = 0; row < 4; row++) {
       for (let x = X0 + 40 + rand() * 30; x < X1 - 30; x += 70 + rand() * 50) {
@@ -843,16 +989,24 @@ export function buildEastCoastCourse(
           uv.setXY(i, uv.getX(i) * (across / 12), uv.getY(i) * (ny > 0.5 ? 0 : floors / 4));
         }
         box.translate(0, hgt / 2, 0).rotateY(rot).translate(x, PARK_H + 0.2, z);
-        walls.push(tint(box, color));
-        roofs.push(tint(new THREE.BoxGeometry(len * 0.3, 3, depth * 0.6).translate(len * 0.2, hgt + 1.5, 0).rotateY(rot).translate(x, PARK_H + 0.2, z), 0x8d8f91));
-        roofs.push(tint(new THREE.BoxGeometry(len + 0.6, 0.6, depth + 0.6).translate(0, hgt + 0.3, 0).rotateY(rot).translate(x, PARK_H + 0.2, z), 0xb7563c));
+        const k = tileKey(x, z);
+        push(walls, k, tint(box, color));
+        push(roofs, k, tint(new THREE.BoxGeometry(len * 0.3, 3, depth * 0.6).translate(len * 0.2, hgt + 1.5, 0).rotateY(rot).translate(x, PARK_H + 0.2, z), 0x8d8f91));
+        push(roofs, k, tint(new THREE.BoxGeometry(len + 0.6, 0.6, depth + 0.6).translate(0, hgt + 0.3, 0).rotateY(rot).translate(x, PARK_H + 0.2, z), 0xb7563c));
       }
     }
-    const wallMesh = new THREE.Mesh(mergeGeometries(walls.map((g) => g.toNonIndexed())), new THREE.MeshStandardMaterial({ map: tex, vertexColors: true, roughness: 0.85, ...(detailed ? { bumpMap: tex, bumpScale: 1.2 } : {}) }));
-    const roofMesh = new THREE.Mesh(mergeGeometries(roofs.map((g) => g.toNonIndexed())), plainMat);
-    wallMesh.castShadow = roofMesh.castShadow = true;
-    wallMesh.receiveShadow = true;
-    scene.add(wallMesh, roofMesh);
+    const wallMat = new THREE.MeshStandardMaterial({ map: tex, vertexColors: true, roughness: 0.85, ...(detailed ? { bumpMap: tex, bumpScale: 1.2 } : {}) });
+    for (const [k, list] of walls) {
+      const c = tileCentre(k);
+      onTile('far', c.x, c.z, (kit) => {
+        const wallMesh = new THREE.Mesh(kit.own(mergeGeometries(list)), wallMat);
+        const roofMesh = new THREE.Mesh(kit.own(mergeGeometries(roofs.get(k)!)), plainMat);
+        wallMesh.castShadow = roofMesh.castShadow = true;
+        wallMesh.receiveShadow = true;
+        kit.add(wallMesh);
+        kit.add(roofMesh);
+      });
+    }
   }
 
   // ---------- Ships at anchor in the strait ----------
@@ -880,6 +1034,20 @@ export function buildEastCoastCourse(
   placeShips(0);
   ships.computeBoundingSphere();
   scene.add(ships);
+
+  // ---------- Streaming ----------
+  const builder = (layer: 'near' | 'far') =>
+    function* (ti: number, tj: number, kit: TileKit) {
+      yield* ensurePatch(ti, tj);
+      if (layer === 'far') terrainFar(ti, tj, kit);
+      else terrainNear(ti, tj, kit);
+      yield;
+      for (const job of jobs[layer].get(`${ti},${tj}`) ?? []) {
+        job(kit);
+        yield;
+      }
+    };
+  const streamer = new TileStreamer(scene, world, RAPIER, { near: builder('near'), far: builder('far') }, { minX: X0, maxX: X1, minZ: Z0, maxZ: Z1 });
 
   // ---------- Course API ----------
   const poseAt = (t: number) => {
@@ -941,10 +1109,20 @@ export function buildEastCoastCourse(
     trackT: (x, z) => nearestRoad(x, z).t,
     map,
     sky: { background: 0xc9dbe6, fog: 0xd6dfe2, fogNear: 150, fogFar: 1700 },
+    prepareAt(x, z) {
+      streamer.prepare(x, z);
+    },
+    streamStats: () => streamer.stats,
     update(time, dt, cam, player) {
       wind.value = time;
+      const focus = player ?? cam;
+      if (focus) streamer.update(focus.x, focus.z);
       traffic.update(dt, player ?? null);
-      if (cam) for (const g of nearOnly) g.mesh.visible = Math.abs(g.x - cam.x) < 130;
+      if (cam)
+        for (const g of nearOnly) {
+          if (!g.mesh.parent) nearOnly.delete(g);
+          else g.mesh.visible = Math.hypot(g.x - cam.x, g.z - cam.z) < 260;
+        }
       placeShips(time);
     },
   };
