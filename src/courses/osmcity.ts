@@ -189,6 +189,10 @@ export async function buildPasirRisCourse(
   // Roads (not decks) that climb to a flyover: the ground rises under them.
   const embank = edges.map((e, i) => !isDeck[i] && ((jRel[e.a] ?? 0) > 0.02 || (jRel[e.b] ?? 0) > 0.02));
   const rampIdx = new SegIndex(EP, 24, false, (i) => !embank[i]);
+  // Decks and raised roads have their own surface height (not the ground's),
+  // level across their width.
+  const hasProfile = edges.map((_, i) => isDeck[i] || embank[i]);
+  const levelIdx = new SegIndex(EP, 24, false, (i) => isDeck[i]);
   // Coarse 16 m grid of where an embankment might be, so heightAt can skip the search.
   const RG = 16;
   const rampNear = new Uint8Array(Math.ceil((WB.maxX - WB.minX) / RG) * Math.ceil((WB.maxZ - WB.minZ) / RG));
@@ -418,7 +422,7 @@ export async function buildPasirRisCourse(
     d = new Float32Array(pts.length);
     for (let k = 0; k < pts.length; k++) {
       // Low bridges arch a little over the water.
-      const arch = elevated[i] ? 0 : 0.4 * smoothstep(0, 10, cum[k]) * smoothstep(0, 10, len - cum[k]);
+      const arch = !isDeck[i] || elevated[i] ? 0 : 0.4 * smoothstep(0, 10, cum[k]) * smoothstep(0, 10, len - cum[k]);
       d[k] = baseAt(pts[k][0], pts[k][1]) + relAlong(i, cum[k]) + arch;
     }
     roadDeckCache.set(i, d);
@@ -467,8 +471,22 @@ export async function buildPasirRisCourse(
         const pts = EP[line];
         const sl = Math.hypot(pts[seg + 1][0] - pts[seg][0], pts[seg + 1][1] - pts[seg][1]);
         const rel = relAlong(line, ECUM[line][seg] + u * sl);
-        if (rel <= 0.02 || hb + rel <= h0) return;
-        h = Math.max(h, lerp(h0, hb + rel, smoothstep(inner + 2 + rel * 3, inner, d)));
+        // The road is level across its width: its height is the centre line's.
+        const top = baseAt(lerp(pts[seg][0], pts[seg + 1][0], u), lerp(pts[seg][1], pts[seg + 1][1], u)) + rel;
+        if (rel <= 0.02 || top <= h0) return;
+        h = Math.max(h, lerp(h0, top, smoothstep(inner + 2 + rel * 3, inner, d)));
+      });
+      // ...but a bank never climbs onto a road beside it: every road keeps
+      // its own level across its width, and ground can rise from its edge no
+      // steeper than 1 in 2. (Where that cuts a bank short, the raised road
+      // gets a retaining wall.)
+      levelIdx.each(x, z, 30, (line, seg, u, d) => {
+        const pts = EP[line];
+        const sl = Math.hypot(pts[seg + 1][0] - pts[seg][0], pts[seg + 1][1] - pts[seg][1]);
+        const rel = relAlong(line, ECUM[line][seg] + u * sl);
+        const yr = hasProfile[line] ? baseAt(lerp(pts[seg][0], pts[seg + 1][0], u), lerp(pts[seg][1], pts[seg + 1][1], u)) + rel : hb;
+        const cap = yr + Math.max(0, d - EHALF[line] - 0.6) / 2;
+        if (cap < h) h = cap;
       });
     }
     if (s > BEACH) {
@@ -860,7 +878,7 @@ export async function buildPasirRisCourse(
     roads.each(x, z, 16, (i, seg, u, d) => {
       if (hit || i === line || d > EHALF[i] + 0.2) return;
       if (y !== y) hit = !elevated[i];
-      else hit = Math.abs((isDeck[i] ? deckAtHit(i, seg, u) : heightAt(x, z)) - y) < 3;
+      else hit = Math.abs((hasProfile[i] ? deckAtHit(i, seg, u) : heightAt(x, z)) - y) < 3;
     });
     return hit;
   };
@@ -883,7 +901,7 @@ export async function buildPasirRisCourse(
         const ha = jDegree[e.a] === 2 ? (jHalf2[e.a](line) - half) / 2 : 0;
         const hb = jDegree[e.b] === 2 ? (jHalf2[e.b](line) - half) / 2 : 0;
         const halfAt = (kk: number) => half + ha * (1 - smoothstep(0, 16, cum[kk])) + hb * (1 - smoothstep(0, 16, len - cum[kk]));
-        const dy = isDeck[line] ? deckY(line) : null;
+        const dy = hasProfile[line] ? deckY(line) : null;
         const yAt = dy ? (kk: number) => dy[kk] : undefined;
         strip(road, pts, cum, k0, k1, halfAt, 0.09, { yAt });
         if (rank >= 1 || dy) strip(kerb, pts, cum, k0, k1, (kk) => halfAt(kk) + 0.35, 0.07, { yAt });
@@ -897,7 +915,27 @@ export async function buildPasirRisCourse(
           const z = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * off;
           return !coveredBy(line, x, z, dy ? lerp(dy[kk], dy[kk + 1], 0.5) : NaN);
         };
-        if (dy) {
+        if (dy && !isDeck[line]) {
+          // A raised road: where the ground beside it falls away (its bank
+          // was cut short by a road below), a retaining wall, and a parapet
+          // where the drop is more than a kerb.
+          const deck = acc('deck');
+          for (const sgn of [-1, 1]) {
+            const off = (kk: number) => sgn * (halfAt(kk) + 0.45);
+            const dr = new Float32Array(k1 - k0 + 1);
+            for (let kk = k0; kk <= k1; kk++) {
+              const a = pts[Math.max(0, kk - 1)];
+              const b = pts[Math.min(pts.length - 1, kk + 1)];
+              const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+              const o = off(kk) + sgn * 0.6;
+              dr[kk - k0] = dy[kk] + 0.09 - heightAt(pts[kk][0] + ((b[1] - a[1]) / tl) * o, pts[kk][1] - ((b[0] - a[0]) / tl) * o);
+            }
+            const y = (kk: number) => dy[kk] + 0.09;
+            band(deck, pts, cum, k0, k1, off, y, (kk) => Math.max(0, dr[kk - k0]) + 0.3, 0.05, (kk) => Math.max(dr[kk - k0], dr[kk + 1 - k0]) > 0.15);
+            band(deck, pts, cum, k0, k1, off, y, 0, 0.95, (kk) => Math.min(dr[kk - k0], dr[kk + 1 - k0]) > 1.2 && clear(kk, off(kk)));
+          }
+        }
+        if (dy && isDeck[line]) {
           // Deck sides: a concrete edge beam, an underside and parapets.
           const deck = acc('deck');
           const depth = elevated[line] ? 1.2 : 0.6;
@@ -937,7 +975,7 @@ export async function buildPasirRisCourse(
   // Flyover pillars, and colliders for every deck (the ground heightfield
   // can't hold a road in the air).
   const concreteMat = new THREE.MeshStandardMaterial({ color: 0xc9c6bf, roughness: 0.9 });
-  const deckLines = EP.map((pts, i) => (isDeck[i] ? pts : []));
+  const deckLines = EP.map((pts, i) => (hasProfile[i] ? pts : []));
   const deckRuns = runsOf(deckLines);
   const pillarsOf = (line: number, k0: number, k1: number, f: (x: number, z: number, top: number, foot: number, yaw: number, w: number) => void) => {
     if (!elevated[line]) return;
@@ -1021,6 +1059,8 @@ export async function buildPasirRisCourse(
             const mx = (a[0] + b[0]) / 2 + dz * off;
             const mz = (a[1] + b[1]) / 2 - dx * off;
             if (coveredBy(line, mx + dz * sgn * 0.6, mz - dx * sgn * 0.6, y)) continue;
+            // A raised road only needs one where its side drops away.
+            if (!isDeck[line] && heightAt(mx + dz * sgn * 0.6, mz - dx * sgn * 0.6) > y - 1.2) continue;
             world.createCollider(
               RAPIER.ColliderDesc.cuboid(sl / 2 + 0.15, 0.6, 0.25)
                 .setTranslation(mx, y + 0.5, mz)
@@ -1043,7 +1083,7 @@ export async function buildPasirRisCourse(
   // Level pads where decks meet, so no wheel drops through a gap.
   const deckPads = new Map<string, number[]>();
   M.junctions.forEach(([x, z], j) => {
-    if (!jEdges[j].some((i) => isDeck[i])) return;
+    if (!jEdges[j].some((i) => hasProfile[i])) return;
     const k = tileKey(x, z);
     if (!deckPads.has(k)) deckPads.set(k, []);
     deckPads.get(k)!.push(j);
@@ -1060,7 +1100,7 @@ export async function buildPasirRisCourse(
   // Junction pads: on a deck they sit level with it.
   const padY = (j: number) => {
     const [x, z] = M.junctions[j];
-    return jEdges[j].some((i) => isDeck[i]) ? baseAt(x, z) + jRel[j] : undefined;
+    return jEdges[j].some((i) => hasProfile[i]) ? baseAt(x, z) + jRel[j] : undefined;
   };
   // Junction pads.
   const padsByTile = new Map<string, number[]>();
@@ -1130,7 +1170,7 @@ export async function buildPasirRisCourse(
     return d;
   };
   /** A vertical band along pts at sideways offset `off`, from y(k) - below to y(k) + above. */
-  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, below: number, above: number, keep: (k: number) => boolean) => {
+  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), above: number, keep: (k: number) => boolean) => {
     const base = acc.pos.length / 3;
     for (let k = k0; k <= k1; k++) {
       const a = pts[Math.max(0, k - 1)];
@@ -1140,6 +1180,7 @@ export async function buildPasirRisCourse(
       const x = pts[k][0] + ((b[1] - a[1]) / tl) * off;
       const z = pts[k][1] - ((b[0] - a[0]) / tl) * off;
       const yk = y(k);
+      const below = typeof belowIn === 'number' ? belowIn : belowIn(k);
       acc.pos.push(x, yk - below, z, x, yk + above, z);
       acc.uv.push(0, cum[k] / 6, 1, cum[k] / 6);
     }
@@ -1903,6 +1944,9 @@ export async function buildPasirRisCourse(
   for (const c of camps) pois.push({ x: c.x, z: c.z, label: c.label });
   const map: MapData = { bounds: { ...WB }, background: '#d6d8cc', areas: mapAreas, lines: mapLines, pois, pxPerM: 0.5, attribution: M.attribution };
 
+  // Test hook: ?debug exposes the road plan to the map checks (tools/check).
+  if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug'))
+    (globalThis as any).__osm = { edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
   return {
     name: 'Pasir Ris & Tampines',
     styles: true,
@@ -1936,7 +1980,7 @@ export async function buildPasirRisCourse(
     },
     surfaceY(x, z, y) {
       const g = heightAt(x, z);
-      const r = roads.nearest(x, z, 12, (i) => isDeck[i]);
+      const r = roads.nearest(x, z, 12, (i) => hasProfile[i]);
       if (r && r.d < EHALF[r.line] + 0.6) {
         const d = deckAtHit(r.line, r.seg, r.u) + 0.09;
         if (y > d - 2.5) return Math.max(g, d);
