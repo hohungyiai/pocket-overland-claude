@@ -2496,6 +2496,19 @@ export async function buildPasirRisCourse(
         return out;
       },
       crossings, CROSS_FROM, CROSS_W,
+      // A far tile's road buffers, built off-scene (for the seam checks).
+      farTiles: () => [...jobs.far.keys()],
+      tileAccs: (k: string) => {
+        const accs = new Map<AccKey, Acc>();
+        const acc = (key: AccKey) => {
+          let a = accs.get(key);
+          if (!a) accs.set(key, (a = new Acc()));
+          return a;
+        };
+        const kit = { add: () => {}, own: <T>(g: T) => g, body: () => null } as unknown as TileKit;
+        for (const job of jobs.far.get(k) ?? []) job(kit, acc);
+        return Object.fromEntries([...accs].map(([key, a]) => [key, { pos: a.pos, idx: a.idx }]));
+      },
       JX,
       halfAtE,
       cutOf,

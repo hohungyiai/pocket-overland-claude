@@ -327,15 +327,66 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       const kerbs: XZ[][] = [];
       // Two roads that leave overlapping (OSM sometimes draws a pair of
       // lanes closer than their widths) share one wide mouth.
+      // So do two that leave at a narrow angle with their end lines crossing
+      // (each road's end runs into the other).
+      const endsCross = (A: Mouth, B: Mouth) => {
+        const ea: XZ = [A.left[0] - A.right[0], A.left[1] - A.right[1]];
+        const eb: XZ = [B.left[0] - B.right[0], B.left[1] - B.right[1]];
+        const den = cross(ea, eb);
+        if (Math.abs(den) < 1e-6) return false;
+        const d: XZ = [B.right[0] - A.right[0], B.right[1] - A.right[1]];
+        const u = cross(d, eb) / den;
+        const v = cross(d, ea) / den;
+        return u > 0 && u < 1 && v > 0 && v < 1;
+      };
       const joined = ms.map((A, m) => {
         const B = ms[(m + 1) % ms.length];
-        return ms.length > 2 && A.t[0] * B.t[0] + A.t[1] * B.t[1] > 0.85 && Math.hypot(A.q[0] - B.q[0], A.q[1] - B.q[1]) < A.half + B.half;
+        if (ms.length <= 2) return false;
+        const dot = A.t[0] * B.t[0] + A.t[1] * B.t[1];
+        return (dot > 0.85 && Math.hypot(A.q[0] - B.q[0], A.q[1] - B.q[1]) < A.half + B.half) || (dot > 0.7 && endsCross(A, B));
       });
       for (let m = 0; m < ms.length; m++) {
         const A = ms[m];
         const B = ms[(m + 1) % ms.length];
         if (!joined[(m + ms.length - 1) % ms.length]) ring.push(A.right);
-        if (joined[m]) continue;
+        if (joined[m]) {
+          // Follow the outer side of the two roads' own end lines (and where
+          // they cross), so no sliver is left between outline and road ends.
+          const ea: XZ = [A.left[0] - A.right[0], A.left[1] - A.right[1]];
+          const eb: XZ = [B.left[0] - B.right[0], B.left[1] - B.right[1]];
+          const cand: XZ[] = [A.left, B.right];
+          const den = cross(ea, eb);
+          if (Math.abs(den) > 1e-6) {
+            const d: XZ = [B.right[0] - A.right[0], B.right[1] - A.right[1]];
+            const u = cross(d, eb) / den;
+            const v = cross(d, ea) / den;
+            if (u > 0 && u < 1 && v > 0 && v < 1) cand.push([A.right[0] + ea[0] * u, A.right[1] + ea[1] * u]);
+          }
+          const p0 = A.right;
+          const p1 = B.left;
+          const ch: XZ = [p1[0] - p0[0], p1[1] - p0[1]];
+          const cl = Math.hypot(ch[0], ch[1]) || 1;
+          // Outward is the side away from the centre.
+          const inSign = Math.sign(cross(ch, [c[0] - p0[0], c[1] - p0[1]])) || 1;
+          const out = (p: XZ) => -inSign * cross(ch, [p[0] - p0[0], p[1] - p0[1]]) / cl;
+          const along = (p: XZ) => ((p[0] - p0[0]) * ch[0] + (p[1] - p0[1]) * ch[1]) / cl;
+          const pts = cand.filter((p) => out(p) > 0.02 && along(p) > 0 && along(p) < cl).sort((p, q) => along(p) - along(q));
+          // The outer convex chain from p0 to p1 through them.
+          const chain: XZ[] = [p0];
+          for (const p of [...pts, p1]) {
+            while (chain.length >= 2) {
+              const a = chain[chain.length - 2];
+              const b = chain[chain.length - 1];
+              // Drop b if it lies inside the line a -> p.
+              const t = -inSign * cross([p[0] - a[0], p[1] - a[1]], [b[0] - a[0], b[1] - a[1]]);
+              if (t <= 0) chain.pop();
+              else break;
+            }
+            chain.push(p);
+          }
+          for (let k = 1; k < chain.length - 1; k++) ring.push(chain[k]);
+          continue;
+        }
         ring.push(A.left);
         // Corner from A's left kerb to B's right kerb, curving through where
         // the two kerb lines would meet (or straight across if they don't).
@@ -366,8 +417,12 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         if (curve.length === 2 && Math.abs(den) > 0.08 && A.t[0] * B.t[0] + A.t[1] * B.t[1] < 0.7) {
           // No corner to curve round (the kerb lines meet outside): run back
           // along each road's kerb toward the middle instead of across.
-          const ka = Math.min(A.s, 12) * 0.8;
-          const kb = Math.min(B.s, 12) * 0.8;
+          // (Never so far back that the notch bites into the other road.)
+          const clearOf = (p: XZ, M: Mouth) => Math.abs(cross(M.t, [p[0] - M.q[0], p[1] - M.q[1]])) >= M.half - 0.05;
+          let ka = Math.min(A.s, 12) * 0.8;
+          let kb = Math.min(B.s, 12) * 0.8;
+          while (ka > 0 && !clearOf([p0[0] - A.t[0] * ka, p0[1] - A.t[1] * ka], B)) ka = Math.max(0, ka - 0.5);
+          while (kb > 0 && !clearOf([p2[0] - B.t[0] * kb, p2[1] - B.t[1] * kb], A)) kb = Math.max(0, kb - 0.5);
           curve = [p0, [p0[0] - A.t[0] * ka, p0[1] - A.t[1] * ka], [p2[0] - B.t[0] * kb, p2[1] - B.t[1] * kb], p2];
         }
         for (let k = 1; k < curve.length - 1; k++) ring.push(curve[k]);
