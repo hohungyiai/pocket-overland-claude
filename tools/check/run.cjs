@@ -15,6 +15,8 @@ const CHECKS = [
   ['No two junctions overlap', 'junctions.js', '__checkJunctionOverlap', 0],
   ['No kerb across a road', 'junctions.js', '__checkKerbAcross', 0],
   ['Junctions stay on their roads', 'junctions.js', '__checkJunctionSpill', 0],
+  ['Crossings lie on their own road', 'crossings.js', '__checkCrossings', 0],
+  ['No traffic light on a road or in a junction', 'crossings.js', '__checkLightPoles', 0],
 ];
 
 (async () => {

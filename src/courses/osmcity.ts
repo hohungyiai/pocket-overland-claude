@@ -494,6 +494,55 @@ export async function buildPasirRisCourse(
     }
     sh.kerbs = kept;
   }
+  // ---------- Crossings and traffic lights ----------
+  // At a major junction (three or more roads, two of them secondary or
+  // bigger, no expressway) each road gets a zebra crossing just outside its
+  // mouth, a stop line for the traffic coming in, and a traffic light on the
+  // left kerb (Singapore drives on the left). The lights take turns by
+  // direction: roads lined up with the first one, then the rest.
+  const CROSS_FROM = 1; // metres out from the mouth
+  const CROSS_W = 3;
+  const STOP_AT = CROSS_FROM + CROSS_W + 1;
+  type Crossing = { line: number; end: 0 | 1; s: number; half: number; c: XZ; t: XZ; inbound: number; group: number; light: XZ | null };
+  const crossings: Crossing[] = [];
+  const crossCand: { cr: Crossing; lightOpts: XZ[] }[] = [];
+  const crossEnd = new Map<string, Crossing>();
+  for (const sh of JX.shapes) {
+    const ms = sh.mouths.filter((m) => !hasProfile[m.line] && rankOf(edges[m.line].cls) >= 1 && m.half >= 2.5 && ELEN[m.line] > m.s + STOP_AT + 4);
+    if (sh.mouths.length < 3 || ms.length < 3) continue;
+    if (sh.mouths.some((m) => edges[m.line].cls === 'motorway')) continue;
+    if (new Set(sh.mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).map((m) => edges[m.line].name ?? m.line)).size < 2 && sh.mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).length < 3) continue;
+    const axis = Math.atan2(ms[0].t[1], ms[0].t[0]);
+    for (const m of ms) {
+      const e = edges[m.line];
+      const P = EP[m.line];
+      const cum = ECUM[m.line];
+      const L = ELEN[m.line];
+      const at = (d: number) => {
+        const sAt = m.end === 0 ? d : L - d;
+        let k = 0;
+        while (k < P.length - 2 && cum[k + 1] <= sAt) k++;
+        const u = (sAt - cum[k]) / (cum[k + 1] - cum[k] || 1);
+        return [lerp(P[k][0], P[k + 1][0], u), lerp(P[k][1], P[k + 1][1], u)] as XZ;
+      };
+      const c = at(m.s + CROSS_FROM + CROSS_W / 2);
+      // Coming in: one-way roads only where they flow toward the junction.
+      const inbound = e.one ? (m.end === 1 ? 2 : 0) : 1; // 2 = whole width, 1 = left half, 0 = none
+      const left: XZ = [-m.t[1], m.t[0]]; // left of a car heading in (along -t)
+      // Where the pole may go: by the stop line, or a little further out.
+      const lightOpts: XZ[] = [];
+      if (inbound)
+        for (const back of [0, 1.5, 3, 5])
+          for (const side of [0.9, 1.6]) {
+            const q = at(m.s + STOP_AT + back);
+            lightOpts.push([q[0] + left[0] * (m.half + side), q[1] + left[1] * (m.half + side)]);
+          }
+      let da = Math.abs(Math.atan2(m.t[1], m.t[0]) - axis) % Math.PI;
+      if (da > Math.PI / 2) da = Math.PI - da;
+      crossCand.push({ cr: { line: m.line, end: m.end, s: m.s, half: m.half, c, t: m.t, inbound, group: da < Math.PI / 4 ? 0 : 1, light: null }, lightOpts });
+    }
+  }
+
   // Everything paved at junctions: the shapes, and islands filled in.
   const JPOLY = [...JX.shapes.map((sh) => ({ ...sh, fill: false })), ...JX.fills.map((f) => ({ ...f, mouths: [] as typeof JX.shapes[number]['mouths'], kerbs: [] as XZ[][], fill: true }))];
   const JCELL = 64;
@@ -531,6 +580,35 @@ export async function buildPasirRisCourse(
     }
     return inRingXZ(ring, x, z) ? [0, x, z] : [best, bx, bz];
   };
+
+  // A crossing is painted only where it lies on its own road alone (not
+  // across another road, nor in a junction); a pole only where it stands
+  // clear of every road and junction.
+  {
+    const inPoly = (x: number, z: number, fills: boolean) =>
+      !!jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL))?.some((id) => (fills || !JPOLY[id].fill) && ringDist(JPOLY[id].ring, x, z)[0] === 0);
+    const onOther = (x: number, z: number, own: number, pad: number) => {
+      let hit = false;
+      roads.each(x, z, 16, (i, seg, u, d) => {
+        if (!hit && i !== own && !elevated[i] && drawnAt(i, seg, u) && d < EHALF[i] + pad) hit = true;
+      });
+      return hit;
+    };
+    for (const { cr, lightOpts } of crossCand) {
+      const left: XZ = [-cr.t[1], cr.t[0]];
+      let ok = true;
+      for (const a of [-1, 0, 1])
+        for (const b of [-1, -0.5, 0, 0.5, 1]) {
+          const x = cr.c[0] + cr.t[0] * a * (CROSS_W / 2) + left[0] * b * (cr.half - 0.4);
+          const z = cr.c[1] + cr.t[1] * a * (CROSS_W / 2) + left[1] * b * (cr.half - 0.4);
+          if (onOther(x, z, cr.line, -0.3) || inPoly(x, z, false)) ok = false;
+        }
+      if (!ok) continue;
+      cr.light = lightOpts.find(([x, z]) => !onOther(x, z, -1, 0.3) && !inPoly(x, z, true)) ?? null;
+      crossings.push(cr);
+      crossEnd.set(`${cr.line}:${cr.end}`, cr);
+    }
+  }
 
   // ---------- Ground height ----------
   const probe = { s: 60, w: 30 };
@@ -1215,8 +1293,8 @@ export async function buildPasirRisCourse(
         if (rank < 1 || len < 12 || JX.internal[line]) continue;
         // Markings stop at a junction's edge, and run on through a bend.
         const stopAt = (j: number, trim: number) => (trim > 0 ? trim + 1 : jDegree[j] === 2 ? 0.3 : jDegree[j] > 2 ? jRadius[j] + 2 : 2);
-        const ca = stopAt(e.a, JX.trimA[line]);
-        const cb = stopAt(e.b, JX.trimB[line]);
+        const ca = crossEnd.has(`${line}:0`) ? JX.trimA[line] + STOP_AT + 0.5 : stopAt(e.a, JX.trimA[line]);
+        const cb = crossEnd.has(`${line}:1`) ? JX.trimB[line] + STOP_AT + 0.5 : stopAt(e.b, JX.trimB[line]);
         const ends = (kk: number) => cum[kk] > ca && cum[kk + 1] < len - cb;
         const solid = (off: (kk: number) => number) => (kk: number) => ends(kk) && clear(kk, off(kk));
         const dashed = (off: (kk: number) => number) => (kk: number) => kk % 3 === 0 && ends(kk) && clear(kk, off(kk));
@@ -1476,6 +1554,92 @@ export async function buildPasirRisCourse(
         }
       }
     });
+  // Zebra stripes and stop lines.
+  const crossByTile = new Map<string, Crossing[]>();
+  for (const cr of crossings) {
+    const k = tileKey(cr.c[0], cr.c[1]);
+    (crossByTile.get(k) ?? crossByTile.set(k, []).get(k)!).push(cr);
+  }
+  /** A flat quad draped on the ground: centre, along (unit), half length, half width. */
+  const quad = (acc: Acc, cx: number, cz: number, t: XZ, hl: number, hw: number, lift: number) => {
+    const base = acc.pos.length / 3;
+    const n: XZ = [-t[1], t[0]];
+    for (const [a, b] of [
+      [-hl, -hw],
+      [hl, -hw],
+      [-hl, hw],
+      [hl, hw],
+    ]) {
+      const x = cx + t[0] * a + n[0] * b;
+      const z = cz + t[1] * a + n[1] * b;
+      acc.pos.push(x, Math.max(rawHeight(x, z), WL + 0.15) + lift, z);
+      acc.uv.push(0, 0);
+    }
+    acc.idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+  };
+  for (const [k, list] of crossByTile)
+    onTile('far', k, (_kit, acc) => {
+      const white = acc('white');
+      for (const cr of list) {
+        const left: XZ = [-cr.t[1], cr.t[0]];
+        // Stripes 0.5 m wide, 0.5 m apart, running along the road.
+        const w = cr.half - 0.4;
+        for (let o = -w + 0.25; o <= w - 0.25; o += 1) quad(white, cr.c[0] + left[0] * o, cr.c[1] + left[1] * o, cr.t, CROSS_W / 2, 0.25, 0.115);
+        if (!cr.inbound) continue;
+        // The stop line, across the lanes coming in.
+        const sx = cr.c[0] + cr.t[0] * (STOP_AT - CROSS_FROM - CROSS_W / 2);
+        const sz = cr.c[1] + cr.t[1] * (STOP_AT - CROSS_FROM - CROSS_W / 2);
+        const from = cr.inbound === 2 ? -w : 0.15;
+        const mid = (from + w) / 2;
+        quad(white, sx + left[0] * mid, sz + left[1] * mid, left, (w - from) / 2, 0.2, 0.115);
+      }
+    });
+  // Traffic lights: a pole on the left kerb, its lamps facing the traffic
+  // coming in. The lamps of each direction share three materials, switched
+  // in update().
+  const lamp = (hex: number) => new THREE.MeshStandardMaterial({ color: 0x1a1a1a, emissive: hex, emissiveIntensity: 0.05, roughness: 0.5 });
+  const LAMPS = [0, 1].map(() => [lamp(0xff2a1a), lamp(0xffa21a), lamp(0x2aff6a)]);
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x3b3f44, roughness: 0.7 });
+  for (const [k, list] of crossByTile)
+    onTile('near', k, (kit) => {
+      const poles: THREE.BufferGeometry[] = [];
+      const lamps: THREE.BufferGeometry[][][] = [0, 1].map(() => [[], [], []]);
+      for (const cr of list) {
+        if (!cr.light) continue;
+        const [x, z] = cr.light;
+        const y = heightAt(x, z);
+        const yaw = Math.atan2(cr.t[0], cr.t[1]);
+        poles.push(new THREE.CylinderGeometry(0.07, 0.09, 4.2, 6).translate(x, y + 2.1, z));
+        poles.push(new THREE.BoxGeometry(0.34, 1.05, 0.26).rotateY(yaw).translate(x, y + 3.7, z));
+        for (let i = 0; i < 3; i++) {
+          const ly = y + 4.05 - i * 0.33;
+          lamps[cr.group][i].push(new THREE.SphereGeometry(0.11, 8, 6).scale(1, 1, 0.5).translate(x + cr.t[0] * 0.14, ly, z + cr.t[1] * 0.14));
+        }
+      }
+      if (poles.length) {
+        const m = new THREE.Mesh(kit.own(mergeGeometries(poles)), poleMat);
+        m.castShadow = true;
+        kit.add(m);
+      }
+      lamps.forEach((g, gi) =>
+        g.forEach((parts, i) => {
+          if (parts.length) kit.add(new THREE.Mesh(kit.own(mergeGeometries(parts)), LAMPS[gi][i]));
+        }),
+      );
+    });
+  // 30 s cycle: one direction green 12 s, amber 3 s, then the other.
+  const setLights = (time: number) => {
+    const t = time % 30;
+    const phase = (g: number) => {
+      const u = (t - g * 15 + 30) % 30;
+      return u < 12 ? 2 : u < 15 ? 1 : 0;
+    };
+    for (let g = 0; g < 2; g++) {
+      const on = phase(g);
+      LAMPS[g].forEach((m, i) => (m.emissiveIntensity = i === on ? 2.2 : 0.05));
+    }
+  };
+
   // Footpaths and park connectors.
   const PCUM = paths.map((p) => {
     const c = [0];
@@ -2331,6 +2495,7 @@ export async function buildPasirRisCourse(
         viaducts.forEach((pts, line) => railPiers(line).forEach((q) => out.push({ x: pts[q][0], z: pts[q][1], top: railY(line, q) - 1.1, kind: 'rail', self: -1 })));
         return out;
       },
+      crossings, CROSS_FROM, CROSS_W,
       JX,
       halfAtE,
       cutOf,
@@ -2378,6 +2543,7 @@ export async function buildPasirRisCourse(
     streamStats: () => streamer.stats,
     update(time, _dt, cam, player) {
       wind.value = time;
+      setLights(time);
       const focus = player ?? cam;
       if (focus) {
         streamer.update(focus.x, focus.z);
