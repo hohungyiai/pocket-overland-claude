@@ -93,129 +93,6 @@ export async function buildPasirRisCourse(
   const PHALF = paths.map((p) => (p.k === 'cycle' ? 1.4 : 1.1));
   const pathIdx = new SegIndex(paths.map((p) => p.pts), 24);
 
-  // ---------- Flyovers and bridges ----------
-  // OSM tags the deck of a bridge (with its layer) but not the ramps up to
-  // it. A bridge that crosses another road, a railway, or is long is a
-  // flyover: its deck stands DECK_H per layer above the ground, and the
-  // roads leading to it climb on embankments at RAMP_GRADE. Other bridges
-  // (over canals and drains) are low decks just above the banks.
-  const DECK_H = 6.5;
-  const RAMP_GRADE = 0.05;
-  const isDeck = edges.map((e) => (e.lv ?? 0) > 0);
-  const ELEN = ECUM.map((c) => c[c.length - 1]);
-  const jE = M.junctions.map(() => [] as number[]);
-  edges.forEach((e, i) => {
-    jE[e.a]?.push(i);
-    if (e.b !== e.a) jE[e.b]?.push(i);
-  });
-  const shares = (i: number, o: number) => edges[i].a === edges[o].a || edges[i].a === edges[o].b || edges[i].b === edges[o].a || edges[i].b === edges[o].b;
-  const groundRail = M.rail.filter((r) => !r.tunnel && !r.bridge);
-  const railIdx = new SegIndex(groundRail.map((r) => r.pts), 32);
-  /** Does line i pass over (not join) a line accepted by `hit`, away from its ends? */
-  const crosses = (i: number, idx: SegIndex, hit: (o: number) => boolean) => {
-    const pts = EP[i];
-    const cum = ECUM[i];
-    const pad = EHALF[i] + 4;
-    for (let k = 0; k < pts.length; k++) {
-      if (cum[k] < pad || cum[k] > ELEN[i] - pad) continue;
-      if (idx.nearest(pts[k][0], pts[k][1], 2.5, hit)) return true;
-    }
-    return false;
-  };
-  const elevated = edges.map((e, i) => {
-    if (!isDeck[i]) return false;
-    if (e.vd || (e.lv ?? 0) >= 2 || ELEN[i] > 250) return true;
-    return crosses(i, roads, (o) => o !== i && !isDeck[o] && !shares(i, o)) || crosses(i, railIdx, () => true);
-  });
-  // A flyover split into several bridge pieces in OSM is all one flyover.
-  for (let changed = true; changed; ) {
-    changed = false;
-    edges.forEach((e, i) => {
-      if (!isDeck[i] || elevated[i]) return;
-      if ([...(jE[e.a] ?? []), ...(jE[e.b] ?? [])].some((o) => elevated[o])) {
-        elevated[i] = true;
-        changed = true;
-      }
-    });
-  }
-  // Where two flyovers cross, the slip road (or the higher OSM layer) goes over.
-  const deckLevel = edges.map((e, i) => (elevated[i] ? Math.max(1, e.lv ?? 1) : 0));
-  const elevIdx = new SegIndex(EP, 24, false, (i) => !elevated[i]);
-  edges.forEach((e, i) => {
-    if (!elevated[i]) return;
-    const pts = EP[i];
-    for (let k = 0; k < pts.length; k += 2) {
-      const r = elevIdx.nearest(pts[k][0], pts[k][1], 2.5, (o) => o !== i && !shares(i, o));
-      if (!r) continue;
-      const o = r.line;
-      const mine = [e.lv ?? 1, -rankOf(e.cls), i];
-      const theirs = [edges[o].lv ?? 1, -rankOf(edges[o].cls), o];
-      const up = mine[0] !== theirs[0] ? mine[0] > theirs[0] : mine[1] !== theirs[1] ? mine[1] > theirs[1] : i > o;
-      if (up) deckLevel[i] = Math.max(deckLevel[i], deckLevel[o] + 1);
-    }
-  });
-  // Junction heights above the ground: full height at a flyover's ends, then
-  // falling away along the roads that lead to it.
-  const jRel = new Float32Array(M.junctions.length);
-  const queue: number[] = [];
-  edges.forEach((e, i) => {
-    if (!elevated[i]) return;
-    for (const j of [e.a, e.b]) {
-      if (DECK_H * deckLevel[i] > jRel[j]) {
-        jRel[j] = DECK_H * deckLevel[i];
-        queue.push(j);
-      }
-    }
-  });
-  while (queue.length) {
-    const j = queue.pop()!;
-    for (const i of jE[j] ?? []) {
-      if (elevated[i]) continue;
-      const n = edges[i].a === j ? edges[i].b : edges[i].a;
-      const r = jRel[j] - RAMP_GRADE * ELEN[i];
-      if (r > jRel[n] + 0.01) {
-        jRel[n] = r;
-        queue.push(n);
-      }
-    }
-  }
-  /** Road height above the ground at distance s along edge i. */
-  const relAlong = (i: number, s: number) => {
-    const ra = jRel[edges[i].a] ?? 0;
-    const rb = jRel[edges[i].b] ?? 0;
-    const len = ELEN[i];
-    if (elevated[i]) return lerp(ra, rb, len > 0 ? s / len : 0);
-    return Math.max(0, ra - RAMP_GRADE * s, rb - RAMP_GRADE * (len - s));
-  };
-  // Roads (not decks) that climb to a flyover: the ground rises under them.
-  const embank = edges.map((e, i) => !isDeck[i] && ((jRel[e.a] ?? 0) > 0.02 || (jRel[e.b] ?? 0) > 0.02));
-  const rampIdx = new SegIndex(EP, 24, false, (i) => !embank[i]);
-  // Decks and raised roads have their own surface height (not the ground's),
-  // level across their width.
-  const hasProfile = edges.map((_, i) => isDeck[i] || embank[i]);
-  const levelIdx = new SegIndex(EP, 24, false, (i) => isDeck[i]);
-  // Coarse 16 m grid of where an embankment might be, so heightAt can skip the search.
-  const RG = 16;
-  const rampNear = new Uint8Array(Math.ceil((WB.maxX - WB.minX) / RG) * Math.ceil((WB.maxZ - WB.minZ) / RG));
-  const RGW = Math.ceil((WB.maxX - WB.minX) / RG);
-  const RGH = Math.ceil((WB.maxZ - WB.minZ) / RG);
-  edges.forEach((_, i) => {
-    if (!embank[i]) return;
-    const reach = EHALF[i] + 4 + 3 * Math.max(jRel[edges[i].a], jRel[edges[i].b]) + RG;
-    for (const [x, z] of EP[i]) {
-      const i0 = Math.floor((x - reach - WB.minX) / RG);
-      const i1 = Math.floor((x + reach - WB.minX) / RG);
-      const j0 = Math.floor((z - reach - WB.minZ) / RG);
-      const j1 = Math.floor((z + reach - WB.minZ) / RG);
-      for (let jj = Math.max(0, j0); jj <= Math.min(RGH - 1, j1); jj++) for (let ii = Math.max(0, i0); ii <= Math.min(RGW - 1, i1); ii++) rampNear[jj * RGW + ii] = 1;
-    }
-  });
-  const nearRamp = (x: number, z: number) => {
-    const i = Math.floor((x - WB.minX) / RG);
-    const j = Math.floor((z - WB.minZ) / RG);
-    return i >= 0 && i < RGW && j >= 0 && j < RGH && rampNear[j * RGW + i] === 1;
-  };
-
   // ---------- Coast and inland water ----------
   const coast = new SegIndex(M.coast, 32);
   const mask = M.mask;
@@ -412,6 +289,245 @@ export async function buildPasirRisCourse(
   };
   /** The dry ground level (estate level plus hills), ignoring water and ramps. */
   const baseAt = (x: number, z: number) => LAND + hill(x, z);
+
+  // ---------- Flyovers and bridges ----------
+  // OSM tags the deck of a bridge (with its layer) but not the ramps up to
+  // it. A bridge that crosses another road, a railway, or is long is a
+  // flyover: its deck stands DECK_H per layer above the ground, and the
+  // roads leading to it climb on embankments at RAMP_GRADE. Other bridges
+  // (over canals and drains) are low decks just above the banks.
+  const DECK_H = 6.5;
+  const RAMP_GRADE = 0.05;
+  const isDeck = edges.map((e) => (e.lv ?? 0) > 0);
+  const ELEN = ECUM.map((c) => c[c.length - 1]);
+  const jE = M.junctions.map(() => [] as number[]);
+  edges.forEach((e, i) => {
+    jE[e.a]?.push(i);
+    if (e.b !== e.a) jE[e.b]?.push(i);
+  });
+  const shares = (i: number, o: number) => edges[i].a === edges[o].a || edges[i].a === edges[o].b || edges[i].b === edges[o].a || edges[i].b === edges[o].b;
+  const groundRail = M.rail.filter((r) => !r.tunnel && !r.bridge);
+  const railIdx = new SegIndex(groundRail.map((r) => r.pts), 32);
+  /** Does line i pass over (not join) a line accepted by `hit`, away from its ends? */
+  const crosses = (i: number, idx: SegIndex, hit: (o: number) => boolean) => {
+    const pts = EP[i];
+    const cum = ECUM[i];
+    const pad = EHALF[i] + 4;
+    for (let k = 0; k < pts.length; k++) {
+      if (cum[k] < pad || cum[k] > ELEN[i] - pad) continue;
+      if (idx.nearest(pts[k][0], pts[k][1], 2.5, hit)) return true;
+    }
+    return false;
+  };
+  const elevated = edges.map((e, i) => {
+    if (!isDeck[i]) return false;
+    if (e.vd || (e.lv ?? 0) >= 2 || ELEN[i] > 250) return true;
+    return crosses(i, roads, (o) => o !== i && !isDeck[o] && !shares(i, o)) || crosses(i, railIdx, () => true);
+  });
+  // A flyover split into several bridge pieces in OSM is all one flyover.
+  for (let changed = true; changed; ) {
+    changed = false;
+    edges.forEach((e, i) => {
+      if (!isDeck[i] || elevated[i]) return;
+      if ([...(jE[e.a] ?? []), ...(jE[e.b] ?? [])].some((o) => elevated[o])) {
+        elevated[i] = true;
+        changed = true;
+      }
+    });
+  }
+  // Where two flyovers cross, the slip road (or the higher OSM layer) goes over.
+  const deckLevel = edges.map((e, i) => (elevated[i] ? Math.max(1, e.lv ?? 1) : 0));
+  const elevIdx = new SegIndex(EP, 24, false, (i) => !elevated[i]);
+  edges.forEach((e, i) => {
+    if (!elevated[i]) return;
+    const pts = EP[i];
+    for (let k = 0; k < pts.length; k += 2) {
+      const r = elevIdx.nearest(pts[k][0], pts[k][1], 2.5, (o) => o !== i && !shares(i, o));
+      if (!r) continue;
+      const o = r.line;
+      const mine = [e.lv ?? 1, -rankOf(e.cls), i];
+      const theirs = [edges[o].lv ?? 1, -rankOf(edges[o].cls), o];
+      const up = mine[0] !== theirs[0] ? mine[0] > theirs[0] : mine[1] !== theirs[1] ? mine[1] > theirs[1] : i > o;
+      if (up) deckLevel[i] = Math.max(deckLevel[i], deckLevel[o] + 1);
+    }
+  });
+  // Junction heights above the ground: full height at a flyover's ends, then
+  // falling away along the roads that lead to it. A junction may have a cap
+  // (a road there runs under a flyover), and a road between two very
+  // different heights climbs more steeply than RAMP_GRADE.
+  const jRel = new Float32Array(M.junctions.length);
+  const jCap = new Float32Array(M.junctions.length).fill(Infinity);
+  const deckEnd = new Uint8Array(M.junctions.length);
+  // Extra height wanted at points along a road (a slip road raised to meet
+  // a deck beside it, or a deck raised to clear a road below): each falls
+  // away at RAMP_GRADE both ways.
+  const needs: { s: number; rel: number }[][] = edges.map(() => []);
+  const lift = () => {
+    jRel.fill(0);
+    const queue: number[] = [];
+    const raise = (j: number, r: number) => {
+      r = deckEnd[j] ? r : Math.min(jCap[j], r);
+      if (r > jRel[j] + 0.01) {
+        jRel[j] = r;
+        queue.push(j);
+      }
+    };
+    edges.forEach((e, i) => {
+      if (!elevated[i]) return;
+      for (const j of [e.a, e.b]) {
+        deckEnd[j] = 1;
+        raise(j, DECK_H * deckLevel[i]);
+      }
+    });
+    needs.forEach((list, i) => {
+      for (const n of list) {
+        raise(edges[i].a, n.rel - RAMP_GRADE * n.s);
+        raise(edges[i].b, n.rel - RAMP_GRADE * (ELEN[i] - n.s));
+      }
+    });
+    while (queue.length) {
+      const j = queue.pop()!;
+      for (const i of jE[j] ?? []) {
+        if (elevated[i]) continue;
+        raise(edges[i].a === j ? edges[i].b : edges[i].a, jRel[j] - RAMP_GRADE * ELEN[i]);
+      }
+    }
+  };
+  lift();
+  /** Road height above the ground at distance s along edge i. */
+  const relAlong = (i: number, s: number) => {
+    const ra = jRel[edges[i].a] ?? 0;
+    const rb = jRel[edges[i].b] ?? 0;
+    const len = ELEN[i];
+    let r: number;
+    if (elevated[i]) r = lerp(ra, rb, len > 0 ? s / len : 0);
+    else {
+      const g = Math.max(RAMP_GRADE, len > 0 ? Math.abs(ra - rb) / len : 0);
+      r = Math.max(0, ra - g * s, rb - g * (len - s));
+    }
+    for (const n of needs[i]) r = Math.max(r, n.rel - RAMP_GRADE * Math.abs(s - n.s));
+    return r;
+  };
+  // Headroom. Wherever a raised road runs over a lower one:
+  // - a slip road (or a ramp) running alongside under its edge is raised to
+  //   its level, so the two merge;
+  // - any other road crossing under stays down (its junctions nearby are
+  //   capped), and if it can't go low enough the road above is raised.
+  const HEAD = 6.0; // 4.8 m clear under a 1.2 m deck
+  {
+    const raised = (i: number) => elevated[i] || jRel[edges[i].a] > 0.02 || jRel[edges[i].b] > 0.02 || needs[i].length > 0;
+    const dirAt = (i: number, k: number, u = 0) => {
+      const P = EP[i];
+      const a = P[Math.max(0, k - 1)];
+      const b = P[Math.min(P.length - 1, k + 1 + (u > 0 ? 1 : 0))];
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+    };
+    type Hit = { i: number; k: number; o: number; so: number; dot: number; yi: number; yo: number; bo: number };
+    const hitsNow = () => {
+      const hits: Hit[] = [];
+      edges.forEach((_, i) => {
+        if (!raised(i)) return;
+        const P = EP[i];
+        for (let k = 0; k < P.length; k++) {
+          const yi = baseAt(P[k][0], P[k][1]) + relAlong(i, ECUM[i][k]);
+          roads.each(P[k][0], P[k][1], EHALF[i] + 12, (o, seg, u, dd) => {
+            if (o === i || elevated[o] || shares(i, o) || dd > EHALF[i] + EHALF[o] - 0.3) return;
+            const c = ECUM[o];
+            const Q = EP[o];
+            const q = Q[Math.min(Q.length - 1, seg + 1)];
+            const ox = lerp(Q[seg][0], q[0], u);
+            const oz = lerp(Q[seg][1], q[1], u);
+            const so = c[seg] + (c[Math.min(c.length - 1, seg + 1)] - c[seg]) * u;
+            const bo = baseAt(ox, oz);
+            const yo = bo + relAlong(o, so);
+            if (yi - yo < 0.3) return;
+            const d1 = dirAt(i, k);
+            const d2 = dirAt(o, seg, u);
+            hits.push({ i, k, o, so, dot: Math.abs(d1[0] * d2[0] + d1[1] * d2[1]), yi, yo, bo });
+          });
+        }
+      });
+      return hits;
+    };
+    const isLink = (o: number) => /_link$/.test(edges[o].cls);
+    const capped = new Uint8Array(edges.length);
+    const merges = (h: Hit) => h.dot > 0.8 && !capped[h.o] && (isLink(h.o) || raised(h.o));
+    // Can road o rise to `rel` at s, no steeper than 1 in 10 from a capped end?
+    const MAXG = 0.1;
+    const canRise = (o: number, s: number, rel: number) =>
+      rel - MAXG * s <= jCap[edges[o].a] && rel - MAXG * (ELEN[o] - s) <= jCap[edges[o].b];
+    for (let pass = 0; pass < 4; pass++) {
+      let changed = false;
+      const hits = hitsNow();
+      const hold = (h: Hit) => {
+        if (h.yi - h.yo >= HEAD) return;
+        const e = edges[h.o];
+        const want = h.yi - HEAD - h.bo; // the lower road's height to clear
+        const rel = h.yo - h.bo;
+        if (rel > 0.05 && want > -0.5 && !deckEnd[e.a] && !deckEnd[e.b]) {
+          // Hold the road below down.
+          capped[h.o] = 1;
+          needs[h.o] = [];
+          // (Held right down unless it was well up: small rises under a deck
+          // only leave steps against the roads beside it.)
+          const cap = want > 1 ? want : 0;
+          jCap[e.a] = Math.min(jCap[e.a], cap + RAMP_GRADE * h.so);
+          jCap[e.b] = Math.min(jCap[e.b], cap + RAMP_GRADE * (ELEN[h.o] - h.so));
+          if (want <= 0.05) needs[h.i].push({ s: ECUM[h.i][h.k], rel: h.bo + HEAD - baseAt(EP[h.i][h.k][0], EP[h.i][h.k][1]) });
+        } else {
+          // Raise the road above.
+          needs[h.i].push({ s: ECUM[h.i][h.k], rel: h.yo + HEAD - baseAt(EP[h.i][h.k][0], EP[h.i][h.k][1]) });
+        }
+        changed = true;
+      };
+      // Roads crossing under first (they set the caps), then the merges that
+      // the caps still allow; a slip road that can't climb in time stays down.
+      for (const h of hits) if (!merges(h)) hold(h);
+      for (const h of hits) {
+        if (!merges(h)) continue;
+        if (canRise(h.o, h.so, h.yi - h.bo)) {
+          needs[h.o].push({ s: h.so, rel: h.yi - h.bo });
+          changed = true;
+        } else hold(h);
+      }
+      // (A merge accepted before a later cap may no longer be reachable.)
+      needs.forEach((list, i) => {
+        if (!elevated[i] && list.length) needs[i] = list.filter((n) => canRise(i, n.s, n.rel));
+      });
+      lift();
+      if (!changed) break;
+    }
+  }
+  // Roads (not decks) that climb to a flyover: the ground rises under them.
+  const embank = edges.map((e, i) => !isDeck[i] && ((jRel[e.a] ?? 0) > 0.02 || (jRel[e.b] ?? 0) > 0.02 || needs[i].length > 0));
+  const rampIdx = new SegIndex(EP, 24, false, (i) => !embank[i]);
+  // Decks and raised roads have their own surface height (not the ground's),
+  // level across their width.
+  const hasProfile = edges.map((_, i) => isDeck[i] || embank[i]);
+  const levelIdx = new SegIndex(EP, 24, false, (i) => isDeck[i]);
+  // Coarse 16 m grid of where an embankment might be, so heightAt can skip the search.
+  const RG = 16;
+  const rampNear = new Uint8Array(Math.ceil((WB.maxX - WB.minX) / RG) * Math.ceil((WB.maxZ - WB.minZ) / RG));
+  const RGW = Math.ceil((WB.maxX - WB.minX) / RG);
+  const RGH = Math.ceil((WB.maxZ - WB.minZ) / RG);
+  edges.forEach((_, i) => {
+    if (!embank[i]) return;
+    const reach = EHALF[i] + 4 + 3 * Math.max(jRel[edges[i].a], jRel[edges[i].b]) + RG;
+    for (const [x, z] of EP[i]) {
+      const i0 = Math.floor((x - reach - WB.minX) / RG);
+      const i1 = Math.floor((x + reach - WB.minX) / RG);
+      const j0 = Math.floor((z - reach - WB.minZ) / RG);
+      const j1 = Math.floor((z + reach - WB.minZ) / RG);
+      for (let jj = Math.max(0, j0); jj <= Math.min(RGH - 1, j1); jj++) for (let ii = Math.max(0, i0); ii <= Math.min(RGW - 1, i1); ii++) rampNear[jj * RGW + ii] = 1;
+    }
+  });
+  const nearRamp = (x: number, z: number) => {
+    const i = Math.floor((x - WB.minX) / RG);
+    const j = Math.floor((z - WB.minZ) / RG);
+    return i >= 0 && i < RGW && j >= 0 && j < RGH && rampNear[j * RGW + i] === 1;
+  };
+
   // Bridge deck heights along each deck edge (centre line), made on demand.
   const roadDeckCache = new Map<number, Float32Array>();
   const deckY = (i: number) => {
