@@ -10,6 +10,10 @@ const PORT = 4179;
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m)]
   ['Ground never rises above a road', 'ground.js', '__checkGround', 0],
+  ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0],
+  ['No two junctions overlap', 'junctions.js', '__checkJunctionOverlap', 0],
+  ['No kerb across a road', 'junctions.js', '__checkKerbAcross', 0],
+  ['Junctions stay on their roads', 'junctions.js', '__checkJunctionSpill', 0],
 ];
 
 (async () => {
@@ -22,8 +26,10 @@ const CHECKS = [
     p.on('pageerror', (e) => console.log('page error:', e.message));
     await p.goto(`http://localhost:${PORT}/?course=pasirris&debug`);
     await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
+    const loaded = new Set();
     for (const [name, file, fn, limit] of CHECKS) {
-      await p.addScriptTag({ path: path.join(__dirname, file) });
+      if (!loaded.has(file)) await p.addScriptTag({ path: path.join(__dirname, file) });
+      loaded.add(file);
       const r = await p.evaluate((fn) => window[fn](), fn);
       const worst = r.worst[0]?.over ?? 0;
       const ok = worst <= limit && (limit > 0 || r.bad === 0);
