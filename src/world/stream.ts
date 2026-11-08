@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import type RAPIER_NS from '@dimforge/rapier3d-compat';
 
-// Tile streaming. The world is a grid of square tiles; each tile has two
+// Tile streaming. The world is a grid of square tiles; each tile has three
 // layers that load and unload on their own:
-//   - "far":  cheap, large things you see from a distance (ground, roads,
-//             buildings). Kept out to the fog distance so the horizon
-//             doesn't change.
-//   - "near": the expensive detail and everything solid (trees, grass,
-//             furniture, colliders). Kept within a smaller radius.
+//   - "horizon": coarse ground and big landmarks (buildings), out to the
+//                fog distance so the skyline doesn't change. Hidden where
+//                the detailed ground of the "far" layer has loaded.
+//   - "far":     detailed ground, roads, paths, carparks.
+//   - "near":    the expensive detail and everything solid (trees, grass,
+//                furniture, colliders). Kept within the smallest radius.
 // Builders are generator functions that yield between steps, so a tile is
 // built a slice at a time inside a per-frame time budget, never in one hitch.
 // Everything a tile makes is generated from global shape functions and a
@@ -16,8 +17,11 @@ import type RAPIER_NS from '@dimforge/rapier3d-compat';
 export const TILE = 200;
 
 export interface TileKit {
-  /** Add a mesh (or other object) that belongs to this tile layer. */
-  add(o: THREE.Object3D): void;
+  /**
+   * Add a mesh (or other object) that belongs to this tile layer. Horizon
+   * ground passes `coverable` so it hides under the detailed ground.
+   */
+  add(o: THREE.Object3D, coverable?: boolean): void;
   /** A geometry made for this tile alone, freed when the tile unloads. */
   own<T extends THREE.BufferGeometry>(g: T): T;
   /** A fixed physics body for this tile layer, removed when it unloads. */
@@ -26,20 +30,24 @@ export interface TileKit {
 
 export type LayerBuilder = (i: number, j: number, kit: TileKit) => Generator<void, void, void>;
 
-interface Layer {
+interface TileLayer {
   objects: THREE.Object3D[];
   geometries: THREE.BufferGeometry[];
   bodies: RAPIER_NS.RigidBody[];
   job: Generator<void, void, void> | null;
+  hidden?: boolean;
+  coverable: THREE.Object3D[];
 }
 
-type LayerName = 'near' | 'far';
+export type Layer = 'near' | 'far' | 'horizon';
+type LayerName = Layer;
+const LAYERS: LayerName[] = ['near', 'far', 'horizon'];
 
 export class TileStreamer {
-  private loaded = new Map<string, Layer>(); // key: "near:i,j" / "far:i,j"
+  private loaded = new Map<string, TileLayer>(); // key: "near:i,j" / "far:i,j"
   private queue: { key: string; layer: LayerName; i: number; j: number; d: number }[] = [];
   /** Built tile counts, for the debug overlay and tests. */
-  stats = { near: 0, far: 0, pending: 0, maxStepMs: 0 };
+  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0 };
 
   constructor(
     private scene: THREE.Scene,
@@ -47,7 +55,7 @@ export class TileStreamer {
     private RAPIER: typeof RAPIER_NS,
     private builders: Record<LayerName, LayerBuilder>,
     private bounds: { minX: number; maxX: number; minZ: number; maxZ: number },
-    private radius: Record<LayerName, number> = { near: 700, far: 1700 },
+    private radius: Record<LayerName, number> = { near: 620, far: 900, horizon: 1750 },
   ) {}
 
   private tilesAround(x: number, z: number, r: number) {
@@ -69,10 +77,14 @@ export class TileStreamer {
     return out;
   }
 
-  private kit(layer: Layer): TileKit {
+  private kit(layer: TileLayer): TileKit {
     return {
-      add: (o) => {
+      add: (o, coverable) => {
         layer.objects.push(o);
+        if (coverable) {
+          layer.coverable.push(o);
+          if (layer.hidden) o.visible = false;
+        }
         this.scene.add(o);
       },
       own: (g) => {
@@ -91,7 +103,7 @@ export class TileStreamer {
   private plan(x: number, z: number) {
     const want = new Set<string>();
     this.queue = [];
-    for (const layer of ['near', 'far'] as const) {
+    for (const layer of LAYERS) {
       // Unload a little beyond the load radius so tiles at the edge don't flicker.
       for (const t of this.tilesAround(x, z, this.radius[layer] + 60)) want.add(`${layer}:${t.i},${t.j}`);
       for (const t of this.tilesAround(x, z, this.radius[layer])) {
@@ -101,17 +113,29 @@ export class TileStreamer {
       }
     }
     for (const [key, layer] of this.loaded) if (!want.has(key)) this.unload(key, layer);
-    // Nearest first; near-layer (solid ground) before far at equal distance.
-    this.queue.sort((a, b) => a.d - b.d || (a.layer === 'near' ? -1 : 1));
+    // Nearest first; near (solid ground) before far at equal distance. The
+    // horizon is cheap and fills gaps on the skyline, so it jumps ahead.
+    const rank = (q: { layer: LayerName; d: number }) => (q.layer === 'horizon' ? q.d * 0.35 : q.d) + (q.layer === 'far' ? 1 : 0);
+    this.queue.sort((a, b) => rank(a) - rank(b));
     this.stats.pending = this.queue.length;
   }
 
-  private unload(key: string, layer: Layer) {
+  private unload(key: string, layer: TileLayer) {
     for (const o of layer.objects) this.scene.remove(o);
     for (const g of layer.geometries) g.dispose();
     for (const b of layer.bodies) this.world.removeRigidBody(b);
     this.loaded.delete(key);
-    this.stats[key.startsWith('near') ? 'near' : 'far']--;
+    const name = key.slice(0, key.indexOf(':')) as LayerName;
+    this.stats[name]--;
+    if (name === 'far') this.cover(key, false);
+  }
+
+  /** Show or hide the horizon tile under a finished (or removed) far tile. */
+  private cover(farKey: string, covered: boolean) {
+    const h = this.loaded.get('horizon' + farKey.slice(3));
+    if (!h) return;
+    h.hidden = covered;
+    for (const o of h.coverable) o.visible = !covered;
   }
 
   /** Advance builds for up to `budgetMs`. Returns true when nothing is pending. */
@@ -121,14 +145,21 @@ export class TileStreamer {
       const q = this.queue[0];
       let layer = this.loaded.get(q.key);
       if (!layer) {
-        layer = { objects: [], geometries: [], bodies: [], job: null };
+        layer = { objects: [], geometries: [], bodies: [], job: null, coverable: [] };
+        if (q.layer === 'horizon') {
+          const f = this.loaded.get('far' + q.key.slice(7));
+          layer.hidden = !!f && !f.job;
+        }
         layer.job = this.builders[q.layer](q.i, q.j, this.kit(layer));
         this.loaded.set(q.key, layer);
         this.stats[q.layer]++;
       }
       while (layer.job) {
         const s0 = performance.now();
-        if (layer.job.next().done) layer.job = null;
+        if (layer.job.next().done) {
+          layer.job = null;
+          if (q.layer === 'far') this.cover(q.key, true);
+        }
         if (budgetMs !== Infinity) this.stats.maxStepMs = Math.max(this.stats.maxStepMs, performance.now() - s0);
         if (performance.now() - t0 > budgetMs) return false;
       }
@@ -148,11 +179,18 @@ export class TileStreamer {
     if (this.queue.length) this.work(budgetMs);
   }
 
-  /** Load everything around (x, z) right now (behind a loading screen). */
-  prepare(x: number, z: number) {
+  /**
+   * Load what's needed to start at (x, z) right now: every near tile, and far
+   * tiles out to `farNow` metres. The rest streams in over the first seconds.
+   */
+  prepare(x: number, z: number, farNow = 600) {
     this.lastPlan = { x, z };
     this.plan(x, z);
+    const later = this.queue.filter((q) => q.layer === 'far' && q.d > farNow);
+    this.queue = this.queue.filter((q) => !(q.layer === 'far' && q.d > farNow));
     this.work(Infinity);
+    this.queue = later;
+    this.stats.pending = later.length;
   }
 
   /** Is the solid ground under (x, z) built yet? */
