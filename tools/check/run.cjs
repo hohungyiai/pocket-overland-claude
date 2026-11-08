@@ -10,6 +10,7 @@ const PORT = 4179;
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m)]
   ['Ground never rises above a road', 'ground.js', '__checkGround', 0],
+  ['No pier stands on a road', 'piers.js', '__checkPiers', 0],
   ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0],
   ['No two junctions overlap', 'junctions.js', '__checkJunctionOverlap', 0],
   ['No kerb across a road', 'junctions.js', '__checkKerbAcross', 0],
