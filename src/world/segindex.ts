@@ -108,6 +108,34 @@ export class SegIndex {
     return { d, sd: this.side(x, z, line, seg, bu) * d, line, seg, u: bu };
   }
 
+  /** Calls f for every segment within maxR of (x, z), with its distance and position along it. */
+  each(x: number, z: number, maxR: number, f: (line: number, seg: number, u: number, d: number) => void) {
+    const cell = this.cell;
+    const i0 = Math.floor((x - maxR) / cell);
+    const i1 = Math.floor((x + maxR) / cell);
+    const j0 = Math.floor((z - maxR) / cell);
+    const j1 = Math.floor((z + maxR) / cell);
+    const tick = ++this.tick;
+    for (let ci = i0; ci <= i1; ci++)
+      for (let cj = j0; cj <= j1; cj++) {
+        const l = this.grid.get(ci * 100003 + cj);
+        if (!l) continue;
+        for (const s of l) {
+          if (this.stamp[s] === tick) continue;
+          this.stamp[s] = tick;
+          const li = this.segLine[s];
+          const [ax, az] = this.pt(li, this.segIdx[s]);
+          const [bx, bz] = this.pt(li, this.segIdx[s] + 1);
+          const abx = bx - ax;
+          const abz = bz - az;
+          let u = ((x - ax) * abx + (z - az) * abz) / (abx * abx + abz * abz || 1);
+          u = u < 0 ? 0 : u > 1 ? 1 : u;
+          const d = Math.hypot(ax + abx * u - x, az + abz * u - z);
+          if (d <= maxR) f(li, this.segIdx[s], u, d);
+        }
+      }
+  }
+
   /** +1 on the left of travel, -1 on the right. */
   private side(x: number, z: number, line: number, seg: number, u: number) {
     const pts = this.lines[line];

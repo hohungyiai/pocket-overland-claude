@@ -237,7 +237,7 @@ export class Vehicle {
     }
     this.waterTime = 0;
     const r = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
-    const y = this.course.heightAt(p.x, p.z) + 1.5;
+    const y = (this.course.surfaceY?.(p.x, p.z, p.y) ?? this.course.heightAt(p.x, p.z)) + 1.5;
     this.body.setTranslation({ x: p.x, y, z: p.z }, true);
     this.body.setRotation({ x: r.x, y: r.y, z: r.z, w: r.w }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
