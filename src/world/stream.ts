@@ -186,8 +186,10 @@ export class TileStreamer {
   prepare(x: number, z: number, farNow = 600) {
     this.lastPlan = { x, z };
     this.plan(x, z);
-    const later = this.queue.filter((q) => q.layer === 'far' && q.d > farNow);
-    this.queue = this.queue.filter((q) => !(q.layer === 'far' && q.d > farNow));
+    // The far edge of the skyline can stream in over the first seconds too.
+    const defer = (q: { layer: LayerName; d: number }) => (q.layer === 'far' && q.d > farNow) || (q.layer === 'horizon' && q.d > farNow * 1.6);
+    const later = this.queue.filter(defer);
+    this.queue = this.queue.filter((q) => !defer(q));
     this.work(Infinity);
     this.queue = later;
     this.stats.pending = later.length;

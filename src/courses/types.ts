@@ -28,6 +28,10 @@ export interface MapData {
   areas: { pts: XZ[]; color: string }[];
   lines: { pts: XZ[]; width: number; color: string; closed?: boolean }[];
   pois: { x: number; z: number; label: string }[];
+  /** Resolution of the pre-painted minimap (default 1 px per metre). */
+  pxPerM?: number;
+  /** Credit line for the map data, shown on the full map. */
+  attribution?: string;
 }
 
 export interface Course {

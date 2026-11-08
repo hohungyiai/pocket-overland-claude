@@ -1,5 +1,5 @@
 import type { MapData } from './courses/types';
-import { drawMapShapes } from './minimap';
+import { drawMapShapes, paintMap, pxPerM } from './minimap';
 
 // Full-screen, north-up map. Opens from the minimap and pauses the drive
 // while it is up. Drag to pan, pinch or scroll to zoom, tap "Back to the
@@ -167,7 +167,13 @@ export class FullMap {
     ctx.fillStyle = '#9fc3d6';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(k, 0, 0, k, canvas.width / 2 - this.cx * k, canvas.height / 2 - this.cz * k);
-    drawMapShapes(ctx, map, this.scale);
+    if (this.scale <= pxPerM(map) * 1.25) {
+      // Zoomed out: the pre-painted map is sharp enough and far quicker.
+      ctx.translate(map.bounds.minX, map.bounds.minZ);
+      ctx.scale(1 / pxPerM(map), 1 / pxPerM(map));
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(paintMap(map), 0, 0);
+    } else drawMapShapes(ctx, map, this.scale);
     this.drawOverlay();
   }
 
@@ -180,6 +186,15 @@ export class FullMap {
   private drawOverlay() {
     const { ctx, dpr } = this;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (this.map.attribution) {
+      ctx.font = `${Math.round(10 * dpr)}px system-ui, sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
+      const w = ctx.measureText(this.map.attribution).width;
+      ctx.fillRect(0, this.canvas.height - 16 * dpr, w + 12 * dpr, 16 * dpr);
+      ctx.fillStyle = '#333';
+      ctx.fillText(this.map.attribution, 6 * dpr, this.canvas.height - 4.5 * dpr);
+    }
     ctx.textAlign = 'center';
     ctx.font = `600 ${Math.round(12 * dpr)}px system-ui, sans-serif`;
     for (const p of this.map.pois) {
