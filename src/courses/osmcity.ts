@@ -1631,14 +1631,43 @@ export async function buildPasirRisCourse(
             yOf.set(m.right, y);
           }
         }
+        // With a ramp among its mouths, the whole surface blends between the
+        // mouths' heights above the ground (nearest mouth counts most), so it
+        // meets every road at that road's own level.
+        const rels = yOf.size
+          ? sh.mouths.map((m) => {
+              const y = yOf.get(m.left);
+              return { m, rel: y === undefined ? 0 : y - dropY(m.q[0], m.q[1]) };
+            })
+          : [];
+        const segD = (x: number, z: number, a: XZ, b: XZ) => {
+          const dx = b[0] - a[0];
+          const dz = b[1] - a[1];
+          const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz || 1)));
+          return Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t);
+        };
+        const surfY = (x: number, z: number) => {
+          const g = dropY(x, z);
+          if (!rels.length) return g;
+          let sw = 0;
+          let sr = 0;
+          for (const { m, rel } of rels) {
+            const dd = segD(x, z, m.left, m.right);
+            if (dd < 1e-3) return g + rel;
+            const w = 1 / (dd * dd);
+            sw += w;
+            sr += w * rel;
+          }
+          return g + sr / sw;
+        };
         const base = road.pos.length / 3;
-        road.pos.push(cx, dropY(cx, cz) + lift, cz);
+        road.pos.push(cx, surfY(cx, cz) + lift, cz);
         road.uv.push(cx / 6, cz / 6);
         for (const t of RINGS)
           for (const p of ring) {
             const x = cx + (p[0] - cx) * t;
             const z = cz + (p[1] - cz) * t;
-            road.pos.push(x, (t === 1 ? (yOf.get(p) ?? dropY(x, z)) : dropY(x, z)) + lift, z);
+            road.pos.push(x, (t === 1 ? (yOf.get(p) ?? surfY(x, z)) : surfY(x, z)) + lift, z);
             road.uv.push(x / 6, z / 6);
           }
         for (let i = 0; i < n; i++) {
@@ -2442,6 +2471,38 @@ export async function buildPasirRisCourse(
   }
 
   // ---------- Streaming ----------
+  // The car drives on what you see: every road and junction surface is also
+  // a collider (the ground under a road is sealed a little below it, so the
+  // wheels would otherwise sink, and ride its 4 m grid's bumps). The surface
+  // comes from the tile's far-layer build, kept for a while; a near tile
+  // that finds none builds it again off-scene.
+  const roadSurf = new Map<string, { pos: Float32Array; idx: Uint32Array }>();
+  const keepSurf = (k: string, a: Acc | undefined) => {
+    roadSurf.delete(k);
+    roadSurf.set(k, { pos: new Float32Array(a?.pos ?? []), idx: new Uint32Array(a?.idx ?? []) });
+    if (roadSurf.size > 300) roadSurf.delete(roadSurf.keys().next().value!);
+  };
+  const offScene = { add: () => {}, own: <T>(g: T) => g, body: () => null } as unknown as TileKit;
+  function* surfaceOf(k: string): Generator<void, { pos: Float32Array; idx: Uint32Array }, void> {
+    const got = roadSurf.get(k);
+    if (got) return got;
+    const accs = new Map<AccKey, Acc>();
+    const acc = (key: AccKey) => {
+      let a = accs.get(key);
+      if (!a) accs.set(key, (a = new Acc()));
+      return a;
+    };
+    for (const job of jobs.far.get(k) ?? []) {
+      job(offScene, acc);
+      yield;
+    }
+    keepSurf(k, accs.get('road'));
+    return roadSurf.get(k)!;
+  }
+  const roadCollider = (surf: { pos: Float32Array; idx: Uint32Array }, kit: TileKit) => {
+    if (!surf.idx.length) return;
+    world.createCollider(RAPIER.ColliderDesc.trimesh(surf.pos, surf.idx).setFriction(0.9), kit.body());
+  };
   const builder = (layer: Layer) =>
     function* (ti: number, tj: number, kit: TileKit) {
       const t = yield* ensurePatch(ti, tj, layer === 'horizon' ? STEP_FAR : STEP);
@@ -2450,7 +2511,10 @@ export async function buildPasirRisCourse(
         else groundMesh(t, kit, layer === 'horizon');
       }
       yield;
-      if (layer === 'near') yield* plantTile(ti, tj, kit);
+      if (layer === 'near') {
+        roadCollider(yield* surfaceOf(`${ti},${tj}`), kit);
+        yield* plantTile(ti, tj, kit);
+      }
       const accs = new Map<AccKey, Acc>();
       const acc = (key: AccKey) => {
         let a = accs.get(key);
@@ -2461,6 +2525,7 @@ export async function buildPasirRisCourse(
         job(kit, acc);
         yield;
       }
+      if (layer === 'far') keepSurf(`${ti},${tj}`, accs.get('road'));
       yield* flush(accs, kit);
     };
   const streamer = new TileStreamer(scene, world, RAPIER, { near: builder('near'), far: builder('far'), horizon: builder('horizon') }, WB);
@@ -2612,6 +2677,19 @@ export async function buildPasirRisCourse(
         return out;
       },
       crossings, CROSS_FROM, CROSS_W,
+      // A far tile's road buffers, built off-scene (for the seam checks).
+      farTiles: () => [...jobs.far.keys()],
+      tileAccs: (k: string) => {
+        const accs = new Map<AccKey, Acc>();
+        const acc = (key: AccKey) => {
+          let a = accs.get(key);
+          if (!a) accs.set(key, (a = new Acc()));
+          return a;
+        };
+        const kit = { add: () => {}, own: <T>(g: T) => g, body: () => null } as unknown as TileKit;
+        for (const job of jobs.far.get(k) ?? []) job(kit, acc);
+        return Object.fromEntries([...accs].map(([key, a]) => [key, { pos: a.pos, idx: a.idx }]));
+      },
       JX,
       halfAtE,
       cutOf,
