@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { buildUbinCourse } from './courses/ubin';
 import { buildEastCoastCourse } from './courses/eastcoast';
+import { buildPasirRisCourse } from './courses/osmcity';
 import { skyTexture, type ArtStyle } from './courses/detail';
 import { Minimap } from './minimap';
 import { FullMap } from './fullmap';
@@ -15,6 +16,7 @@ import './style.css';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const COURSES = {
+  pasirris: buildPasirRisCourse,
   eastcoast: buildEastCoastCourse,
   ubin: buildUbinCourse,
 } as const;
@@ -53,7 +55,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 3000);
 
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
-  const course = COURSES[courseId](scene, world, RAPIER, { style });
+  const course = await COURSES[courseId](scene, world, RAPIER, { style });
   scene.background = new THREE.Color(course.sky.background);
   scene.fog = new THREE.Fog(course.sky.fog, course.sky.fogNear, course.sky.fogFar);
   if (detailed && course.styles) {

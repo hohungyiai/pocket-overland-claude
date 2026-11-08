@@ -5,7 +5,8 @@ import type { MapData } from './courses/types';
 // off-screen canvas; each frame just draws a rotated window of it.
 // Tap it to open the full map (see fullmap.ts).
 
-export const PX_PER_M = 1; // resolution of the pre-painted map
+/** Resolution of a pre-painted map: canvas px per metre. */
+export const pxPerM = (map: MapData) => map.pxPerM ?? 1;
 
 export class Minimap {
   private canvas: HTMLCanvasElement;
@@ -53,8 +54,9 @@ export class Minimap {
     ctx.translate(r, r);
     ctx.rotate(-Math.PI / 2 + heading);
     ctx.scale(k, k);
-    ctx.translate(-(x - map.bounds.minX) * PX_PER_M, -(z - map.bounds.minZ) * PX_PER_M);
+    ctx.translate(map.bounds.minX - x, map.bounds.minZ - z);
     ctx.imageSmoothingEnabled = true;
+    ctx.scale(1 / pxPerM(map), 1 / pxPerM(map));
     ctx.drawImage(this.base, 0, 0);
     ctx.restore();
 
@@ -114,18 +116,40 @@ export class Minimap {
   }
 }
 
-/** Paint a whole course map once, PX_PER_M canvas px per metre, for the minimap. */
+const painted = new WeakMap<MapData, HTMLCanvasElement>();
+/** Paint a whole course map once (pxPerM canvas px per metre), shared by the minimap and full map. */
 export function paintMap(map: MapData): HTMLCanvasElement {
+  const done = painted.get(map);
+  if (done) return done;
   const { bounds } = map;
+  const k = pxPerM(map);
   const c = document.createElement('canvas');
-  c.width = Math.ceil((bounds.maxX - bounds.minX) * PX_PER_M);
-  c.height = Math.ceil((bounds.maxZ - bounds.minZ) * PX_PER_M);
+  c.width = Math.ceil((bounds.maxX - bounds.minX) * k);
+  c.height = Math.ceil((bounds.maxZ - bounds.minZ) * k);
   const g = c.getContext('2d')!;
-  g.scale(PX_PER_M, PX_PER_M);
+  g.scale(k, k);
   g.translate(-bounds.minX, -bounds.minZ);
-  drawMapShapes(g, map, PX_PER_M);
+  drawMapShapes(g, map, k);
+  painted.set(map, c);
   return c;
 }
+
+type Box = { x0: number; x1: number; z0: number; z1: number };
+const boxes = new WeakMap<object, Box>();
+const boxOf = (o: { pts: [number, number][] }, pad: number) => {
+  let b = boxes.get(o);
+  if (!b) {
+    b = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
+    for (const [x, z] of o.pts) {
+      b.x0 = Math.min(b.x0, x - pad);
+      b.x1 = Math.max(b.x1, x + pad);
+      b.z0 = Math.min(b.z0, z - pad);
+      b.z1 = Math.max(b.z1, z + pad);
+    }
+    boxes.set(o, b);
+  }
+  return b;
+};
 
 /**
  * Draw the map's areas and lines in world metres (x right, z down = north up).
@@ -134,9 +158,19 @@ export function paintMap(map: MapData): HTMLCanvasElement {
  */
 export function drawMapShapes(g: CanvasRenderingContext2D, map: MapData, scale: number) {
   const { bounds, areas, lines } = map;
+  // Only draw what lands on the canvas (the full map zooms in a long way).
+  const inv = g.getTransform().inverse();
+  const p0 = inv.transformPoint({ x: 0, y: 0 });
+  const p1 = inv.transformPoint({ x: g.canvas.width, y: g.canvas.height });
+  const view = { x0: Math.min(p0.x, p1.x), x1: Math.max(p0.x, p1.x), z0: Math.min(p0.y, p1.y), z1: Math.max(p0.y, p1.y) };
+  const visible = (o: { pts: [number, number][] }, pad = 0) => {
+    const b = boxOf(o, pad);
+    return b.x1 >= view.x0 && b.x0 <= view.x1 && b.z1 >= view.z0 && b.z0 <= view.z1;
+  };
   g.fillStyle = map.background;
   g.fillRect(bounds.minX, bounds.minZ, bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
   for (const a of areas) {
+    if (!visible(a)) continue;
     g.fillStyle = a.color;
     g.beginPath();
     a.pts.forEach(([x, z], i) => (i ? g.lineTo(x, z) : g.moveTo(x, z)));
@@ -145,6 +179,7 @@ export function drawMapShapes(g: CanvasRenderingContext2D, map: MapData, scale: 
   }
   g.lineCap = g.lineJoin = 'round';
   for (const l of lines) {
+    if (!visible(l, l.width + 4)) continue;
     // Dark casing under each line so roads read against grass.
     const w = Math.max(l.width, 2.2 / scale);
     for (const [lw, color] of [[w + Math.max(3, 2 / scale), 'rgba(0,0,0,0.25)'], [w, l.color]] as const) {

@@ -1,0 +1,38 @@
+# Downloads OpenStreetMap data for the map importer (tools/osm). Runs when
+# a query file changes on an osm-data* branch, or by hand. The raw Overpass
+# JSON is gzipped into data/osm/<name>/ and committed back to the branch.
+# Map data (c) OpenStreetMap contributors, ODbL 1.0.
+name: Fetch OSM data
+on:
+  push:
+    branches: ['osm-data*']
+    paths: ['tools/osm/*.overpassql']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run each query against Overpass
+        run: |
+          set -e
+          for q in tools/osm/*.overpassql; do
+            name=$(basename "$q" .overpassql)
+            mkdir -p "data/osm/$name"
+            for url in https://overpass-api.de/api/interpreter https://overpass.kumi.systems/api/interpreter; do
+              if curl -sS --fail -m 900 -H "User-Agent: pocket-overland-osm-import/1.0 (+https://github.com/hohungyiai/pocket-overland-claude)" --data-urlencode "data@$q" "$url" -o "/tmp/$name.json"; then break; fi
+              echo "retrying with the next server"; sleep 20
+            done
+            python3 -c "import json,sys; d=json.load(open('/tmp/$name.json')); print(len(d['elements']), 'elements')"
+            gzip -9 -c "/tmp/$name.json" > "data/osm/$name/raw.json.gz"
+            { echo "# $name (OpenStreetMap extract)"; echo; echo "Fetched $(date -u +%Y-%m-%dT%H:%MZ) from Overpass with tools/osm/$name.overpassql."; echo; echo "Map data (c) OpenStreetMap contributors, ODbL 1.0. https://www.openstreetmap.org/copyright"; } > "data/osm/$name/README.md"
+          done
+      - name: Commit the data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/osm
+          git diff --cached --quiet || git commit -m "Fetch OSM data"
+          git push
