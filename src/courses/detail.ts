@@ -9,6 +9,13 @@ import { fbm, mulberry32, valueNoise } from '../noise';
 
 export type ArtStyle = 'stylized' | 'detailed';
 
+/**
+ * The detailed style keeps the simple low-poly trees and plain lawns of the
+ * stylized look (the user preferred them): textured buildings, roads, water
+ * and sky, but no leaf-card foliage or grass tufts. Flip to bring them back.
+ */
+export const DETAILED_FOLIAGE = false;
+
 const canvas = (w: number, h = w) => {
   const c = document.createElement('canvas');
   c.width = w;

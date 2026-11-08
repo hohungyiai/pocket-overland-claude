@@ -1354,7 +1354,7 @@ export async function buildPasirRisCourse(
     },
     grass: { geo: tint(new THREE.ConeGeometry(0.16, 0.6, 4), 0x7a9a40), mat: plainMat, shadow: false, hues: [0.23, 0.32, 0.6, 0.04] },
   };
-  if (detailed) {
+  if (detailed && D.DETAILED_FOLIAGE) {
     const atlas = D.foliageAtlas();
     const leafOpts = { map: atlas, alphaTest: 0.45, side: THREE.DoubleSide, flatShading: false, roughness: 0.8 };
     const foliage = (s: number) => [swayMat(s, { map: atlas, flatShading: false, roughness: 0.85 }), swayMat(s, leafOpts)];
@@ -1442,7 +1442,7 @@ export async function buildPasirRisCourse(
       if (!kind) continue;
       plants.push({ kind, x, z, s: kind === 'shrub' ? 0.6 + rand() * 0.7 : 0.8 + rand() * 0.45 });
     }
-    if (detailed) {
+    if (detailed && D.DETAILED_FOLIAGE) {
       const rd = tileRand(ti, tj, 2);
       for (let n = 0; n < 2400; n++) {
         const x = x0 + rd() * TILE;

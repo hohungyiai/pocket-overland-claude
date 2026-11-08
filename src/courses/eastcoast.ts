@@ -672,7 +672,7 @@ export function buildEastCoastCourse(
     flowers: { geo: shrub, mat: swayMat(0.02), shadow: false, hues: [0.92, 0.6, 0.6, 0.04] },
     grass: { geo: grassClump, mat: plainMat, shadow: false },
   };
-  if (detailed) {
+  if (detailed && D.DETAILED_FOLIAGE) {
     // Leaf-card foliage from one generated atlas; smooth shading; alpha-cut
     // leaves (and their shadows). Instance tints are lighter because the
     // atlas already carries the leaf shading.
@@ -743,7 +743,7 @@ export function buildEastCoastCourse(
     else if (r < 0.5) put('grass', x, z, 0.7 + rand() * 0.7);
   }
 
-  if (detailed) {
+  if (detailed && D.DETAILED_FOLIAGE) {
     // Denser grass tufts: the most visible gain up close.
     for (let i = 0; i < 70000; i++) {
       const x = -VEG_X + randDetail() * VEG_X * 2;
