@@ -49,7 +49,7 @@ export interface Course {
   /** Load the world around a point right away (before placing the car there). */
   prepareAt?(x: number, z: number): void;
   /** Tile streaming counters, for the debug overlay. */
-  streamStats?: () => { near: number; far: number; pending: number; maxStepMs: number };
+  streamStats?: () => { near: number; far: number; horizon: number; pending: number; maxStepMs: number };
   /** Places where you can make camp (rest and save). */
   camps?: import('../camp').CampSpot[];
   sky: { background: number; fog: number; fogNear: number; fogFar: number };
