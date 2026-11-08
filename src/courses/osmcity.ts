@@ -791,6 +791,13 @@ export async function buildPasirRisCourse(
     }
     return sr / sw;
   };
+  /** Just beneath any junction paving at (x, z) (Infinity where there is none). */
+  const underPaving = (x: number, z: number) => {
+    let top = Infinity;
+    for (const id of jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL)) ?? [])
+      if (ringDist(JPOLY[id].ring, x, z)[0] < 0.5) top = Math.min(top, jTop(id, x, z) + (JPOLY[id].fill ? 0.085 : 0.09) - 0.3);
+    return top;
+  };
   /** On a paved island? */
   const onIsland = (x: number, z: number) =>
     !!jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL))?.some((id) => JPOLY[id].fill && inRingXZ(JPOLY[id].ring, x, z));
@@ -1223,6 +1230,8 @@ export async function buildPasirRisCourse(
       keep?: (k: number) => boolean;
       /** With yAt: how far each cross-section lies on the ground instead (0..1), and its height above it. */
       tilt?: (k: number) => [number, number];
+      /** The highest the surface may be at (x, z), before the lift. */
+      capAt?: (x: number, z: number) => number;
       /** Each corner of a piece must pass this too (x, surface y, z). */
       clearAt?: (x: number, y: number, z: number) => boolean;
       /** The drawn part of pts (a cut road): its ends look only inward for their direction. */
@@ -1259,7 +1268,9 @@ export async function buildPasirRisCourse(
           const [tk, rk] = o.tilt(k);
           if (tk > 0) yk = lerp(yk, Math.max(rawHeight(x, z), WL + 0.15) + rk, tk);
         }
-        acc.pos.push(x, (yk === yk ? yk : (o.y ?? Math.max(rawHeight(x, z), WL + 0.15))) + lift, z);
+        let yv = yk === yk ? yk : (o.y ?? Math.max(rawHeight(x, z), WL + 0.15));
+        if (o.capAt) yv = Math.min(yv, o.capAt(x, z));
+        acc.pos.push(x, yv + lift, z);
         acc.uv.push(((sgn + 1) / 2) * ((half * 2) / 6), cum[k] / 6);
       }
     }
@@ -1504,6 +1515,16 @@ export async function buildPasirRisCourse(
           if (cut.yhi === cut.yhi) dy[cut.hi] = cut.yhi;
         }
         const yAt = dy ? (kk: number) => dy[kk] : undefined;
+        // Under a junction, the road it was cut back from still runs on just
+        // beneath the paving, so no sliver the junction's outline leaves out
+        // of the road shows the ground through.
+        if (!isDeck[line] && (cut.lo > 0 || cut.hi < pts.length - 1)) {
+          const yAt0 = dy0 ? (kk: number) => dy0[kk] : undefined;
+          const tilt0 = dy0 && !elevated[line] ? (kk: number): [number, number] => [tiltAt(line, cum[kk]), relAlong(line, cum[kk])] : undefined;
+          const under = { yAt: yAt0, tilt: tilt0, join: joinOf(line), capAt: underPaving };
+          if (cut.lo > 0 && k0 < cut.lo + 1) strip(road, pts, cum, k0, Math.min(k1, cut.lo + 1), halfAt, 0.06, under);
+          if (cut.hi < pts.length - 1 && k1 > cut.hi - 1) strip(road, pts, cum, Math.max(k0, cut.hi - 1), k1, halfAt, 0.06, under);
+        }
         const lo = Math.max(k0, cut.lo);
         const hi = Math.min(k1, cut.hi);
         if (hi <= lo) continue;
