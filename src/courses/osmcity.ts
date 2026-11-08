@@ -351,6 +351,33 @@ export async function buildPasirRisCourse(
       if (up) deckLevel[i] = Math.max(deckLevel[i], deckLevel[o] + 1);
     }
   });
+  // ---------- Junction shapes ----------
+  // Half width along a road: where two pieces of one road meet with different
+  // widths (OSM lane counts change), both taper to the average.
+  const otherHalf = (j: number, me: number) => {
+    const l = jE[j];
+    const o = l[0] === me ? l[1] : l[0];
+    return o === undefined ? EHALF[me] : EHALF[o];
+  };
+  const halfAtE = (i: number, k: number) => {
+    const e = edges[i];
+    const half = EHALF[i];
+    const cum = ECUM[i];
+    const ha = jE[e.a]?.length === 2 ? (otherHalf(e.a, i) - half) / 2 : 0;
+    const hb = jE[e.b]?.length === 2 ? (otherHalf(e.b, i) - half) / 2 : 0;
+    return half + ha * (1 - smoothstep(0, 16, cum[k])) + hb * (1 - smoothstep(0, 16, ELEN[i] - cum[k]));
+  };
+  const JX = shapeJunctions({
+    junctions: M.junctions,
+    edges,
+    EP,
+    ECUM,
+    halfAt: halfAtE,
+    rank: (i) => rankOf(edges[i].cls),
+    // Flyover decks keep plain pads; ramps and ground roads join shaped junctions.
+    shapeable: (i) => !isDeck[i],
+    roads,
+  });
   // Junction heights above the ground: full height at a flyover's ends, then
   // falling away along the roads that lead to it. A junction may have a cap
   // (a road there runs under a flyover), and a road between two very
@@ -362,6 +389,14 @@ export async function buildPasirRisCourse(
   // a deck beside it, or a deck raised to clear a road below): each falls
   // away at RAMP_GRADE both ways.
   const needs: { s: number; rel: number }[][] = edges.map(() => []);
+  // A road is level across a shaped junction (out to its mouth), so every
+  // road leaves the junction at the junction's own height; it climbs or
+  // falls only beyond. runA / runB: distance along the climb from each end.
+  const trimA = (i: number) => (elevated[i] ? 0 : JX.trimA[i] || 0);
+  const trimB = (i: number) => (elevated[i] ? 0 : JX.trimB[i] || 0);
+  const runLen = (i: number) => Math.max(0, ELEN[i] - trimA(i) - trimB(i));
+  const runA = (i: number, s: number) => Math.max(0, Math.min(runLen(i), s - trimA(i)));
+  const runB = (i: number, s: number) => runLen(i) - runA(i, s);
   const lift = () => {
     jRel.fill(0);
     const queue: number[] = [];
@@ -381,15 +416,15 @@ export async function buildPasirRisCourse(
     });
     needs.forEach((list, i) => {
       for (const n of list) {
-        raise(edges[i].a, n.rel - RAMP_GRADE * n.s);
-        raise(edges[i].b, n.rel - RAMP_GRADE * (ELEN[i] - n.s));
+        raise(edges[i].a, n.rel - RAMP_GRADE * runA(i, n.s));
+        raise(edges[i].b, n.rel - RAMP_GRADE * runB(i, n.s));
       }
     });
     while (queue.length) {
       const j = queue.pop()!;
       for (const i of jE[j] ?? []) {
         if (elevated[i]) continue;
-        raise(edges[i].a === j ? edges[i].b : edges[i].a, jRel[j] - RAMP_GRADE * ELEN[i]);
+        raise(edges[i].a === j ? edges[i].b : edges[i].a, jRel[j] - RAMP_GRADE * runLen(i));
       }
     }
   };
@@ -402,10 +437,11 @@ export async function buildPasirRisCourse(
     let r: number;
     if (elevated[i]) r = lerp(ra, rb, len > 0 ? s / len : 0);
     else {
-      const g = Math.max(RAMP_GRADE, len > 0 ? Math.abs(ra - rb) / len : 0);
-      r = Math.max(0, ra - g * s, rb - g * (len - s));
+      const run = runLen(i);
+      const g = Math.max(RAMP_GRADE, run > 0 ? Math.abs(ra - rb) / run : 0);
+      r = Math.max(0, ra - g * runA(i, s), rb - g * runB(i, s));
     }
-    for (const n of needs[i]) r = Math.max(r, n.rel - RAMP_GRADE * Math.abs(s - n.s));
+    for (const n of needs[i]) r = Math.max(r, n.rel - RAMP_GRADE * Math.abs(runA(i, s) - runA(i, n.s)));
     return r;
   };
   // Headroom. Wherever a raised road runs over a lower one:
@@ -456,7 +492,7 @@ export async function buildPasirRisCourse(
     // Can road o rise to `rel` at s, no steeper than 1 in 10 from a capped end?
     const MAXG = 0.1;
     const canRise = (o: number, s: number, rel: number) =>
-      rel - MAXG * s <= jCap[edges[o].a] && rel - MAXG * (ELEN[o] - s) <= jCap[edges[o].b];
+      rel - MAXG * runA(o, s) <= jCap[edges[o].a] && rel - MAXG * runB(o, s) <= jCap[edges[o].b];
     for (let pass = 0; pass < 4; pass++) {
       let changed = false;
       const hits = hitsNow();
@@ -472,8 +508,8 @@ export async function buildPasirRisCourse(
           // (Held right down unless it was well up: small rises under a deck
           // only leave steps against the roads beside it.)
           const cap = want > 1 ? want : 0;
-          jCap[e.a] = Math.min(jCap[e.a], cap + RAMP_GRADE * h.so);
-          jCap[e.b] = Math.min(jCap[e.b], cap + RAMP_GRADE * (ELEN[h.o] - h.so));
+          jCap[e.a] = Math.min(jCap[e.a], cap + RAMP_GRADE * runA(h.o, h.so));
+          jCap[e.b] = Math.min(jCap[e.b], cap + RAMP_GRADE * runB(h.o, h.so));
           if (want <= 0.05) needs[h.i].push({ s: ECUM[h.i][h.k], rel: h.bo + HEAD - baseAt(EP[h.i][h.k][0], EP[h.i][h.k][1]) });
         } else {
           // Raise the road above.
@@ -551,33 +587,6 @@ export async function buildPasirRisCourse(
     return lerp(d[seg], d[Math.min(d.length - 1, seg + 1)], u);
   };
 
-  // ---------- Junction shapes ----------
-  // Half width along a road: where two pieces of one road meet with different
-  // widths (OSM lane counts change), both taper to the average.
-  const otherHalf = (j: number, me: number) => {
-    const l = jE[j];
-    const o = l[0] === me ? l[1] : l[0];
-    return o === undefined ? EHALF[me] : EHALF[o];
-  };
-  const halfAtE = (i: number, k: number) => {
-    const e = edges[i];
-    const half = EHALF[i];
-    const cum = ECUM[i];
-    const ha = jE[e.a]?.length === 2 ? (otherHalf(e.a, i) - half) / 2 : 0;
-    const hb = jE[e.b]?.length === 2 ? (otherHalf(e.b, i) - half) / 2 : 0;
-    return half + ha * (1 - smoothstep(0, 16, cum[k])) + hb * (1 - smoothstep(0, 16, ELEN[i] - cum[k]));
-  };
-  const JX = shapeJunctions({
-    junctions: M.junctions,
-    edges,
-    EP,
-    ECUM,
-    halfAt: halfAtE,
-    rank: (i) => rankOf(edges[i].cls),
-    // Flyover decks keep plain pads; ramps and ground roads join shaped junctions.
-    shapeable: (i) => !isDeck[i],
-    roads,
-  });
   // Kerbs stop where another road runs across them (a lane or drive joining
   // just beside the junction).
   const drawnAt = (line: number, seg: number, u: number) => {
@@ -673,6 +682,76 @@ export async function buildPasirRisCourse(
         else jGrid.set(k, [id]);
       }
   });
+  // A paved island sits level with the roads round it (not down in the dip
+  // between two embankments): each outline point at its nearest road's
+  // height, blended across (nearest counts most), never below the ground.
+  const fillRing = new Map<number, number[]>();
+  const fillTop = (id: number, x: number, z: number) => {
+    const sh = JPOLY[id];
+    let ry = fillRing.get(id);
+    if (!ry) {
+      ry = sh.ring.map(([px, pz]) => {
+        const r = roads.nearest(px, pz, 30, (i) => !elevated[i]);
+        return r && hasProfile[r.line] ? deckAtHit(r.line, r.seg, r.u) : Math.max(rawHeight(px, pz), WL + 0.15);
+      });
+      fillRing.set(id, ry);
+    }
+    let sw = 0;
+    let sy = 0;
+    for (let q = 0; q < ry.length; q++) {
+      const dd = Math.hypot(x - sh.ring[q][0], z - sh.ring[q][1]);
+      if (dd < 1e-3) return ry[q];
+      const w = 1 / (dd * dd);
+      sw += w;
+      sy += w * ry[q];
+    }
+    return Math.max(sy / sw, rawHeight(x, z), WL + 0.15);
+  };
+  // A shaped junction with a raised road among its mouths: its surface
+  // blends between the mouths' heights above the ground (nearest mouth
+  // counts most), so it meets every road at that road's own level.
+  const segD = (x: number, z: number, a: XZ, b: XZ) => {
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz || 1)));
+    return Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t);
+  };
+  const mouthRels = new Map<number, number[] | null>();
+  const relsOf = (id: number) => {
+    let r = mouthRels.get(id);
+    if (r === undefined) {
+      const sh = JPOLY[id];
+      r = sh.mouths.some((m) => hasProfile[m.line])
+        ? sh.mouths.map((m) => {
+            if (!hasProfile[m.line]) return 0;
+            const c = cutOf(m.line);
+            const y = m.end === 0 ? c.ylo : c.yhi;
+            return y === y ? y - Math.max(rawHeight(m.q[0], m.q[1]), WL + 0.15) : 0;
+          })
+        : null;
+      mouthRels.set(id, r);
+    }
+    return r;
+  };
+  /** The top of junction id's paving at (x, z) (before its small lift). */
+  const jTop = (id: number, x: number, z: number) => {
+    const sh = JPOLY[id];
+    if (sh.fill) return fillTop(id, x, z);
+    const rels = relsOf(id);
+    const g = Math.max(rawHeight(x, z), WL + 0.15);
+    if (!rels) return g;
+    let sw = 0;
+    let sr = 0;
+    for (let q = 0; q < rels.length; q++) {
+      const m = sh.mouths[q];
+      const dd = segD(x, z, m.left, m.right);
+      if (dd < 1e-3) return g + rels[q];
+      const w = 1 / (dd * dd);
+      sw += w;
+      sr += w * rels[q];
+    }
+    return g + sr / sw;
+  };
   /** On a paved island? */
   const onIsland = (x: number, z: number) =>
     !!jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL))?.some((id) => JPOLY[id].fill && inRingXZ(JPOLY[id].ring, x, z));
@@ -827,7 +906,7 @@ export async function buildPasirRisCourse(
         const [d, px, pz] = ringDist(sh.ring, x, z);
         if (d > SEAL + 2) continue;
         // (Deeper under a big island: its wide triangles cut corners off the ground.)
-        const cap = Math.max(rawHeight(px, pz), WL + 0.15) - (d === 0 && sh.fill ? 0.5 : 0.12) + Math.max(0, d - SEAL);
+        const cap = (sh.fill ? fillTop(id, px, pz) : Math.max(rawHeight(px, pz), WL + 0.15)) - (d === 0 && sh.fill ? 0.5 : 0.12) + Math.max(0, d - SEAL);
         if (cap < h) h = cap;
       }
     probe.s = ps;
@@ -1631,35 +1710,7 @@ export async function buildPasirRisCourse(
             yOf.set(m.right, y);
           }
         }
-        // With a ramp among its mouths, the whole surface blends between the
-        // mouths' heights above the ground (nearest mouth counts most), so it
-        // meets every road at that road's own level.
-        const rels = yOf.size
-          ? sh.mouths.map((m) => {
-              const y = yOf.get(m.left);
-              return { m, rel: y === undefined ? 0 : y - dropY(m.q[0], m.q[1]) };
-            })
-          : [];
-        const segD = (x: number, z: number, a: XZ, b: XZ) => {
-          const dx = b[0] - a[0];
-          const dz = b[1] - a[1];
-          const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz || 1)));
-          return Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t);
-        };
-        const surfY = (x: number, z: number) => {
-          const g = dropY(x, z);
-          if (!rels.length) return g;
-          let sw = 0;
-          let sr = 0;
-          for (const { m, rel } of rels) {
-            const dd = segD(x, z, m.left, m.right);
-            if (dd < 1e-3) return g + rel;
-            const w = 1 / (dd * dd);
-            sw += w;
-            sr += w * rel;
-          }
-          return g + sr / sw;
-        };
+        const surfY = (x: number, z: number) => jTop(id, x, z);
         const base = road.pos.length / 3;
         road.pos.push(cx, surfY(cx, cz) + lift, cz);
         road.uv.push(cx / 6, cz / 6);
@@ -2693,6 +2744,9 @@ export async function buildPasirRisCourse(
       JX,
       halfAtE,
       cutOf,
+      needs, jCap, relAlong, ELEN,
+      fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
+      jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
   return {
     name: 'Pasir Ris & Tampines',
