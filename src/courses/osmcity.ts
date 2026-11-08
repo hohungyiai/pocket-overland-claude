@@ -11,8 +11,8 @@ import { SegIndex, inRing, resample, ringArea } from '../world/segindex';
 //
 // OSM is the guide, not the mesh: the importer (tools/osm/import.mjs) turns
 // it into a clean road graph, land-use areas, building footprints, canals
-// and a coastline. Here we lay our own smooth ground over that plan (flat
-// estates, a sloping beach, canals and ponds cut in), drape road ribbons on
+// and a coastline. Here we lay our own smooth ground over that plan (gentle
+// made-up hills, a sloping beach, canals and ponds cut in), drape road ribbons on
 // it with junction pads and lane markings, extrude the buildings from their
 // real footprints, and grow trees along the streets and through the parks.
 // Everything is built per tile as the streamer loads it.
@@ -21,7 +21,7 @@ import { SegIndex, inRing, resample, ringArea } from '../world/segindex';
 
 type Rapier = typeof RAPIER_NS;
 
-interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; name?: string; pts: XZ[] }
+interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[] }
 interface OsmMap {
   attribution: string;
   junctions: XZ[];
@@ -91,6 +91,125 @@ export async function buildPasirRisCourse(
   const paths = M.paths.map((p) => ({ k: p.k, pts: resample(p.pts, 4) }));
   const PHALF = paths.map((p) => (p.k === 'cycle' ? 1.4 : 1.1));
   const pathIdx = new SegIndex(paths.map((p) => p.pts), 24);
+
+  // ---------- Flyovers and bridges ----------
+  // OSM tags the deck of a bridge (with its layer) but not the ramps up to
+  // it. A bridge that crosses another road, a railway, or is long is a
+  // flyover: its deck stands DECK_H per layer above the ground, and the
+  // roads leading to it climb on embankments at RAMP_GRADE. Other bridges
+  // (over canals and drains) are low decks just above the banks.
+  const DECK_H = 6.5;
+  const RAMP_GRADE = 0.05;
+  const isDeck = edges.map((e) => (e.lv ?? 0) > 0);
+  const ELEN = ECUM.map((c) => c[c.length - 1]);
+  const jE = M.junctions.map(() => [] as number[]);
+  edges.forEach((e, i) => {
+    jE[e.a]?.push(i);
+    if (e.b !== e.a) jE[e.b]?.push(i);
+  });
+  const shares = (i: number, o: number) => edges[i].a === edges[o].a || edges[i].a === edges[o].b || edges[i].b === edges[o].a || edges[i].b === edges[o].b;
+  const groundRail = M.rail.filter((r) => !r.tunnel && !r.bridge);
+  const railIdx = new SegIndex(groundRail.map((r) => r.pts), 32);
+  /** Does line i pass over (not join) a line accepted by `hit`, away from its ends? */
+  const crosses = (i: number, idx: SegIndex, hit: (o: number) => boolean) => {
+    const pts = EP[i];
+    const cum = ECUM[i];
+    const pad = EHALF[i] + 4;
+    for (let k = 0; k < pts.length; k++) {
+      if (cum[k] < pad || cum[k] > ELEN[i] - pad) continue;
+      if (idx.nearest(pts[k][0], pts[k][1], 2.5, hit)) return true;
+    }
+    return false;
+  };
+  const elevated = edges.map((e, i) => {
+    if (!isDeck[i]) return false;
+    if (e.vd || (e.lv ?? 0) >= 2 || ELEN[i] > 250) return true;
+    return crosses(i, roads, (o) => o !== i && !isDeck[o] && !shares(i, o)) || crosses(i, railIdx, () => true);
+  });
+  // A flyover split into several bridge pieces in OSM is all one flyover.
+  for (let changed = true; changed; ) {
+    changed = false;
+    edges.forEach((e, i) => {
+      if (!isDeck[i] || elevated[i]) return;
+      if ([...(jE[e.a] ?? []), ...(jE[e.b] ?? [])].some((o) => elevated[o])) {
+        elevated[i] = true;
+        changed = true;
+      }
+    });
+  }
+  // Where two flyovers cross, the slip road (or the higher OSM layer) goes over.
+  const deckLevel = edges.map((e, i) => (elevated[i] ? Math.max(1, e.lv ?? 1) : 0));
+  const elevIdx = new SegIndex(EP, 24, false, (i) => !elevated[i]);
+  edges.forEach((e, i) => {
+    if (!elevated[i]) return;
+    const pts = EP[i];
+    for (let k = 0; k < pts.length; k += 2) {
+      const r = elevIdx.nearest(pts[k][0], pts[k][1], 2.5, (o) => o !== i && !shares(i, o));
+      if (!r) continue;
+      const o = r.line;
+      const mine = [e.lv ?? 1, -rankOf(e.cls), i];
+      const theirs = [edges[o].lv ?? 1, -rankOf(edges[o].cls), o];
+      const up = mine[0] !== theirs[0] ? mine[0] > theirs[0] : mine[1] !== theirs[1] ? mine[1] > theirs[1] : i > o;
+      if (up) deckLevel[i] = Math.max(deckLevel[i], deckLevel[o] + 1);
+    }
+  });
+  // Junction heights above the ground: full height at a flyover's ends, then
+  // falling away along the roads that lead to it.
+  const jRel = new Float32Array(M.junctions.length);
+  const queue: number[] = [];
+  edges.forEach((e, i) => {
+    if (!elevated[i]) return;
+    for (const j of [e.a, e.b]) {
+      if (DECK_H * deckLevel[i] > jRel[j]) {
+        jRel[j] = DECK_H * deckLevel[i];
+        queue.push(j);
+      }
+    }
+  });
+  while (queue.length) {
+    const j = queue.pop()!;
+    for (const i of jE[j] ?? []) {
+      if (elevated[i]) continue;
+      const n = edges[i].a === j ? edges[i].b : edges[i].a;
+      const r = jRel[j] - RAMP_GRADE * ELEN[i];
+      if (r > jRel[n] + 0.01) {
+        jRel[n] = r;
+        queue.push(n);
+      }
+    }
+  }
+  /** Road height above the ground at distance s along edge i. */
+  const relAlong = (i: number, s: number) => {
+    const ra = jRel[edges[i].a] ?? 0;
+    const rb = jRel[edges[i].b] ?? 0;
+    const len = ELEN[i];
+    if (elevated[i]) return lerp(ra, rb, len > 0 ? s / len : 0);
+    return Math.max(0, ra - RAMP_GRADE * s, rb - RAMP_GRADE * (len - s));
+  };
+  // Roads (not decks) that climb to a flyover: the ground rises under them.
+  const embank = edges.map((e, i) => !isDeck[i] && ((jRel[e.a] ?? 0) > 0.02 || (jRel[e.b] ?? 0) > 0.02));
+  const rampIdx = new SegIndex(EP, 24, false, (i) => !embank[i]);
+  // Coarse 16 m grid of where an embankment might be, so heightAt can skip the search.
+  const RG = 16;
+  const rampNear = new Uint8Array(Math.ceil((WB.maxX - WB.minX) / RG) * Math.ceil((WB.maxZ - WB.minZ) / RG));
+  const RGW = Math.ceil((WB.maxX - WB.minX) / RG);
+  const RGH = Math.ceil((WB.maxZ - WB.minZ) / RG);
+  edges.forEach((_, i) => {
+    if (!embank[i]) return;
+    const reach = EHALF[i] + 4 + 3 * Math.max(jRel[edges[i].a], jRel[edges[i].b]) + RG;
+    for (const [x, z] of EP[i]) {
+      const i0 = Math.floor((x - reach - WB.minX) / RG);
+      const i1 = Math.floor((x + reach - WB.minX) / RG);
+      const j0 = Math.floor((z - reach - WB.minZ) / RG);
+      const j1 = Math.floor((z + reach - WB.minZ) / RG);
+      for (let jj = Math.max(0, j0); jj <= Math.min(RGH - 1, j1); jj++) for (let ii = Math.max(0, i0); ii <= Math.min(RGW - 1, i1); ii++) rampNear[jj * RGW + ii] = 1;
+    }
+  });
+  const nearRamp = (x: number, z: number) => {
+    const i = Math.floor((x - WB.minX) / RG);
+    const j = Math.floor((z - WB.minZ) / RG);
+    return i >= 0 && i < RGW && j >= 0 && j < RGH && rampNear[j * RGW + i] === 1;
+  };
 
   // ---------- Coast and inland water ----------
   const coast = new SegIndex(M.coast, 32);
@@ -225,15 +344,102 @@ export async function buildPasirRisCourse(
     return lerp(lerp(softAt(i, j), softAt(i + 1, j), tx), lerp(softAt(i, j + 1), softAt(i + 1, j + 1), tx), tz);
   };
 
+  // ---------- Gentle hills ----------
+  // Made-up rolling ground, a few metres high over hundreds of metres. It
+  // fades out towards the sea, canals and ponds, so water stays level and
+  // the banks stay low.
+  const HILL = 10;
+  const DG = 8;
+  const DW = (WB.maxX - WB.minX) / DG;
+  const DH = (WB.maxZ - WB.minZ) / DG;
+  const hillW = (() => {
+    const d = new Float32Array(DW * DH);
+    for (let j = 0; j < DH; j++)
+      for (let i = 0; i < DW; i++) {
+        const x = WB.minX + (i + 0.5) * DG;
+        const z = WB.minZ + (j + 0.5) * DG;
+        const c = cell(x, z);
+        const k = c & 15;
+        d[j * DW + i] = isSea(x, z) || c & NEAR_WET || k === KI.water || k === KI.beach || k === KI.mangrove ? 0 : 1e9;
+      }
+    // Two-pass chamfer distance, in metres.
+    const a = DG;
+    const b = DG * Math.SQRT2;
+    for (let j = 0; j < DH; j++)
+      for (let i = 0; i < DW; i++) {
+        const q = j * DW + i;
+        let v = d[q];
+        if (i > 0) v = Math.min(v, d[q - 1] + a);
+        if (j > 0) {
+          v = Math.min(v, d[q - DW] + a);
+          if (i > 0) v = Math.min(v, d[q - DW - 1] + b);
+          if (i < DW - 1) v = Math.min(v, d[q - DW + 1] + b);
+        }
+        d[q] = v;
+      }
+    for (let j = DH - 1; j >= 0; j--)
+      for (let i = DW - 1; i >= 0; i--) {
+        const q = j * DW + i;
+        let v = d[q];
+        if (i < DW - 1) v = Math.min(v, d[q + 1] + a);
+        if (j < DH - 1) {
+          v = Math.min(v, d[q + DW] + a);
+          if (i < DW - 1) v = Math.min(v, d[q + DW + 1] + b);
+          if (i > 0) v = Math.min(v, d[q + DW - 1] + b);
+        }
+        d[q] = v;
+      }
+    for (let q = 0; q < d.length; q++) d[q] = smoothstep(40, 260, d[q]);
+    return d;
+  })();
+  /** Hill height above the estate level at (x, z), metres. */
+  const hill = (x: number, z: number) => {
+    const fx = Math.min(DW - 1.001, Math.max(0, (x - WB.minX) / DG - 0.5));
+    const fz = Math.min(DH - 1.001, Math.max(0, (z - WB.minZ) / DG - 0.5));
+    const i = Math.floor(fx);
+    const j = Math.floor(fz);
+    const tx = fx - i;
+    const tz = fz - j;
+    const q = j * DW + i;
+    const w = lerp(lerp(hillW[q], hillW[q + 1], tx), lerp(hillW[q + DW], hillW[q + DW + 1], tx), tz);
+    if (w <= 0) return 0;
+    return HILL * w * smoothstep(-0.45, 0.6, fbm(x / 520, z / 520, SEED + 21, 3));
+  };
+  /** The dry ground level (estate level plus hills), ignoring water and ramps. */
+  const baseAt = (x: number, z: number) => LAND + hill(x, z);
+  // Bridge deck heights along each deck edge (centre line), made on demand.
+  const roadDeckCache = new Map<number, Float32Array>();
+  const deckY = (i: number) => {
+    let d = roadDeckCache.get(i);
+    if (d) return d;
+    const pts = EP[i];
+    const cum = ECUM[i];
+    const len = ELEN[i];
+    d = new Float32Array(pts.length);
+    for (let k = 0; k < pts.length; k++) {
+      // Low bridges arch a little over the water.
+      const arch = elevated[i] ? 0 : 0.4 * smoothstep(0, 10, cum[k]) * smoothstep(0, 10, len - cum[k]);
+      d[k] = baseAt(pts[k][0], pts[k][1]) + relAlong(i, cum[k]) + arch;
+    }
+    roadDeckCache.set(i, d);
+    return d;
+  };
+  /** Deck height at a SegIndex hit on edge i. */
+  const deckAtHit = (i: number, seg: number, u: number) => {
+    const d = deckY(i);
+    return lerp(d[seg], d[Math.min(d.length - 1, seg + 1)], u);
+  };
+
   // ---------- Ground height ----------
   const probe = { s: 60, w: 30 };
   function heightAt(x: number, z: number): number {
     const s = coastSD(x, z);
     probe.s = s;
     probe.w = 30;
-    let h = LAND;
+    const hb = baseAt(x, z);
+    let h = hb;
     if (s < BEACH) {
-      h = s >= 0 ? lerp(0.3, LAND, smoothstep(0, BEACH, s)) : 0.3 - 1.5 * smoothstep(0, 22, -s) - 3 * smoothstep(22, 70, -s);
+      h = s >= 0 ? lerp(0.3, hb, smoothstep(0, BEACH, s)) : 0.3 - 1.5 * smoothstep(0, 22, -s) - 3 * smoothstep(22, 70, -s);
       h += 0.1 * (valueNoise(x / 9, z / 9, SEED + 4) - 0.5);
     }
     if (s > -4) {
@@ -246,9 +452,24 @@ export async function buildPasirRisCourse(
     }
     // Roads always stay on level ground: over canals, tidal river mouths and
     // beaches they run on an embankment (bridges and culverts in real life).
-    if (h < LAND - 0.02) {
-      const r = roads.nearest(x, z, 24);
-      if (r) h = lerp(h, LAND, smoothstep(EHALF[r.line] + 8, EHALF[r.line] + 1.5, r.d));
+    // (Bridge decks span the water instead.)
+    if (h < hb - 0.02) {
+      const r = roads.nearest(x, z, 24, (i) => !isDeck[i]);
+      if (r) h = lerp(h, hb, smoothstep(EHALF[r.line] + 8, EHALF[r.line] + 1.5, r.d));
+    }
+    // Embankments carry the roads up to the flyovers.
+    // Where several meet or run side by side, the highest wins.
+    if (nearRamp(x, z)) {
+      const h0 = h;
+      rampIdx.each(x, z, 48, (line, seg, u, d) => {
+        const inner = EHALF[line] + 1.5;
+        if (d > inner + 2 + 3 * DECK_H * 2) return;
+        const pts = EP[line];
+        const sl = Math.hypot(pts[seg + 1][0] - pts[seg][0], pts[seg + 1][1] - pts[seg][1]);
+        const rel = relAlong(line, ECUM[line][seg] + u * sl);
+        if (rel <= 0.02 || hb + rel <= h0) return;
+        h = Math.max(h, lerp(h0, hb + rel, smoothstep(inner + 2 + rel * 3, inner, d)));
+      });
     }
     if (s > BEACH) {
       const o = openness(x, z);
@@ -296,8 +517,10 @@ export async function buildPasirRisCourse(
   }
 
   function surfaceAt(x: number, z: number, y: number): Surface {
-    const r = roads.nearest(x, z, 12);
+    const r = roads.nearest(x, z, 12, (i) => !elevated[i]);
     if (r && r.d < EHALF[r.line] + 0.3) return SURFACES.asphalt;
+    const up = elevIdx.nearest(x, z, 12);
+    if (up && up.d < EHALF[up.line] + 0.6 && y > deckAtHit(up.line, up.seg, up.u) - 1.5) return SURFACES.asphalt;
     const s = coastSD(x, z);
     if (s < 0 && y < 0.05) return SURFACES.water;
     if (y < WL - 0.05 && wetSD(x, z) < 0) return SURFACES.water;
@@ -531,15 +754,18 @@ export async function buildPasirRisCourse(
     // Counter-clockwise seen from above, so the pad faces up.
     for (let i = 0; i < n; i++) acc.idx.push(base, base + 1 + ((i + 1) % n), base + 1 + i);
   };
-  const accMesh = (acc: Acc, mat: THREE.Material, kit: TileKit) => {
+  const accMesh = (acc: Acc, mat: THREE.Material, kit: TileKit, upright = false) => {
     if (!acc.idx.length) return;
     const g = kit.own(new THREE.BufferGeometry());
     g.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(acc.uv, 2));
-    const nrm = new Float32Array(acc.pos.length);
-    for (let i = 1; i < nrm.length; i += 3) nrm[i] = 1;
-    g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
     g.setIndex(acc.idx);
+    if (upright) g.computeVertexNormals(); // walls and railings: light them as walls
+    else {
+      const nrm = new Float32Array(acc.pos.length);
+      for (let i = 1; i < nrm.length; i += 3) nrm[i] = 1;
+      g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    }
     g.computeBoundingSphere();
     const m = new THREE.Mesh(g, mat);
     m.receiveShadow = true;
@@ -565,6 +791,7 @@ export async function buildPasirRisCourse(
     cycle: flatMat(0xa45b49, -2, tartanTex),
     rail: flatMat(0xd9d6cf, -1),
     ballast: flatMat(0x7d7872, -1),
+    deck: flatMat(0xc4c0b8, 0),
   };
   type AccKey = keyof typeof MAT | 'wall' | 'roof';
   /** Turn a tile's filled buffers into meshes. */
@@ -572,7 +799,7 @@ export async function buildPasirRisCourse(
     for (const [key, acc] of accs) {
       yield;
       if (key !== 'wall' && key !== 'roof') {
-        accMesh(acc, MAT[key], kit);
+        accMesh(acc, MAT[key], kit, key === 'deck' || key === 'rail');
         continue;
       }
       if (!acc.pos.length) continue;
@@ -623,6 +850,20 @@ export async function buildPasirRisCourse(
     });
     return out;
   };
+  /**
+   * Is (x, z) on another road's surface at about the same level? For a deck
+   * (y = its height) any road within a few metres of that height counts;
+   * on the ground, any other ground road.
+   */
+  const coveredBy = (line: number, x: number, z: number, y: number) => {
+    let hit = false;
+    roads.each(x, z, 16, (i, seg, u, d) => {
+      if (hit || i === line || d > EHALF[i] + 0.2) return;
+      if (y !== y) hit = !elevated[i];
+      else hit = Math.abs((isDeck[i] ? deckAtHit(i, seg, u) : heightAt(x, z)) - y) < 3;
+    });
+    return hit;
+  };
   const roadRuns = runsOf(EP);
   for (const [k, all] of roadRuns)
     inChunks('far', k, all, 30, (list, _kit, acc) => {
@@ -642,44 +883,185 @@ export async function buildPasirRisCourse(
         const ha = jDegree[e.a] === 2 ? (jHalf2[e.a](line) - half) / 2 : 0;
         const hb = jDegree[e.b] === 2 ? (jHalf2[e.b](line) - half) / 2 : 0;
         const halfAt = (kk: number) => half + ha * (1 - smoothstep(0, 16, cum[kk])) + hb * (1 - smoothstep(0, 16, len - cum[kk]));
-        strip(road, pts, cum, k0, k1, halfAt, 0.09);
-        if (rank >= 1) strip(kerb, pts, cum, k0, k1, (kk) => halfAt(kk) + 0.35, 0.07);
-        if (rank < 1 || len < 12) continue;
-        // Markings stop short of the junction pads.
-        const ca = (jDegree[e.a] > 2 ? jRadius[e.a] : 0) + 2;
-        const cb = (jDegree[e.b] > 2 ? jRadius[e.b] : 0) + 2;
-        const ends = (kk: number) => cum[kk] > ca && cum[kk + 1] < len - cb;
-        // Where a slip road merges, or roads overlap in a junction, another
-        // road's surface covers the line: stop it there.
+        const dy = isDeck[line] ? deckY(line) : null;
+        const yAt = dy ? (kk: number) => dy[kk] : undefined;
+        strip(road, pts, cum, k0, k1, halfAt, 0.09, { yAt });
+        if (rank >= 1 || dy) strip(kerb, pts, cum, k0, k1, (kk) => halfAt(kk) + 0.35, 0.07, { yAt });
+        // Where two roads at one level meet or overlap, a road's own surface is
+        // covered by the other: markings and parapets stop there.
         const clear = (kk: number, off: number) => {
           const a = pts[kk];
           const b = pts[kk + 1];
           const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
           const x = (a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * off;
           const z = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * off;
-          const r = roads.nearest(x, z, 16, (i) => i !== line);
-          return !r || r.d > EHALF[r.line] + 0.2;
+          return !coveredBy(line, x, z, dy ? lerp(dy[kk], dy[kk + 1], 0.5) : NaN);
         };
+        if (dy) {
+          // Deck sides: a concrete edge beam, an underside and parapets.
+          const deck = acc('deck');
+          const depth = elevated[line] ? 1.2 : 0.6;
+          const side = (sgn: number) => (kk: number) => sgn * (halfAt(kk) + 0.45);
+          const y = (kk: number) => dy[kk] + 0.09;
+          for (const sgn of [-1, 1]) {
+            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0.05, () => true);
+            band(deck, pts, cum, k0, k1, side(sgn), y, 0, 0.95, (kk) => clear(kk, side(sgn)(kk)));
+          }
+          strip(deck, pts, cum, k0, k1, (kk) => halfAt(kk) + 0.45, 0.09 - depth, { yAt });
+        }
+        if (rank < 1 || len < 12) continue;
+        // Markings stop short of the junction pads.
+        const ca = (jDegree[e.a] > 2 ? jRadius[e.a] : 0) + 2;
+        const cb = (jDegree[e.b] > 2 ? jRadius[e.b] : 0) + 2;
+        const ends = (kk: number) => cum[kk] > ca && cum[kk + 1] < len - cb;
         const solid = (off: (kk: number) => number) => (kk: number) => ends(kk) && clear(kk, off(kk));
         const dashed = (off: (kk: number) => number) => (kk: number) => kk % 3 === 0 && ends(kk) && clear(kk, off(kk));
         if (rank >= 2) {
           const l = (kk: number) => halfAt(kk) - 0.35;
           const r = (kk: number) => -(halfAt(kk) - 0.35);
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: l, keep: solid(l) });
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: r, keep: solid(r) });
+          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: l, keep: solid(l), yAt });
+          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: r, keep: solid(r), yAt });
         }
         const lanes = Math.max(1, Math.round((e.w - 0.7) / 3.3));
         if (e.one) {
           for (let l = 1; l < lanes; l++) {
             const off = () => -half + (l * e.w) / lanes;
-            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off: off(), keep: dashed(off) });
+            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off: off(), keep: dashed(off), yAt });
           }
         } else if (rank >= 1 && e.w >= 6) {
           const off = () => 0;
-          strip(white, pts, cum, k0, k1, 0.07, 0.11, { keep: rank >= 3 ? solid(off) : dashed(off) });
+          strip(white, pts, cum, k0, k1, 0.07, 0.11, { keep: rank >= 3 ? solid(off) : dashed(off), yAt });
         }
       }
     });
+  // Flyover pillars, and colliders for every deck (the ground heightfield
+  // can't hold a road in the air).
+  const concreteMat = new THREE.MeshStandardMaterial({ color: 0xc9c6bf, roughness: 0.9 });
+  const deckLines = EP.map((pts, i) => (isDeck[i] ? pts : []));
+  const deckRuns = runsOf(deckLines);
+  const pillarsOf = (line: number, k0: number, k1: number, f: (x: number, z: number, top: number, foot: number, yaw: number, w: number) => void) => {
+    if (!elevated[line]) return;
+    const pts = EP[line];
+    const cum = ECUM[line];
+    const dy = deckY(line);
+    for (let k = Math.max(1, k0); k <= Math.min(k1, pts.length - 2); k++) {
+      // One pier every ~32 m, clear of the ends and of anything below.
+      if (Math.floor(cum[k] / 32) === Math.floor(cum[k - 1] / 32)) continue;
+      if (cum[k] < 10 || cum[k] > ELEN[line] - 10) continue;
+      const [x, z] = pts[k];
+      const foot = heightAt(x, z);
+      const top = dy[k] - 1.1;
+      if (top - foot < 2.5) continue;
+      const below = roads.nearest(x, z, 24, (i) => !elevated[i]);
+      if (below && below.d < EHALF[below.line] + 1.2) continue;
+      const pp = pathIdx.nearest(x, z, 4);
+      if (pp && pp.d < PHALF[pp.line] + 0.6) continue;
+      const a = pts[k - 1];
+      const b = pts[k + 1];
+      f(x, z, top, foot, Math.atan2(-(b[1] - a[1]), b[0] - a[0]), EHALF[line]);
+    }
+  };
+  for (const [k, list] of deckRuns) {
+    onTile('far', k, (kit) => {
+      const parts: THREE.BufferGeometry[] = [];
+      for (const { line, k0, k1 } of list)
+        pillarsOf(line, k0, k1, (x, z, top, foot, yaw, w) => {
+          const hgt = top - foot + 0.5;
+          parts.push(new THREE.BoxGeometry(1.5, hgt, 1.5).translate(0, foot - 0.5 + hgt / 2, 0).rotateY(yaw).translate(x, 0, z));
+          // A cross-head under the deck.
+          parts.push(new THREE.BoxGeometry(1.6, 1.0, Math.max(3, w * 1.6)).translate(0, top - 0.5, 0).rotateY(yaw).translate(x, 0, z));
+        });
+      if (!parts.length) return;
+      const m = new THREE.Mesh(kit.own(mergeGeometries(parts)), concreteMat);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      kit.add(m);
+    });
+    onTile('near', k, (kit) => {
+      const body = kit.body();
+      for (const { line, k0, k1 } of list) {
+        const pts = EP[line];
+        const dy = deckY(line);
+        const cum = ECUM[line];
+        const len = ELEN[line];
+        const half = EHALF[line];
+        const ha = jDegree[edges[line].a] === 2 ? (jHalf2[edges[line].a](line) - half) / 2 : 0;
+        const hb = jDegree[edges[line].b] === 2 ? (jHalf2[edges[line].b](line) - half) / 2 : 0;
+        const halfAt = (kk: number) => half + ha * (1 - smoothstep(0, 16, cum[kk])) + hb * (1 - smoothstep(0, 16, len - cum[kk])) + 0.45;
+        // The deck top as a strip of triangles.
+        const v: number[] = [];
+        const ix: number[] = [];
+        for (let kk = k0; kk <= k1; kk++) {
+          const a = pts[Math.max(0, kk - 1)];
+          const b = pts[Math.min(pts.length - 1, kk + 1)];
+          const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+          const nx = (b[1] - a[1]) / tl;
+          const nz = -(b[0] - a[0]) / tl;
+          const h = halfAt(kk);
+          const y = dy[kk] + 0.09;
+          v.push(pts[kk][0] - nx * h, y, pts[kk][1] - nz * h, pts[kk][0] + nx * h, y, pts[kk][1] + nz * h);
+          if (kk < k1) {
+            const q = (kk - k0) * 2;
+            ix.push(q, q + 2, q + 1, q + 1, q + 2, q + 3);
+          }
+        }
+        if (ix.length) world.createCollider(RAPIER.ColliderDesc.trimesh(new Float32Array(v), new Uint32Array(ix)).setFriction(0.9), body);
+        // Parapets you can lean on (none where another deck joins).
+        for (let kk = k0; kk < k1; kk++) {
+          const a = pts[kk];
+          const b = pts[kk + 1];
+          const sl = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          if (sl < 0.3) continue;
+          const dx = (b[0] - a[0]) / sl;
+          const dz = (b[1] - a[1]) / sl;
+          const yaw = Math.atan2(-dz, dx);
+          const y = (dy[kk] + dy[kk + 1]) / 2 + 0.09;
+          for (const sgn of [-1, 1]) {
+            const off = sgn * ((halfAt(kk) + halfAt(kk + 1)) / 2 + 0.1);
+            const mx = (a[0] + b[0]) / 2 + dz * off;
+            const mz = (a[1] + b[1]) / 2 - dx * off;
+            if (coveredBy(line, mx + dz * sgn * 0.6, mz - dx * sgn * 0.6, y)) continue;
+            world.createCollider(
+              RAPIER.ColliderDesc.cuboid(sl / 2 + 0.15, 0.6, 0.25)
+                .setTranslation(mx, y + 0.5, mz)
+                .setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }),
+              body,
+            );
+          }
+        }
+        pillarsOf(line, k0, k1, (x, z, top, foot, yaw) => {
+          world.createCollider(
+            RAPIER.ColliderDesc.cuboid(0.75, (top - foot) / 2, 0.75)
+              .setTranslation(x, (top + foot) / 2, z)
+              .setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }),
+            body,
+          );
+        });
+      }
+    });
+  }
+  // Level pads where decks meet, so no wheel drops through a gap.
+  const deckPads = new Map<string, number[]>();
+  M.junctions.forEach(([x, z], j) => {
+    if (!jEdges[j].some((i) => isDeck[i])) return;
+    const k = tileKey(x, z);
+    if (!deckPads.has(k)) deckPads.set(k, []);
+    deckPads.get(k)!.push(j);
+  });
+  for (const [k, list] of deckPads)
+    onTile('near', k, (kit) => {
+      const body = kit.body();
+      for (const j of list) {
+        const [x, z] = M.junctions[j];
+        const r = (jDegree[j] === 2 ? (EHALF[jEdges[j][0]] + EHALF[jEdges[j][1]]) / 2 : jRadius[j]) + 0.4;
+        world.createCollider(RAPIER.ColliderDesc.cylinder(0.25, r).setTranslation(x, padY(j)! + 0.09 - 0.25, z).setFriction(0.9), body);
+      }
+    });
+  // Junction pads: on a deck they sit level with it.
+  const padY = (j: number) => {
+    const [x, z] = M.junctions[j];
+    return jEdges[j].some((i) => isDeck[i]) ? baseAt(x, z) + jRel[j] : undefined;
+  };
   // Junction pads.
   const padsByTile = new Map<string, number[]>();
   M.junctions.forEach(([x, z], j) => {
@@ -698,8 +1080,9 @@ export async function buildPasirRisCourse(
       for (const j of list) {
         const [x, z] = M.junctions[j];
         const r = jDegree[j] === 2 ? (EHALF[jEdges[j][0]] + EHALF[jEdges[j][1]]) / 2 : jRadius[j];
-        disc(road, x, z, r, 0.09);
-        if (jEdges[j].some((i) => rankOf(edges[i].cls) >= 1)) disc(kerb, x, z, r + 0.35, 0.07);
+        const y = padY(j);
+        disc(road, x, z, r, 0.09, y);
+        if (jEdges[j].some((i) => rankOf(edges[i].cls) >= 1)) disc(kerb, x, z, r + 0.35, 0.07, y);
       }
     });
   // Footpaths and park connectors.
@@ -747,12 +1130,13 @@ export async function buildPasirRisCourse(
     return d;
   };
   /** A vertical band along pts at sideways offset `off`, from y(k) - below to y(k) + above. */
-  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, off: number, y: (k: number) => number, below: number, above: number, keep: (k: number) => boolean) => {
+  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, below: number, above: number, keep: (k: number) => boolean) => {
     const base = acc.pos.length / 3;
     for (let k = k0; k <= k1; k++) {
       const a = pts[Math.max(0, k - 1)];
       const b = pts[Math.min(pts.length - 1, k + 1)];
       const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const off = typeof offIn === 'number' ? offIn : offIn(k);
       const x = pts[k][0] + ((b[1] - a[1]) / tl) * off;
       const z = pts[k][1] - ((b[0] - a[0]) / tl) * off;
       const yk = y(k);
@@ -989,6 +1373,9 @@ export async function buildPasirRisCourse(
   const clearOfRoads = (x: number, z: number, pad: number) => {
     const r = roads.nearest(x, z, 16);
     if (r && r.d < EHALF[r.line] + pad) return false;
+    // Nothing grows up through a flyover.
+    const up = elevIdx.nearest(x, z, 24);
+    if (up && up.d < EHALF[up.line] + 7) return false;
     const p = pathIdx.nearest(x, z, 4);
     return !(p && p.d < PHALF[p.line] + 0.8);
   };
@@ -1004,7 +1391,7 @@ export async function buildPasirRisCourse(
     // Street trees: rain trees and sea almonds every ~12 m on both verges.
     for (const { line, k0, k1 } of roadRuns.get(`${ti},${tj}`) ?? []) {
       const e = edges[line];
-      if (!TREE_LINED.has(e.cls)) continue;
+      if (!TREE_LINED.has(e.cls) || elevated[line]) continue;
       const pts = EP[line];
       for (let k = k0; k < k1; k++) {
         if (k % 3 !== 1) continue;
@@ -1126,7 +1513,7 @@ export async function buildPasirRisCourse(
     const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
     return s - Math.floor(s);
   };
-  interface Bld { pts: XZ[]; h: number; wall: number; roof: number; walls: boolean; base: number }
+  interface Bld { pts: XZ[]; h: number; wall: number; roof: number; walls: boolean; base: number; ground: number }
   const blds: Bld[] = [];
   const bldTile = new Map<string, number[]>();
   for (const b of M.buildings) {
@@ -1192,9 +1579,13 @@ export async function buildPasirRisCourse(
     }
     let h = b.h ?? (b.l ? b.l * fh : floors * fh);
     if (!walls) h = 3.4;
-    const base = LAND - 0.5;
+    // On a slope the building stands on its lowest corner; its foot sinks into the high side.
+    let low = Infinity;
+    for (const [px, pz] of pts) low = Math.min(low, baseAt(px, pz));
+    const ground = low === Infinity ? LAND : low;
+    const base = ground - 0.5;
     const i = blds.length;
-    blds.push({ pts, h, wall, roof, walls, base });
+    blds.push({ pts, h, wall, roof, walls, base, ground });
     const k = tileKey(cx, cz);
     if (!bldTile.has(k)) bldTile.set(k, []);
     bldTile.get(k)!.push(i);
@@ -1208,7 +1599,7 @@ export async function buildPasirRisCourse(
         const { pos: rp, col: rcl } = acc('roof');
         for (const id of part) {
           const b = blds[id];
-          const top = LAND + b.h;
+          const top = b.ground + b.h;
           wc.set(b.wall);
           rc.set(b.roof);
           const n = b.pts.length;
@@ -1266,7 +1657,7 @@ export async function buildPasirRisCourse(
           const a = Math.atan2(-dz, dx);
           world.createCollider(
             RAPIER.ColliderDesc.cuboid(len / 2 + 0.2, Math.min(4, b.h / 2), t)
-              .setTranslation(mx, LAND + Math.min(4, b.h / 2) - 0.4, mz)
+              .setTranslation(mx, b.ground + Math.min(4, b.h / 2) - 0.4, mz)
               .setRotation({ x: 0, y: Math.sin(a / 2), z: 0, w: Math.cos(a / 2) }),
             body,
           );
@@ -1283,17 +1674,20 @@ export async function buildPasirRisCourse(
     for (let i = 1; i < pts.length; i++) c.push(c[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
     return c;
   });
-  const DECK = LAND + 9;
+  // The track runs 9 m above the (hilly) ground.
+  const railY = (line: number, q: number) => baseAt(viaducts[line][q][0], viaducts[line][q][1]) + 9;
   for (const [k, list] of runsOf(viaducts)) {
     onTile('horizon', k, (kit) => {
       const top = new Acc();
       const parts: THREE.BufferGeometry[] = [];
       for (const { line, k0, k1 } of list) {
-        strip(top, viaducts[line], VCUM[line], k0, k1, 2.6, 0, { y: DECK });
+        strip(top, viaducts[line], VCUM[line], k0, k1, 2.6, 0, { yAt: (q) => railY(line, q) });
         for (let q = k0; q <= k1; q++) {
           if (q % 5) continue;
           const [x, z] = viaducts[line][q];
-          parts.push(new THREE.BoxGeometry(1.4, DECK - LAND, 1.4).translate(x, LAND + (DECK - LAND) / 2 - 0.6, z));
+          const foot = heightAt(x, z) - 0.5;
+          const top = railY(line, q) - 1.1;
+          parts.push(new THREE.BoxGeometry(1.4, top - foot, 1.4).translate(x, (top + foot) / 2, z));
         }
       }
       const g = kit.own(new THREE.BufferGeometry());
@@ -1319,7 +1713,7 @@ export async function buildPasirRisCourse(
         for (let q = k0; q <= k1; q++) {
           if (q % 5) continue;
           const [x, z] = viaducts[line][q];
-          world.createCollider(RAPIER.ColliderDesc.cuboid(0.7, 4, 0.7).setTranslation(x, LAND + 4, z), body);
+          world.createCollider(RAPIER.ColliderDesc.cuboid(0.7, 4, 0.7).setTranslation(x, heightAt(x, z) + 3.5, z), body);
         }
     });
   }
@@ -1528,17 +1922,26 @@ export async function buildPasirRisCourse(
     safeSpot(x, z) {
       // The nearest point on a proper road (not a service lane), on dry ground.
       for (const R of [60, 200, 600, 2000]) {
-        const r = roads.nearest(x, z, R, (i) => rankOf(edges[i].cls) >= 1);
+        const r = roads.nearest(x, z, R, (i) => rankOf(edges[i].cls) >= 1 && !isDeck[i] && !embank[i]);
         if (!r) continue;
         const pts = EP[r.line];
         const a = pts[r.seg];
         const b = pts[r.seg + 1];
         const px = a[0] + (b[0] - a[0]) * r.u;
         const pz = a[1] + (b[1] - a[1]) * r.u;
-        if (heightAt(px, pz) < LAND - 0.1) continue;
+        if (heightAt(px, pz) < baseAt(px, pz) - 0.1) continue;
         return { x: px, z: pz, yaw: Math.atan2(-(b[1] - a[1]), b[0] - a[0]) };
       }
       return null;
+    },
+    surfaceY(x, z, y) {
+      const g = heightAt(x, z);
+      const r = roads.nearest(x, z, 12, (i) => isDeck[i]);
+      if (r && r.d < EHALF[r.line] + 0.6) {
+        const d = deckAtHit(r.line, r.seg, r.u) + 0.09;
+        if (y > d - 2.5) return Math.max(g, d);
+      }
+      return g;
     },
     streamStats: () => streamer.stats,
     update(time, _dt, cam, player) {

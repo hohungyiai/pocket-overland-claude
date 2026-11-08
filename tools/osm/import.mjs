@@ -216,8 +216,11 @@ export function build(raw, origin) {
     for (let i = 1; i < wy.nodes.length; i++) {
       cur.push(wy.nodes[i]);
       if (isJunction(wy.nodes[i], i, wy.nodes.length)) {
-        const level = wy.tags.bridge && wy.tags.bridge !== 'no' ? 1 : wy.tags.tunnel && wy.tags.tunnel !== 'no' ? -1 : 0;
-        pieces.push({ ids: cur, cls: wy.tags.highway, rank, width: lanes ? Math.max(width * 0.6, lanes * 3.3) : width, oneway, level, name: wy.tags.name ?? '' });
+        // Bridges keep their OSM layer (1 = one level up); viaducts are flagged.
+        const bridge = wy.tags.bridge && wy.tags.bridge !== 'no';
+        const level = bridge ? Math.max(1, Math.round(+wy.tags.layer || 1)) : wy.tags.tunnel && wy.tags.tunnel !== 'no' ? -1 : 0;
+        const viaduct = wy.tags.bridge === 'viaduct' ? 1 : 0;
+        pieces.push({ ids: cur, cls: wy.tags.highway, rank, width: lanes ? Math.max(width * 0.6, lanes * 3.3) : width, oneway, level, viaduct, name: wy.tags.name ?? '' });
         cur = [wy.nodes[i]];
       }
     }
@@ -239,7 +242,7 @@ export function build(raw, origin) {
     if (ia === ib) continue;
     const a = pieces[ia];
     const b = pieces[ib];
-    if (a.cls !== b.cls || a.oneway !== b.oneway || a.name !== b.name || a.level !== b.level) continue;
+    if (a.cls !== b.cls || a.oneway !== b.oneway || a.name !== b.name || a.level !== b.level || a.viaduct !== b.viaduct) continue;
     // Orient a to end at id, b to start at id.
     if (a.ids[a.ids.length - 1] !== id) a.ids.reverse();
     if (b.ids[0] !== id) {
@@ -310,7 +313,7 @@ export function build(raw, origin) {
     let len = 0;
     for (let i = 1; i < pts.length; i++) len += dist(pts[i - 1], pts[i]);
     if (len < 3) continue;
-    edges.push({ a: a.i, b: b.i, cls: p.cls, w: q(p.width), one: p.oneway ? 1 : 0, lv: p.level || undefined, name: p.name || undefined, pts: qp(pts) });
+    edges.push({ a: a.i, b: b.i, cls: p.cls, w: q(p.width), one: p.oneway ? 1 : 0, lv: p.level || undefined, vd: p.viaduct || undefined, name: p.name || undefined, pts: qp(pts) });
   }
   const jOut = [...junctions.values()].sort((u, v) => u.i - v.i).map((j) => [q(j.x), q(j.z)]);
 
