@@ -605,7 +605,12 @@ export async function buildPasirRisCourse(
     const ra = jRel[edges[i].a] ?? 0;
     const rb = jRel[edges[i].b] ?? 0;
     let r: number;
-    if (elevated[i]) r = lerp(ra, rb, runLen(i) > 0 ? runA(i, s) / runLen(i) : 0);
+    if (elevated[i]) {
+      // A flyover stands at its full height, coming down only near an end
+      // held lower (at 1 in 10).
+      const t = runLen(i) > 0 ? runA(i, s) / runLen(i) : 0;
+      r = Math.min(Math.max(DECK_H * deckLevel[i], lerp(ra, rb, t)), ra + 0.1 * runA(i, s), rb + 0.1 * runB(i, s));
+    }
     else {
       const run = runLen(i);
       const g = Math.max(RAMP_GRADE, run > 0 ? Math.abs(ra - rb) / run : 0);
@@ -1462,16 +1467,22 @@ export async function buildPasirRisCourse(
     const yc = (y ?? Math.max(rawHeight(x, z), WL + 0.15)) + lift;
     acc.pos.push(x, yc, z);
     acc.uv.push(0, 0);
+    // (Two rings, so a pad draped on a slope follows it closely.)
     const n = 16;
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      const px = x + Math.cos(a) * r;
-      const pz = z + Math.sin(a) * r;
-      acc.pos.push(px, (y ?? Math.max(rawHeight(px, pz), WL + 0.15)) + lift, pz);
-      acc.uv.push(Math.cos(a) * (r / 6), Math.sin(a) * (r / 6));
-    }
+    for (const f of [0.5, 1])
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const px = x + Math.cos(a) * r * f;
+        const pz = z + Math.sin(a) * r * f;
+        acc.pos.push(px, (y ?? Math.max(rawHeight(px, pz), WL + 0.15)) + lift, pz);
+        acc.uv.push(Math.cos(a) * ((r * f) / 6), Math.sin(a) * ((r * f) / 6));
+      }
     // Counter-clockwise seen from above, so the pad faces up.
-    for (let i = 0; i < n; i++) acc.idx.push(base, base + 1 + ((i + 1) % n), base + 1 + i);
+    for (let i = 0; i < n; i++) {
+      const i1 = (i + 1) % n;
+      acc.idx.push(base, base + 1 + i1, base + 1 + i);
+      acc.idx.push(base + 1 + i, base + 1 + i1, base + 1 + n + i1, base + 1 + i, base + 1 + n + i1, base + 1 + n + i);
+    }
   };
   const accMesh = (acc: Acc, mat: THREE.Material, kit: TileKit, upright = false) => {
     if (!acc.idx.length) return;
@@ -1889,7 +1900,8 @@ export async function buildPasirRisCourse(
   // Junction pads: on a deck they sit level with it.
   // (Level with the ends of the roads that meet there, as they are drawn.)
   const padY = (j: number) => {
-    if (!jEdges[j].some((i) => hasProfile[i])) return undefined;
+    // (On the ground, it lies on the ground like the roads' ends.)
+    if (!jEdges[j].some((i) => hasProfile[i]) || jRel[j] < 0.05) return undefined;
     const [x, z] = M.junctions[j];
     let sum = 0;
     for (const i of jEdges[j]) {

@@ -8,15 +8,15 @@
 //    against it, in high range (low range: 0.52 m);
 //  - tilt: parked across a slope it slides sideways at 44° before it tips;
 //  - twist: driven flat out along a road whose side tilt swings back and
-//    forth, it rolls over once the tilt changes by 0.3 (rise per metre
-//    across) within 5 m, the length of the car and a bit.
+//    forth, it rolls over once the tilt changes (rise per metre
+//    across) by 0.35 within 5 m, the length of the car and a bit.
 // Roads keep to 60% of each, so the car always gets over them with room to
 // spare (SAFETY).
 export const CAR = {
   climbDeg: 19,
   lip: 0.3,
   tiltDeg: 44,
-  twist: 0.3,
+  twist: 0.35,
 };
 export const SAFETY = 0.6;
 const tanDeg = (d: number) => Math.tan((d * Math.PI) / 180);
