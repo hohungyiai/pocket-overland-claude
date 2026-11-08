@@ -121,7 +121,11 @@
     };
     const bad = [];
     let n = 0;
-    for (const s of [...D.JX.shapes, ...D.JX.fills]) {
+    // (A paved island sits level with the roads round it.)
+    // (Each junction's paving as drawn: a paved island level with the roads
+    // round it, a junction among ramps blended between their heights.)
+    const top = (s, x, z) => (s.fillOf !== undefined ? D.fillTop(s.fillOf, x, z) : D.jTop(s.shapeOf, x, z));
+    for (const s of [...D.JX.shapes.map((sh, k) => ({ ...sh, shapeOf: k })), ...D.JX.fills.map((f, k) => ({ ...f, fillOf: k }))]) {
       const [cx, cz] = s.centre;
       for (const [px, pz] of s.ring)
         for (const t of [0, 0.2, 0.5, 0.8, 0.97]) {
@@ -129,7 +133,7 @@
           const z = cz + (pz - cz) * t;
           if (Math.abs(x) > 3596 || Math.abs(z) > 3596) continue;
           n++;
-          const over = meshAt(x, z) - (Math.max(D.surfaceAt(x, z), 1.45) + 0.09) - 0.02;
+          const over = meshAt(x, z) - (top(s, x, z) + 0.09) - 0.02;
           if (over > 0) bad.push({ x: Math.round(x), z: Math.round(z), over: +over.toFixed(2) });
         }
     }
