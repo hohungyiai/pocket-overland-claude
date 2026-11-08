@@ -20,8 +20,9 @@ const CHECKS = [
   ['Junctions stay on their roads', 'junctions.js', '__checkJunctionSpill', 0],
   ['Crossings lie on their own road', 'crossings.js', '__checkCrossings', 0],
   ['No traffic light on a road or in a junction', 'crossings.js', '__checkLightPoles', 0],
-  ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 28],
+  ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 29],
   ['No step where road pieces meet', 'seams.js', '__checkSteps', 0, 23],
+  ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
 ];
 

@@ -776,6 +776,27 @@ export async function buildPasirRisCourse(
     return inRingXZ(ring, x, z) ? [0, x, z] : [best, bx, bz];
   };
 
+  /**
+   * Well inside a junction's paving (or a paved island), at its level? A
+   * road's kerbs and markings stop there: the paving is open asphalt. (y NaN:
+   * a road on the ground.)
+   */
+  const inPaving = (x: number, z: number, y: number, not = -1) =>
+    !!jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL))?.some((id) => {
+      if (id === not) return false;
+      const ring = JPOLY[id].ring;
+      if (!inRingXZ(ring, x, z)) return false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [ax, az] = ring[j];
+        const abx = ring[i][0] - ax;
+        const abz = ring[i][1] - az;
+        const u = Math.max(0, Math.min(1, ((x - ax) * abx + (z - az) * abz) / (abx * abx + abz * abz || 1)));
+        if (Math.hypot(ax + abx * u - x, az + abz * u - z) < 0.6) return false;
+      }
+      const g = y === y ? y : Math.max(rawHeight(x, z), WL + 0.15);
+      return Math.abs(g - jTop(id, x, z)) < 1;
+    });
+
   // A crossing is painted only where it lies on its own road alone (not
   // across another road, nor in a junction); a pole only where it stands
   // clear of every road and junction.
@@ -1153,6 +1174,8 @@ export async function buildPasirRisCourse(
       y?: number;
       yAt?: (k: number) => number;
       keep?: (k: number) => boolean;
+      /** Each corner of a piece must pass this too (x, surface y, z). */
+      clearAt?: (x: number, y: number, z: number) => boolean;
       /** The drawn part of pts (a cut road): its ends look only inward for their direction. */
       lo?: number;
       hi?: number;
@@ -1187,9 +1210,13 @@ export async function buildPasirRisCourse(
         acc.uv.push(((sgn + 1) / 2) * ((half * 2) / 6), cum[k] / 6);
       }
     }
+    const P = acc.pos;
+    const clearAt = o.clearAt;
+    const corner = (v: number) => clearAt!(P[v * 3], P[v * 3 + 1] - lift, P[v * 3 + 2]);
     for (let k = k0; k < k1; k++) {
       if (o.keep && !o.keep(k)) continue;
       const a = base + (k - k0) * 2;
+      if (clearAt && !(corner(a) && corner(a + 1) && corner(a + 2) && corner(a + 3))) continue;
       acc.idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
     }
   };
@@ -1432,16 +1459,23 @@ export async function buildPasirRisCourse(
         strip(road, P, cum, lo, hi, halfAt, 0.09, opt);
         if ((rank >= 1 || dy) && !JX.internal[line])
           for (const sgn of [-1, 1]) {
-            // Each side's kerb, except where it runs inside a paved island.
+            // Each side's kerb, except where it runs inside a paved island or
+            // a junction (a road overlapping a junction past its mouth).
             const off = (kk: number) => sgn * (halfAt(kk) + 0.1);
             const keep = (kk: number) => {
               const a = P[kk];
               const b = P[kk + 1];
               const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
               const o = sgn * (halfAt(kk) + 0.2);
-              return !onIsland((a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * o, (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * o);
+              const at = (t: number) => {
+                const x = lerp(a[0], b[0], t) + ((b[1] - a[1]) / tl) * o;
+                const z = lerp(a[1], b[1], t) - ((b[0] - a[0]) / tl) * o;
+                return onIsland(x, z) || inPaving(x, z, dy ? lerp(dy[kk], dy[kk + 1], t) : NaN);
+              };
+              return !at(0.5) && !at(0.2) && !at(0.8);
             };
-            strip(kerb, P, cum, lo, hi, 0.25, 0.07, { ...opt, off, keep });
+            const clearAt = (x: number, y: number, z: number) => !inPaving(x, z, dy ? y : NaN);
+            strip(kerb, P, cum, lo, hi, 0.25, 0.07, { ...opt, off, keep, clearAt });
           }
         // Where two roads at one level meet or overlap, a road's own surface is
         // covered by the other: markings and parapets stop there.
@@ -1451,7 +1485,8 @@ export async function buildPasirRisCourse(
           const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
           const x = (a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * off;
           const z = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * off;
-          return !coveredBy(line, x, z, dy ? lerp(dy[kk], dy[kk + 1], 0.5) : NaN) && !onIsland(x, z);
+          const y = dy ? lerp(dy[kk], dy[kk + 1], 0.5) : NaN;
+          return !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y);
         };
         if (dy && !isDeck[line]) {
           // A raised road: where the ground beside it falls away (its bank
@@ -1491,23 +1526,24 @@ export async function buildPasirRisCourse(
         const ca = crossEnd.has(`${line}:0`) ? JX.trimA[line] + STOP_AT + 0.5 : stopAt(e.a, JX.trimA[line]);
         const cb = crossEnd.has(`${line}:1`) ? JX.trimB[line] + STOP_AT + 0.5 : stopAt(e.b, JX.trimB[line]);
         const ends = (kk: number) => cum[kk] > ca && cum[kk + 1] < len - cb;
+        const lineClear = (x: number, y: number, z: number) => !inPaving(x, z, dy ? y : NaN);
         const solid = (off: (kk: number) => number) => (kk: number) => ends(kk) && clear(kk, off(kk));
         const dashed = (off: (kk: number) => number) => (kk: number) => kk % 3 === 0 && ends(kk) && clear(kk, off(kk));
         if (rank >= 2) {
           const l = (kk: number) => halfAt(kk) - 0.35;
           const r = (kk: number) => -(halfAt(kk) - 0.35);
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: l, keep: solid(l), yAt });
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: r, keep: solid(r), yAt });
+          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: l, keep: solid(l), yAt, clearAt: lineClear });
+          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: r, keep: solid(r), yAt, clearAt: lineClear });
         }
         const lanes = Math.max(1, Math.round((e.w - 0.7) / 3.3));
         if (e.one) {
           for (let l = 1; l < lanes; l++) {
             const off = () => -half + (l * e.w) / lanes;
-            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off: off(), keep: dashed(off), yAt });
+            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off: off(), keep: dashed(off), yAt, clearAt: lineClear });
           }
         } else if (rank >= 1 && e.w >= 6) {
           const off = () => 0;
-          strip(white, pts, cum, k0, k1, 0.07, 0.11, { keep: rank >= 3 ? solid(off) : dashed(off), yAt });
+          strip(white, pts, cum, k0, k1, 0.07, 0.11, { keep: rank >= 3 ? solid(off) : dashed(off), yAt, clearAt: lineClear });
         }
       }
     });
@@ -1674,7 +1710,9 @@ export async function buildPasirRisCourse(
         const r = jDegree[j] === 2 ? (EHALF[jEdges[j][0]] + EHALF[jEdges[j][1]]) / 2 : jRadius[j];
         const y = padY(j);
         disc(road, x, z, r, 0.09, y);
-        if (jEdges[j].some((i) => rankOf(edges[i].cls) >= 1)) disc(kerb, x, z, r + 0.35, 0.07, y);
+        // (No kerb round a pad that reaches into a junction's paving or an island.)
+        const paved = [0, 1, 2, 3, 4, 5, 6, 7].some((q) => inPaving(x + Math.cos(q * 0.785) * r, z + Math.sin(q * 0.785) * r, y ?? NaN));
+        if (jEdges[j].some((i) => rankOf(edges[i].cls) >= 1) && !paved) disc(kerb, x, z, r + 0.35, 0.07, y);
       }
     });
   // Shaped junctions: the outline filled from its centre in rings (so it
@@ -1744,6 +1782,9 @@ export async function buildPasirRisCourse(
             }
           }
           for (let q = 0; q + 1 < F.length; q++) {
+            // (Not where it runs inside another junction's paving.)
+            const along = (t: number) => inPaving(lerp(F[q][0], F[q + 1][0], t), lerp(F[q][1], F[q + 1][1], t), NaN, id);
+            if (along(0.25) || along(0.5) || along(0.75)) continue;
             const a = kb + q * 2;
             kerb.idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
           }
