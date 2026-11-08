@@ -4,9 +4,11 @@
 // road buffers off-scene and tests points across each road against them.
 // Every far tile's road surface (asphalt, junctions, kerbs), built off-scene
 // once and bucketed on a 4 m grid. drawnAt(x, z, y) gives the drawn height
-// there nearest to y (NaN if nothing is drawn).
-window.__roadIndex = () => {
-  if (window.__roadIdx) return window.__roadIdx;
+// there nearest to y (NaN if nothing is drawn). With ride, only what the car
+// drives on (the asphalt and junction surfaces, which are its colliders).
+window.__roadIndex = (ride = false) => {
+  const key = ride ? '__rideIdx' : '__roadIdx';
+  if (window[key]) return window[key];
   const d = globalThis.__osm;
   const X0 = -3600, Z0 = -3600, C = 4, W = 1800;
   // Every road triangle (asphalt, junction surfaces), in XZ with its corner heights.
@@ -14,7 +16,7 @@ window.__roadIndex = () => {
   const tris = [];
   for (const k of d.farTiles()) {
     const accs = d.tileAccs(k);
-    for (const r of [accs.road, accs.kerb]) {
+    for (const r of ride ? [accs.road] : [accs.road, accs.kerb]) {
       if (!r) continue;
       const { pos, idx } = r;
       for (let q = 0; q < idx.length; q += 3) {
@@ -60,7 +62,27 @@ window.__roadIndex = () => {
     }
     return best;
   };
-  return (window.__roadIdx = { drawnAt });
+  /** Height of the highest road surface drawn at (x, z) between lo and hi, or NaN. */
+  const topAt = (x, z, lo, hi) => {
+    const i = Math.floor((x - X0) / C), j = Math.floor((z - Z0) / C);
+    if (i < 0 || j < 0 || i >= W || j >= W) return NaN;
+    const c = j * W + i;
+    let best = NaN;
+    for (let q = start[c]; q < start[c + 1]; q++) {
+      const o = list[q] * 9;
+      const ax = T[o], az = T[o + 2], bx = T[o + 3], bz = T[o + 5], cx = T[o + 6], cz = T[o + 8];
+      const det = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+      if (Math.abs(det) < 1e-9) continue;
+      const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det;
+      const l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det;
+      const l3 = 1 - l1 - l2;
+      if (l1 < -1e-4 || l2 < -1e-4 || l3 < -1e-4) continue;
+      const h = l1 * T[o + 1] + l2 * T[o + 4] + l3 * T[o + 7];
+      if (h >= lo && h <= hi && !(h <= best)) best = h;
+    }
+    return best;
+  };
+  return (window[key] = { drawnAt, topAt });
 };
 
 window.__checkSeams = (all = false) => {

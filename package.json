@@ -8,7 +8,8 @@
     "build": "npm run maps && tsc && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc",
-    "check": "node tools/check/run.cjs"
+    "check": "node tools/check/run.cjs",
+    "limits": "rolldown tools/limits/measure.ts -o node_modules/.cache/limits.mjs -f esm --silent && node node_modules/.cache/limits.mjs"
   },
   "repository": {
     "type": "git",
