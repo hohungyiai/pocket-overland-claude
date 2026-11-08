@@ -9,7 +9,7 @@ const { chromium } = require('playwright');
 const PORT = 4179;
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m)]
-  ['Ground never rises above a road', 'ground.js', '__checkGround', 0.15],
+  ['Ground never rises above a road', 'ground.js', '__checkGround', 0],
 ];
 
 (async () => {
@@ -26,7 +26,7 @@ const CHECKS = [
       await p.addScriptTag({ path: path.join(__dirname, file) });
       const r = await p.evaluate((fn) => window[fn](), fn);
       const worst = r.worst[0]?.over ?? 0;
-      const ok = worst <= limit;
+      const ok = worst <= limit && (limit > 0 || r.bad === 0);
       if (!ok) failed = true;
       console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}: ${r.bad} of ${r.samples} samples off, worst ${worst} m (limit ${limit})`);
       if (!ok) for (const w of r.worst) console.log('      ', JSON.stringify(w));

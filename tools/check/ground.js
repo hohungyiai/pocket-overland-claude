@@ -1,7 +1,25 @@
-// In-page check (run with ?debug): does the ground ever rise above a road's surface?
+// In-page check (run with ?debug): does the ground mesh ever rise above a road's surface?
 // Returns stats; called from tools/check/run.cjs.
 window.__checkGround = () => {
   const d = globalThis.__osm;
+  // The ground you see (and drive on) is a 4 m grid of heightAt samples,
+  // split into triangles along the (i+1, j)-(i, j+1) diagonal: compare roads
+  // against that mesh, not the smooth function behind it.
+  const S = 4, X0 = -3600, Z0 = -3600;
+  const memo = new Map();
+  const at = (i, j) => {
+    const k = i * 100003 + j;
+    let v = memo.get(k);
+    if (v === undefined) memo.set(k, (v = d.heightAt(X0 + i * S, Z0 + j * S)));
+    return v;
+  };
+  const meshAt = (x, z) => {
+    const fx = (x - X0) / S, fz = (z - Z0) / S;
+    const i = Math.floor(fx), j = Math.floor(fz);
+    const u = fx - i, v = fz - j;
+    if (u + v <= 1) return at(i, j) + (at(i + 1, j) - at(i, j)) * u + (at(i, j + 1) - at(i, j)) * v;
+    return at(i + 1, j + 1) + (at(i, j + 1) - at(i + 1, j + 1)) * (1 - u) + (at(i + 1, j) - at(i + 1, j + 1)) * (1 - v);
+  };
   const bad = [];
   let n = 0;
   d.edges.forEach((e, i) => {
@@ -18,17 +36,22 @@ window.__checkGround = () => {
       const h = d.EHALF[i];
       const edgeY = (q, sgn) => {
         const [px, pz] = P[q];
-        return Y ? Y[q] : d.heightAt(px + nx * sgn * h, pz + nz * sgn * h);
+        return Y ? Y[q] : (d.surfaceAt ?? d.heightAt)(px + nx * sgn * h, pz + nz * sgn * h);
       };
       const la = edgeY(k, -1), ra = edgeY(k, 1), lb = edgeY(k + 1, -1), rb = edgeY(k + 1, 1);
-      for (const f of [-0.6, -0.3, 0, 0.3, 0.6]) {
-        const t = (f + 1) / 2;
-        const o = f * h;
-        const m = [(ax + bx) / 2 + nx * o, (az + bz) / 2 + nz * o];
-        const g = d.heightAt(...m);
-        const surf = (la + (ra - la) * t + lb + (rb - lb) * t) / 2 + 0.09;
-        n++;
-        if (g > surf + 0.02) bad.push({ road: e.name || e.cls, x: Math.round(m[0]), z: Math.round(m[1]), over: +(g - surf).toFixed(2) });
+      // Across the full width and out to the kerbs (|f| > 1 holds the edge
+      // height), at the joints and three points between them.
+      for (const a of [0, 0.25, 0.5, 0.75]) {
+        for (const f of [-1.08, -0.9, -0.6, -0.3, 0, 0.3, 0.6, 0.9, 1.08]) {
+          const t = Math.min(1, Math.max(0, (f + 1) / 2));
+          const o = f * h;
+          const m = [ax + (bx - ax) * a + nx * o, az + (bz - az) * a + nz * o];
+          if (Math.abs(m[0]) > 3596 || Math.abs(m[1]) > 3596) continue; // beyond the built ground
+          const g = meshAt(...m);
+          const surf = (la + (ra - la) * t) * (1 - a) + (lb + (rb - lb) * t) * a + 0.09;
+          n++;
+          if (g > surf + 0.02) bad.push({ road: e.name || e.cls, x: Math.round(m[0]), z: Math.round(m[1]), over: +(g - surf).toFixed(2) });
+        }
       }
     }
   });

@@ -371,7 +371,7 @@ const go = (id: CourseId) => {
   );
 };
 const chosen = params.get('course');
-const style: ArtStyle = params.get('style') === 'detailed' ? 'detailed' : 'stylized';
+const style: ArtStyle = params.get('style') === 'stylized' ? 'stylized' : 'detailed';
 const atParts = (params.get('at') ?? '').split(',').map(Number);
 const at = atParts.length === 4 && atParts.every(Number.isFinite) ? { x: atParts[0], z: atParts[1], yaw: atParts[2], cam: atParts[3] } : null;
 if (chosen && chosen in COURSES) go(chosen as CourseId);
@@ -382,7 +382,7 @@ else {
     const b = document.createElement('button');
     b.innerHTML = `<b>Continue</b><span>From ${save.label} · saved ${new Date(save.savedAt).toLocaleDateString()}</span>`;
     b.addEventListener('click', () => {
-      const q = new URLSearchParams({ course: save.course, style: save.style ?? 'stylized', at: [save.x, save.z, save.yaw, 0].map((v) => +v.toFixed(2)).join(',') });
+      const q = new URLSearchParams({ course: save.course, style: save.style ?? 'detailed', at: [save.x, save.z, save.yaw, 0].map((v) => +v.toFixed(2)).join(',') });
       location.replace(`${location.pathname}?${q}`);
     });
     document.querySelector('#menu .choices')!.prepend(b);

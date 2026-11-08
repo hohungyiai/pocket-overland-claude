@@ -317,7 +317,7 @@ export async function buildPasirRisCourse(
       fillPoly(a.pts, (k) => (code[k] = (code[k] & 0xf0) | v));
     }
     for (const b of M.buildings) fillPoly(b.pts, (k) => (code[k] |= BLD));
-    edges.forEach((e, i) => strokeLine(EP[i], e.w / 2 + 4, (k) => (code[k] |= NEAR_ROAD)));
+    edges.forEach((e, i) => strokeLine(EP[i], e.w / 2 + 9, (k) => (code[k] |= NEAR_ROAD)));
     for (const p of paths) strokeLine(p.pts, 5, (k) => (code[k] |= NEAR_PATH));
     for (const c of canals) strokeLine(c.pts, c.w / 2 + 7, (k) => (code[k] |= NEAR_WET));
     for (const w of waterAreas) {
@@ -436,7 +436,8 @@ export async function buildPasirRisCourse(
 
   // ---------- Ground height ----------
   const probe = { s: 60, w: 30 };
-  function heightAt(x: number, z: number): number {
+  /** The smooth ground, before it is sealed under the roads (roads drape on this). */
+  function rawHeight(x: number, z: number): number {
     const s = coastSD(x, z);
     probe.s = s;
     probe.w = 30;
@@ -493,6 +494,40 @@ export async function buildPasirRisCourse(
       const o = openness(x, z);
       if (o > 0) h += 0.7 * o * Math.max(0, fbm(x / 50, z / 50, SEED + 9) + 0.25);
     }
+    return h;
+  }
+  /**
+   * The ground as built (mesh, collider, trees): the smooth ground, sealed
+   * under every road. The mesh is a 4 m grid of straight-edged triangles, so
+   * any bump within one cell of a road can show through it once interpolated.
+   * Within SEAL m of a road's kerb the ground is held just below that road's
+   * surface, and only rises again beyond that.
+   */
+  const SEAL = 6;
+  function heightAt(x: number, z: number): number {
+    let h = rawHeight(x, z);
+    if (!(cell(x, z) & NEAR_ROAD)) return h;
+    const ps = probe.s;
+    const pw = probe.w;
+    roads.each(x, z, 14 + SEAL, (line, seg, u, d) => {
+      if (elevated[line]) return;
+      const half = EHALF[line] + 0.35;
+      if (d > half + SEAL + 2) return;
+      const pts = EP[line];
+      const cx = lerp(pts[seg][0], pts[seg + 1][0], u);
+      const cz = lerp(pts[seg][1], pts[seg + 1][1], u);
+      let yr: number;
+      if (hasProfile[line]) yr = deckAtHit(line, seg, u);
+      else {
+        // A draped road's surface at its edge nearest this point.
+        const t = d > half ? half / d : 1;
+        yr = Math.max(rawHeight(cx + (x - cx) * t, cz + (z - cz) * t), WL + 0.15);
+      }
+      const cap = yr - 0.12 + Math.max(0, d - half - SEAL);
+      if (cap < h) h = cap;
+    });
+    probe.s = ps;
+    probe.w = pw;
     return h;
   }
 
@@ -746,7 +781,7 @@ export async function buildPasirRisCourse(
         const z = pz + nz * (off + sgn * half);
         // Never below the water: paths out over it become boardwalks.
         const yk = o.yAt ? o.yAt(k) : NaN;
-        acc.pos.push(x, (yk === yk ? yk : (o.y ?? Math.max(heightAt(x, z), WL + 0.15))) + lift, z);
+        acc.pos.push(x, (yk === yk ? yk : (o.y ?? Math.max(rawHeight(x, z), WL + 0.15))) + lift, z);
         acc.uv.push(((sgn + 1) / 2) * ((half * 2) / 6), cum[k] / 6);
       }
     }
@@ -758,7 +793,7 @@ export async function buildPasirRisCourse(
   };
   const disc = (acc: Acc, x: number, z: number, r: number, lift: number, y?: number) => {
     const base = acc.pos.length / 3;
-    const yc = (y ?? Math.max(heightAt(x, z), WL + 0.15)) + lift;
+    const yc = (y ?? Math.max(rawHeight(x, z), WL + 0.15)) + lift;
     acc.pos.push(x, yc, z);
     acc.uv.push(0, 0);
     const n = 16;
@@ -766,7 +801,7 @@ export async function buildPasirRisCourse(
       const a = (i / n) * Math.PI * 2;
       const px = x + Math.cos(a) * r;
       const pz = z + Math.sin(a) * r;
-      acc.pos.push(px, (y ?? Math.max(heightAt(px, pz), WL + 0.15)) + lift, pz);
+      acc.pos.push(px, (y ?? Math.max(rawHeight(px, pz), WL + 0.15)) + lift, pz);
       acc.uv.push(Math.cos(a) * (r / 6), Math.sin(a) * (r / 6));
     }
     // Counter-clockwise seen from above, so the pad faces up.
@@ -1946,7 +1981,7 @@ export async function buildPasirRisCourse(
 
   // Test hook: ?debug exposes the road plan to the map checks (tools/check).
   if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug'))
-    (globalThis as any).__osm = { edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
+    (globalThis as any).__osm = { surfaceAt: rawHeight, edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
   return {
     name: 'Pasir Ris & Tampines',
     styles: true,
