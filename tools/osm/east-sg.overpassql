@@ -1,3 +1,4 @@
+// fetch v2
 // Pocket Overland: east Singapore (Pasir Ris, Pasir Ris Park, Tampines, Loyang edge)
 // Paste into https://overpass-turbo.eu , press Run, then Export > Data > "raw OSM data" (JSON).
 // Data (c) OpenStreetMap contributors, ODbL 1.0.
