@@ -488,7 +488,7 @@ export async function buildPasirRisCourse(
     k1: number,
     halfIn: number | ((k: number) => number),
     lift: number,
-    o: { off?: number | ((k: number) => number); y?: number; keep?: (k: number) => boolean } = {},
+    o: { off?: number | ((k: number) => number); y?: number; yAt?: (k: number) => number; keep?: (k: number) => boolean } = {},
   ) => {
     const base = acc.pos.length / 3;
     for (let k = k0; k <= k1; k++) {
@@ -504,7 +504,8 @@ export async function buildPasirRisCourse(
         const x = px + nx * (off + sgn * half);
         const z = pz + nz * (off + sgn * half);
         // Never below the water: paths out over it become boardwalks.
-        acc.pos.push(x, (o.y ?? Math.max(heightAt(x, z), WL + 0.15)) + lift, z);
+        const yk = o.yAt ? o.yAt(k) : NaN;
+        acc.pos.push(x, (yk === yk ? yk : (o.y ?? Math.max(heightAt(x, z), WL + 0.15))) + lift, z);
         acc.uv.push(((sgn + 1) / 2) * ((half * 2) / 6), cum[k] / 6);
       }
     }
@@ -561,7 +562,8 @@ export async function buildPasirRisCourse(
     white: flatMat(0xf2efe4, -5),
     yellow: flatMat(0xe0b52a, -5),
     foot: flatMat(0xbdb7aa, -1),
-    cycle: flatMat(0xa45b49, -1, tartanTex),
+    cycle: flatMat(0xa45b49, -2, tartanTex),
+    rail: flatMat(0xd9d6cf, -1),
     ballast: flatMat(0x7d7872, -1),
   };
   type AccKey = keyof typeof MAT | 'wall' | 'roof';
@@ -646,17 +648,35 @@ export async function buildPasirRisCourse(
         // Markings stop short of the junction pads.
         const ca = (jDegree[e.a] > 2 ? jRadius[e.a] : 0) + 2;
         const cb = (jDegree[e.b] > 2 ? jRadius[e.b] : 0) + 2;
-        const inside = (kk: number) => cum[kk] > ca && cum[kk + 1] < len - cb;
-        const dash = (kk: number) => inside(kk) && kk % 3 === 0;
+        const ends = (kk: number) => cum[kk] > ca && cum[kk + 1] < len - cb;
+        // Where a slip road merges, or roads overlap in a junction, another
+        // road's surface covers the line: stop it there.
+        const clear = (kk: number, off: number) => {
+          const a = pts[kk];
+          const b = pts[kk + 1];
+          const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+          const x = (a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * off;
+          const z = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * off;
+          const r = roads.nearest(x, z, 16, (i) => i !== line);
+          return !r || r.d > EHALF[r.line] + 0.2;
+        };
+        const solid = (off: (kk: number) => number) => (kk: number) => ends(kk) && clear(kk, off(kk));
+        const dashed = (off: (kk: number) => number) => (kk: number) => kk % 3 === 0 && ends(kk) && clear(kk, off(kk));
         if (rank >= 2) {
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: (kk) => halfAt(kk) - 0.35, keep: inside });
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: (kk) => -(halfAt(kk) - 0.35), keep: inside });
+          const l = (kk: number) => halfAt(kk) - 0.35;
+          const r = (kk: number) => -(halfAt(kk) - 0.35);
+          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: l, keep: solid(l) });
+          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: r, keep: solid(r) });
         }
         const lanes = Math.max(1, Math.round((e.w - 0.7) / 3.3));
         if (e.one) {
-          for (let l = 1; l < lanes; l++) strip(white, pts, cum, k0, k1, 0.07, 0.11, { off: -half + (l * e.w) / lanes, keep: dash });
+          for (let l = 1; l < lanes; l++) {
+            const off = () => -half + (l * e.w) / lanes;
+            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off: off(), keep: dashed(off) });
+          }
         } else if (rank >= 1 && e.w >= 6) {
-          strip(white, pts, cum, k0, k1, 0.07, 0.11, { keep: rank >= 3 ? inside : dash });
+          const off = () => 0;
+          strip(white, pts, cum, k0, k1, 0.07, 0.11, { keep: rank >= 3 ? solid(off) : dashed(off) });
         }
       }
     });
@@ -688,17 +708,91 @@ export async function buildPasirRisCourse(
     for (let i = 1; i < p.pts.length; i++) c.push(c[i - 1] + Math.hypot(p.pts[i][0] - p.pts[i - 1][0], p.pts[i][1] - p.pts[i - 1][1]));
     return c;
   });
+  // Footbridges: where a path crosses a canal, pond or the sea, its deck runs
+  // level from bank to bank (NaN = on the ground).
+  const deckCache = new Map<number, Float32Array>();
+  const pathDeck = (line: number) => {
+    let d = deckCache.get(line);
+    if (d) return d;
+    const pts = paths[line].pts;
+    const cum = PCUM[line];
+    const n = pts.length;
+    const g = new Float32Array(n);
+    const wet = new Uint8Array(n);
+    for (let k = 0; k < n; k++) {
+      g[k] = heightAt(pts[k][0], pts[k][1]);
+      wet[k] = probe.s < 0 || probe.w < 0.5 ? 1 : 0;
+    }
+    d = new Float32Array(n).fill(NaN);
+    for (let k = 0; k < n; ) {
+      if (!wet[k]) {
+        k++;
+        continue;
+      }
+      let e = k;
+      while (e < n && wet[e]) e++;
+      const a = k - 1; // dry ground either side (or the path's end)
+      const b = e;
+      const ya = a >= 0 ? g[a] : b < n ? g[b] : LAND;
+      const yb = b < n ? g[b] : ya;
+      const sa = cum[Math.max(0, a)];
+      const sb = cum[Math.min(n - 1, b)];
+      for (let q = Math.max(0, a); q <= Math.min(n - 1, b); q++) {
+        const t = sb > sa ? (cum[q] - sa) / (sb - sa) : 0;
+        d[q] = Math.max(lerp(ya, yb, t), WL + 0.6) + 0.15;
+      }
+      k = e;
+    }
+    deckCache.set(line, d);
+    return d;
+  };
+  /** A vertical band along pts at sideways offset `off`, from y(k) - below to y(k) + above. */
+  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, off: number, y: (k: number) => number, below: number, above: number, keep: (k: number) => boolean) => {
+    const base = acc.pos.length / 3;
+    for (let k = k0; k <= k1; k++) {
+      const a = pts[Math.max(0, k - 1)];
+      const b = pts[Math.min(pts.length - 1, k + 1)];
+      const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const x = pts[k][0] + ((b[1] - a[1]) / tl) * off;
+      const z = pts[k][1] - ((b[0] - a[0]) / tl) * off;
+      const yk = y(k);
+      acc.pos.push(x, yk - below, z, x, yk + above, z);
+      acc.uv.push(0, cum[k] / 6, 1, cum[k] / 6);
+    }
+    for (let k = k0; k < k1; k++) {
+      if (!keep(k)) continue;
+      const q = base + (k - k0) * 2;
+      acc.idx.push(q, q + 2, q + 1, q + 1, q + 2, q + 3);
+    }
+  };
+  // Footpaths sit just under cycle paths, so where they overlap the cycle
+  // path shows cleanly instead of the two flickering.
   for (const [k, all] of runsOf(paths.map((p) => p.pts)))
     inChunks('far', k, all, 40, (list, _kit, acc) => {
       const foot = acc('foot');
       const cyc = acc('cycle');
+      const rail = acc('rail');
       for (const { line, k0, k1 } of list) {
         const pa = paths[line];
-        const into = pa.k === 'cycle' ? cyc : foot;
-        strip(into, pa.pts, PCUM[line], k0, k1, PHALF[line], 0.06);
+        const cycle = pa.k === 'cycle';
+        const into = cycle ? cyc : foot;
+        const lift = cycle ? 0.075 : 0.05;
+        const deck = pathDeck(line);
+        const yAt = (kk: number) => deck[kk];
+        strip(into, pa.pts, PCUM[line], k0, k1, PHALF[line], lift, { yAt });
         // Round ends, so paths that meet or branch join without a notch.
-        if (k0 === 0) disc(into, pa.pts[0][0], pa.pts[0][1], PHALF[line], 0.06);
-        if (k1 === pa.pts.length - 1) disc(into, pa.pts[k1][0], pa.pts[k1][1], PHALF[line], 0.06);
+        if (k0 === 0 && deck[0] !== deck[0]) disc(into, pa.pts[0][0], pa.pts[0][1], PHALF[line], lift);
+        if (k1 === pa.pts.length - 1 && deck[k1] !== deck[k1]) disc(into, pa.pts[k1][0], pa.pts[k1][1], PHALF[line], lift);
+        // Bridge sides: a deck edge and railings.
+        const onBridge = (kk: number) => deck[kk] === deck[kk] && deck[kk + 1] === deck[kk + 1];
+        let any = false;
+        for (let kk = k0; kk < k1; kk++) if (onBridge(kk)) any = true;
+        if (!any) continue;
+        const y = (kk: number) => (deck[kk] === deck[kk] ? deck[kk] : heightAt(pa.pts[kk][0], pa.pts[kk][1])) + lift;
+        for (const side of [-1, 1]) {
+          band(rail, pa.pts, PCUM[line], k0, k1, side * (PHALF[line] + 0.05), y, 0.35, 0, onBridge);
+          band(rail, pa.pts, PCUM[line], k0, k1, side * (PHALF[line] - 0.05), y, 0, 0.9, onBridge);
+        }
       }
     });
 
