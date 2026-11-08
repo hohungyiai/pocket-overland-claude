@@ -10,6 +10,7 @@ const PORT = 4179;
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m)]
   ['Ground never rises above a road', 'ground.js', '__checkGround', 0],
+  ['No pier stands on a road', 'piers.js', '__checkPiers', 0],
 ];
 
 (async () => {

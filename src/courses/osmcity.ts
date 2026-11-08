@@ -1012,6 +1012,20 @@ export async function buildPasirRisCourse(
   const concreteMat = new THREE.MeshStandardMaterial({ color: 0xc9c6bf, roughness: 0.9 });
   const deckLines = EP.map((pts, i) => (hasProfile[i] ? pts : []));
   const deckRuns = runsOf(deckLines);
+  /**
+   * Can a pier stand at (x, z), rising to `top`? Not on any road it would
+   * pass through (on the ground, or a lower deck), nor on a footpath.
+   */
+  const pierClear = (x: number, z: number, top: number, self = -1) => {
+    let ok = true;
+    roads.each(x, z, 24, (i, seg, u, d) => {
+      if (!ok || i === self || d > EHALF[i] + 1.2) return;
+      const y = hasProfile[i] ? deckAtHit(i, seg, u) : heightAt(x, z);
+      if (y < top - 1) ok = false;
+    });
+    const pp = pathIdx.nearest(x, z, 4);
+    return ok && !(pp && pp.d < PHALF[pp.line] + 0.6);
+  };
   const pillarsOf = (line: number, k0: number, k1: number, f: (x: number, z: number, top: number, foot: number, yaw: number, w: number) => void) => {
     if (!elevated[line]) return;
     const pts = EP[line];
@@ -1025,10 +1039,7 @@ export async function buildPasirRisCourse(
       const foot = heightAt(x, z);
       const top = dy[k] - 1.1;
       if (top - foot < 2.5) continue;
-      const below = roads.nearest(x, z, 24, (i) => !elevated[i]);
-      if (below && below.d < EHALF[below.line] + 1.2) continue;
-      const pp = pathIdx.nearest(x, z, 4);
-      if (pp && pp.d < PHALF[pp.line] + 0.6) continue;
+      if (!pierClear(x, z, top, line)) continue;
       const a = pts[k - 1];
       const b = pts[k + 1];
       f(x, z, top, foot, Math.atan2(-(b[1] - a[1]), b[0] - a[0]), EHALF[line]);
@@ -1752,14 +1763,34 @@ export async function buildPasirRisCourse(
   });
   // The track runs 9 m above the (hilly) ground.
   const railY = (line: number, q: number) => baseAt(viaducts[line][q][0], viaducts[line][q][1]) + 9;
+  // A pier about every 30 m, shifted along (up to 12 m) to stand clear of
+  // any road or path below; where none is clear, the span runs on.
+  const pierCache = new Map<number, number[]>();
+  const railPiers = (line: number) => {
+    let l = pierCache.get(line);
+    if (l) return l;
+    l = [];
+    const pts = viaducts[line];
+    for (let q = 0; q < pts.length; q += 5)
+      for (const dq of [0, 1, -1, 2, -2]) {
+        const qq = q + dq;
+        if (qq < 0 || qq >= pts.length) continue;
+        if (pierClear(pts[qq][0], pts[qq][1], railY(line, qq) - 1.1)) {
+          l.push(qq);
+          break;
+        }
+      }
+    pierCache.set(line, l);
+    return l;
+  };
   for (const [k, list] of runsOf(viaducts)) {
     onTile('horizon', k, (kit) => {
       const top = new Acc();
       const parts: THREE.BufferGeometry[] = [];
       for (const { line, k0, k1 } of list) {
         strip(top, viaducts[line], VCUM[line], k0, k1, 2.6, 0, { yAt: (q) => railY(line, q) });
-        for (let q = k0; q <= k1; q++) {
-          if (q % 5) continue;
+        for (const q of railPiers(line)) {
+          if (q < k0 || q > k1) continue;
           const [x, z] = viaducts[line][q];
           const foot = heightAt(x, z) - 0.5;
           const top = railY(line, q) - 1.1;
@@ -1786,8 +1817,8 @@ export async function buildPasirRisCourse(
     onTile('near', k, (kit) => {
       const body = kit.body();
       for (const { line, k0, k1 } of list)
-        for (let q = k0; q <= k1; q++) {
-          if (q % 5) continue;
+        for (const q of railPiers(line)) {
+          if (q < k0 || q > k1) continue;
           const [x, z] = viaducts[line][q];
           world.createCollider(RAPIER.ColliderDesc.cuboid(0.7, 4, 0.7).setTranslation(x, heightAt(x, z) + 3.5, z), body);
         }
@@ -1981,7 +2012,16 @@ export async function buildPasirRisCourse(
 
   // Test hook: ?debug exposes the road plan to the map checks (tools/check).
   if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug'))
-    (globalThis as any).__osm = { surfaceAt: rawHeight, edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
+    (globalThis as any).__osm = {
+      surfaceAt: rawHeight,
+      // Every pier's foot and top, rail and road.
+      piers: () => {
+        const out: { x: number; z: number; top: number; kind: string; self: number }[] = [];
+        edges.forEach((_, line) => pillarsOf(line, 0, EP[line].length - 1, (x, z, top) => out.push({ x, z, top, kind: 'flyover', self: line })));
+        viaducts.forEach((pts, line) => railPiers(line).forEach((q) => out.push({ x: pts[q][0], z: pts[q][1], top: railY(line, q) - 1.1, kind: 'rail', self: -1 })));
+        return out;
+      },
+      edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
   return {
     name: 'Pasir Ris & Tampines',
     styles: true,
