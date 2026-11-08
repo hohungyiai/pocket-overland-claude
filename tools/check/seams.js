@@ -2,7 +2,11 @@
 // width, with no gap where the ground shows through (seams where two pieces
 // of road meet, wedges where carriageways split). Builds every far tile's
 // road buffers off-scene and tests points across each road against them.
-window.__checkSeams = (all = false) => {
+// Every far tile's road surface (asphalt, junctions, kerbs), built off-scene
+// once and bucketed on a 4 m grid. drawnAt(x, z, y) gives the drawn height
+// there nearest to y (NaN if nothing is drawn).
+window.__roadIndex = () => {
+  if (window.__roadIdx) return window.__roadIdx;
   const d = globalThis.__osm;
   const X0 = -3600, Z0 = -3600, C = 4, W = 1800;
   // Every road triangle (asphalt, junction surfaces), in XZ with its corner heights.
@@ -56,6 +60,12 @@ window.__checkSeams = (all = false) => {
     }
     return best;
   };
+  return (window.__roadIdx = { drawnAt });
+};
+
+window.__checkSeams = (all = false) => {
+  const d = globalThis.__osm;
+  const { drawnAt } = window.__roadIndex();
   const bad = [];
   const seen = new Set();
   let n = 0;
@@ -101,5 +111,52 @@ window.__checkSeams = (all = false) => {
       }
     }
   });
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40) };
+};
+
+// In-page check: where one piece of road meets the next (a road's end, a
+// junction's mouth), the two surfaces meet at the same height: no step.
+window.__checkSteps = (all = false) => {
+  const d = globalThis.__osm;
+  const { drawnAt } = window.__roadIndex();
+  const bad = [];
+  const seen = new Set();
+  let n = 0;
+  d.edges.forEach((e, i) => {
+    const P = d.EP[i];
+    const cum = d.ECUM[i];
+    const len = cum[cum.length - 1];
+    const Y = d.hasProfile[i] ? d.deckY(i) : null;
+    const ta = d.JX.trimA[i] || 0;
+    const tb = d.JX.trimB[i] || 0;
+    if (d.JX.internal[i] || len - ta - tb < 1) return;
+    // [where, which way is inward]
+    for (const [sb, dir] of [[ta, 1], [len - tb, -1]]) {
+      let k = 0;
+      while (k < P.length - 2 && cum[k + 1] <= sb) k++;
+      const L = cum[k + 1] - cum[k] || 1;
+      const u = (sb - cum[k]) / L;
+      const tx = (P[k + 1][0] - P[k][0]) / L, tz = (P[k + 1][1] - P[k][1]) / L;
+      const half = d.halfAtE(i, k);
+      for (const f of [-0.6, 0, 0.6]) {
+        const x = P[k][0] + (P[k + 1][0] - P[k][0]) * u + tz * f * half;
+        const z = P[k][1] + (P[k + 1][1] - P[k][1]) * u - tx * f * half;
+        const y = Y ? Y[k] + (Y[k + 1] - Y[k]) * u : d.surfaceAt(x, z);
+        const yin = drawnAt(x + tx * dir * 0.3, z + tz * dir * 0.3, y);
+        if (!(Math.abs(yin - y) < 1.5)) continue; // not drawn here (the seam check's business)
+        const yout = drawnAt(x - tx * dir * 0.3, z - tz * dir * 0.3, yin);
+        if (yout !== yout) continue;
+        n++;
+        const step = Math.abs(yout - yin);
+        // (A ramp's grade over 0.6 m is up to 0.1 m: allow for it.)
+        if (step <= 0.12) continue;
+        const key = `${Math.round(x / 3)},${Math.round(z / 3)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        bad.push({ road: e.name || e.cls, i, end: dir > 0 ? 'a' : 'b', x: +x.toFixed(1), z: +z.toFixed(1), over: +step.toFixed(2) });
+      }
+    }
+  });
+  bad.sort((a, b) => b.over - a.over);
   return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40) };
 };
