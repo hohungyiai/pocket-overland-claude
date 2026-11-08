@@ -24,10 +24,16 @@ window.__checkRide = async (count = 8) => {
     const k = Math.floor(P.length / 2);
     const [x, z] = P[k];
     const [x2, z2] = P[k + 1];
-    // Dropped from 2.5 m up: the game holds the car still until the ground
-    // round it has loaded, so wait for it to fall, then to settle (all four
+    // Dropped from 2.5 m up: wait for it to fall, then to settle (all four
     // wheels down and still, three polls running).
     const y0 = d.surfaceAt(x, z) + 2.5;
+    // Held there until the tiles round it have all loaded (as they would
+    // have, long before, for a car driven there).
+    for (let t = 0; t < 120; t++) {
+      g.car.placeAt({ x, y: y0, z }, Math.atan2(x2 - x, z2 - z));
+      await wait(250);
+      if (t > 4 && g.course.streamStats().pending === 0) break;
+    }
     g.car.placeAt({ x, y: y0, z }, Math.atan2(x2 - x, z2 - z));
     let fell = false;
     for (let t = 0, calm = 0; t < 80 && calm < 3; t++) {
