@@ -7,7 +7,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
-const DEPS = { 'drive.js': ['seams.js'], 'lanes.js': ['seams.js'], 'routes.js': ['bot.js'] };
+const DEPS = { 'drive.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
@@ -28,18 +28,19 @@ const CHECKS = [
   ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
   // Drivable from a standstill: 60% of what the car can do (src/limits.ts).
-  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 49],
-  ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, 14],
+  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 23],
+  ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, 11],
   ['No side tilt that could tip the car', 'drive.js', '__checkTilt', 0],
   ['The drive bot gets through the hard spots', 'routes.js', '__checkRoutes', 0],
   // (5 left, of 838 before kerbs and lines stopped at other roads: three
   // TPE / Halus Link spots where expressway pieces lie side by side, for the
   // merge rebuild, and one on Tampines Road.)
-  ['No kerb or road line across a lane', 'lanes.js', '__checkLanes', 0, 5],
+  ['No kerb or road line across a lane', 'lanes.js', '__checkLanes', 0, 1],
   ['No bite out of a road\'s edge', 'lanes.js', '__checkEdges', 0],
   ['Widths change no faster than 1 m per 20 m', 'lanes.js', '__checkWidths', 0],
   // (79: corners OSM itself draws as a jog, nearly all on service lanes.)
   ['No road jogs sideways (sharp turn and straight back)', 'kinks.js', '__checkKinks', 0, 79],
+  ['No gap where two roads split or join', 'gores.js', '__checkGores', 0],
 ];
 
 (async () => {

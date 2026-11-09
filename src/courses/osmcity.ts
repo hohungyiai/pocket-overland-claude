@@ -604,6 +604,7 @@ export async function buildPasirRisCourse(
   };
   const sepA = new Float32Array(edges.length);
   const sepB = new Float32Array(edges.length);
+  const mates = edges.map(() => [] as { o: number; ia: boolean; oa: boolean; L: number }[]);
   jE.forEach((list, j) => {
     if (list.length < 2) return;
     for (const i of list)
@@ -622,6 +623,12 @@ export async function buildPasirRisCourse(
           s += 1;
         }
         if (s < 2) continue;
+        // Two roads on the ground (or ramps) share one height where they
+        // overlap (see relAlong); beside a flyover deck, a road stays level.
+        if (!elevated[i] && !elevated[o]) {
+          mates[i].push({ o, ia, oa, L: s });
+          continue;
+        }
         if (ia) sepA[i] = Math.max(sepA[i], s);
         else sepB[i] = Math.max(sepB[i], s);
       }
@@ -691,7 +698,43 @@ export async function buildPasirRisCourse(
   };
   lift();
   /** Road height above the ground at distance s along edge i. */
+  // (A road held down to pass under a flyover keeps its own height.)
+  const held = (i: number) => jCap[edges[i].a] < Infinity || jCap[edges[i].b] < Infinity;
+  /**
+   * Road height above the ground at distance s along edge i. Where two
+   * roads leave a joint side by side, overlapping for L m, both take the
+   * average of their own heights there (one surface: neither stands above
+   * the other), easing back to their own beyond, over a stretch long enough
+   * to keep within MAX_GRADE.
+   */
   const relAlong = (i: number, s: number) => {
+    const r = relOwn(i, s);
+    if (!mates[i].length || held(i)) return r;
+    let sum = 0;
+    let w = 0;
+    for (const m of mates[i]) {
+      if (held(m.o)) continue;
+      const d = m.ia ? s : ELEN[i] - s; // from the joint
+      if (d > m.L + 60) continue;
+      const so = m.oa ? d : ELEN[m.o] - d;
+      if (so < 0 || so > ELEN[m.o]) continue;
+      const di = m.ia ? m.L : ELEN[i] - m.L;
+      const dO = m.oa ? m.L : ELEN[m.o] - m.L;
+      const gap = Math.abs(relOwn(m.o, Math.max(0, Math.min(ELEN[m.o], dO))) - relOwn(i, Math.max(0, Math.min(ELEN[i], di)))) / 2;
+      const fade = Math.min(60, Math.max(8, (1.5 * gap) / (0.5 * MAX_GRADE)));
+      // (Both roads are back to their own height at their far ends, where
+      // other roads meet them.)
+      const farI = ELEN[i] - d;
+      const farO = m.oa ? ELEN[m.o] - so : so;
+      const t = (1 - smoothstep(m.L, m.L + fade, d)) * smoothstep(0, 12, Math.min(farI, farO));
+      if (t <= 0) continue;
+      sum += t * (relOwn(m.o, so) - r) / 2;
+      w += t;
+    }
+    return w > 1 ? r + sum / w : r + sum;
+  };
+  /** Road height above the ground at distance s along edge i, on its own. */
+  const relOwn = (i: number, s: number) => {
     const ra = jRel[edges[i].a] ?? 0;
     const rb = jRel[edges[i].b] ?? 0;
     let r: number;
@@ -1782,6 +1825,128 @@ export async function buildPasirRisCourse(
     });
     return hit;
   };
+  // Gores. Where two roads at one level split apart or come together at a
+  // small angle (a slip road leaving an expressway, a road dividing round
+  // a median), the road is one surface between them until they are GORE m
+  // apart: the wedge between their inner edges is paved (no strip of grass
+  // or hole showing through), and their kerbs stop there. Beyond, the
+  // verge between them begins.
+  const GORE = 1.5;
+  const gores: { ring: XZ[]; rows: { a: XZ; b: XZ; ya: number; yb: number }[] }[] = [];
+  {
+    /** Road i's drawn height at distance s along it, at (x, z). */
+    const roadY = (i: number, k: number, u: number, s: number, x: number, z: number) => {
+      if (!hasProfile[i]) return dropAt(x, z);
+      const Y = deckY(i);
+      let y = lerp(Y[k], Y[Math.min(Y.length - 1, k + 1)], u);
+      if (!elevated[i]) {
+        const t = tiltAt(i, s);
+        if (t > 0) y = lerp(y, dropAt(x, z) + relAlong(i, s), t);
+      }
+      return y;
+    };
+    /** Point, direction (away from j) and segment at s out from road i's end at j. */
+    const out = (i: number, j: number, s0: number) => {
+      const P = EP[i];
+      const cum = ECUM[i];
+      const L = ELEN[i];
+      const fromA = edges[i].a === j;
+      const s = Math.max(0, Math.min(L, fromA ? s0 : L - s0));
+      let k = 0;
+      while (k < P.length - 2 && cum[k + 1] <= s) k++;
+      const sl = cum[k + 1] - cum[k] || 1;
+      const u = (s - cum[k]) / sl;
+      const sg = fromA ? 1 : -1;
+      return { x: lerp(P[k][0], P[k + 1][0], u), z: lerp(P[k][1], P[k + 1][1], u), tx: (sg * (P[k + 1][0] - P[k][0])) / sl, tz: (sg * (P[k + 1][1] - P[k][1])) / sl, k, u, s, h: halfAtE(i, u < 0.5 ? k : k + 1) };
+    };
+    const trimAt = (i: number, j: number) => (edges[i].a === j ? JX.trimA[i] || 0 : JX.trimB[i] || 0);
+    const COS = Math.cos((35 * Math.PI) / 180);
+    jE.forEach((all, j) => {
+      const l = all.filter((i) => !JX.internal[i] && edges[i].a !== edges[i].b && ELEN[i] >= 20);
+      if ((jE[j] ?? []).length < 3) return;
+      for (let p = 0; p < l.length; p++)
+        for (let q = p + 1; q < l.length; q++) {
+          const A = l[p], B = l[q];
+          if (elevated[A] !== elevated[B]) continue;
+          const a0 = out(A, j, 0), a1 = out(A, j, 20), b1 = out(B, j, 20);
+          const va = [a1.x - a0.x, a1.z - a0.z], vb = [b1.x - a0.x, b1.z - a0.z];
+          if ((va[0] * vb[0] + va[1] * vb[1]) / (Math.hypot(va[0], va[1]) * Math.hypot(vb[0], vb[1]) || 1) < COS) continue;
+          // (Pieces: two roads may draw apart and close in again.)
+          let rows: { a: XZ; b: XZ; ya: number; yb: number }[] = [];
+          const finish = () => {
+            if (rows.length >= 2) gores.push({ ring: [...rows.map((r) => r.a), ...rows.map((r) => r.b).reverse()], rows });
+            rows = [];
+          };
+          // (Up to the far junctions, whose paving takes over.)
+          const farOf = (i: number) => ELEN[i] - (edges[i].a === j ? JX.trimB[i] || 0 : JX.trimA[i] || 0);
+          const far = Math.min(farOf(A), farOf(B));
+          const s0 = Math.max(trimAt(A, j), trimAt(B, j));
+          for (let n = 0, N = Math.ceil(far - s0); n <= N; n++) {
+            const s = Math.min(far, s0 + n);
+            const pa = out(A, j, s), pb = out(B, j, s);
+            const side = (pt: typeof pa, o: typeof pa) => Math.sign(-pt.tz * (o.x - pt.x) + pt.tx * (o.z - pt.z)) || 1;
+            const sa = side(pa, pb), sb = side(pb, pa);
+            // Each road's edge on the side facing the other (its kerb line).
+            const ea: XZ = [pa.x - pa.tz * sa * pa.h, pa.z + pa.tx * sa * pa.h];
+            const eb: XZ = [pb.x - pb.tz * sb * pb.h, pb.z + pb.tx * sb * pb.h];
+            const sep = Math.hypot(pa.x - pb.x, pa.z - pb.z) - pa.h - pb.h;
+            const ya = roadY(A, pa.k, pa.u, pa.s, ea[0], ea[1]);
+            const yb = roadY(B, pb.k, pb.u, pb.s, eb[0], eb[1]);
+            // (Two roads at different levels part as one climbs: no gore.)
+            if (Math.abs(ya - yb) > 0.8) {
+              finish();
+              continue;
+            }
+            if (sep < 0.05 && !rows.length) continue;
+            if (sep >= GORE + 1 && !rows.length) continue;
+            rows.push({ a: ea, b: eb, ya, yb });
+            if (sep >= GORE) finish();
+          }
+          finish();
+        }
+    });
+  }
+  const GCELL = 64;
+  const goreGrid = new Map<number, number[]>();
+  gores.forEach((g, id) => {
+    const xs = g.ring.map((p) => p[0]), zs = g.ring.map((p) => p[1]);
+    for (let a = Math.floor(Math.min(...xs) / GCELL); a <= Math.floor(Math.max(...xs) / GCELL); a++)
+      for (let b = Math.floor(Math.min(...zs) / GCELL); b <= Math.floor(Math.max(...zs) / GCELL); b++) {
+        const key = a * 100003 + b;
+        (goreGrid.get(key) ?? goreGrid.set(key, []).get(key)!).push(id);
+      }
+  });
+  /** In a gore (the paved wedge where two roads split or join)? */
+  const inGore = (x: number, z: number) => !!goreGrid.get(Math.floor(x / GCELL) * 100003 + Math.floor(z / GCELL))?.some((id) => inRingXZ(gores[id].ring, x, z));
+  {
+    const byTile = new Map<string, number[]>();
+    gores.forEach((g, id) => {
+      const m = g.rows[Math.floor(g.rows.length / 2)].a;
+      const k = tileKey(m[0], m[1]);
+      (byTile.get(k) ?? byTile.set(k, []).get(k)!).push(id);
+    });
+    for (const [k, all] of byTile)
+      inChunks('far', k, all, 30, (list, _kit, acc) => {
+        const road = acc('road');
+        for (const id of list) {
+          const { rows } = gores[id];
+          const base = road.pos.length / 3;
+          // (A hair under the roads either side, which cover its edges.)
+          for (const r of rows) {
+            road.pos.push(r.a[0], r.ya + 0.087, r.a[1], r.b[0], r.yb + 0.087, r.b[1]);
+            road.uv.push(r.a[0] / 6, r.a[1] / 6, r.b[0] / 6, r.b[1] / 6);
+          }
+          // Facing up: which side is which depends on the pair.
+          const r0 = rows[0], r1 = rows[rows.length - 1];
+          const up = (r0.b[0] - r0.a[0]) * (r1.a[1] - r0.a[1]) - (r0.b[1] - r0.a[1]) * (r1.a[0] - r0.a[0]) > 0;
+          for (let q = 0; q + 1 < rows.length; q++) {
+            const a = base + q * 2;
+            if (up) road.idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+            else road.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+          }
+        }
+      });
+  }
   const roadRuns = runsOf(EP);
   for (const [k, all] of roadRuns)
     inChunks('far', k, all, 30, (list, _kit, acc) => {
@@ -1829,7 +1994,7 @@ export async function buildPasirRisCourse(
                 const y = dy ? lerp(dy[kk], dy[kk + 1], t) : NaN;
                 // (On another road's surface, where two roads merge or run
                 // side by side, a kerb would stand across its lanes.)
-                return onIsland(x, z) || inPaving(x, z, y) || coveredBy(line, x, z, y);
+                return onIsland(x, z) || inPaving(x, z, y) || coveredBy(line, x, z, y) || inGore(x, z);
               };
               return !at(0.5) && !at(0.2) && !at(0.8);
             };
