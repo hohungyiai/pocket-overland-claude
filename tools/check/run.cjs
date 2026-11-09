@@ -24,10 +24,7 @@ const CHECKS = [
   ['Crossings lie on their own road', 'crossings.js', '__checkCrossings', 0],
   ['No traffic light on a road or in a junction', 'crossings.js', '__checkLightPoles', 0],
   ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 29],
-  // (4: two road ends on hillsides where a junction's flat paving meets the
-  // draped road 12-13 cm off, right at the limit; paving that follows the
-  // ground is to come.)
-  ['No step where road pieces meet', 'seams.js', '__checkSteps', 0, 4],
+  ['No step where road pieces meet', 'seams.js', '__checkSteps', 0],
   ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
   // Drivable from a standstill: 60% of what the car can do (src/limits.ts).

@@ -875,11 +875,15 @@ export async function buildPasirRisCourse(
   // the ground (a ramp's foot) lies on the hillside like the roads beside
   // it: tiltAt is how far (0 level, 1 fully on the ground plus its height).
   // (A low bridge meets its road on the bank the same way at its ends.)
+  // A low bridge's end lies on the ground where it meets a road on the
+  // ground (or ends); where it joins the next piece of bridge it stays up.
+  const footAt = (i: number, j: number) => (jE[j] ?? []).every((o) => o === i) || (jE[j] ?? []).some((o) => o !== i && !isDeck[o]);
+  const foot = edges.map((e, i) => [footAt(i, e.a), footAt(i, e.b)]);
   const tiltAt = (i: number, s: number) =>
     !hasProfile[i] || elevated[i]
       ? 0
       : isDeck[i]
-        ? 1 - smoothstep(0, 3, Math.min(s, ELEN[i] - s))
+        ? 1 - smoothstep(0, 3, Math.min(foot[i][0] ? s : Infinity, foot[i][1] ? ELEN[i] - s : Infinity))
         : 1 - smoothstep(0.1, 1, relAlong(i, s));
   const dropAt = (x: number, z: number) => Math.max(rawHeight(x, z), WL + 0.15);
   /** Deck height at a SegIndex hit on edge i. */
@@ -1510,9 +1514,10 @@ export async function buildPasirRisCourse(
       if (jn) mm = jn.m;
       else if (k > lo && k < hi) {
         const p = pts[k - 1], q = pts[k], r = pts[k + 1];
-        const l1 = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
-        const l2 = Math.hypot(r[0] - q[0], r[1] - q[1]) || 1;
-        const c = ((q[0] - p[0]) * (r[0] - q[0]) + (q[1] - p[1]) * (r[1] - q[1])) / (l1 * l2);
+        const l1 = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        const l2 = Math.hypot(r[0] - q[0], r[1] - q[1]);
+        // (A cut road repeats its mouth point: no bend there.)
+        const c = l1 < 1e-3 || l2 < 1e-3 ? 1 : ((q[0] - p[0]) * (r[0] - q[0]) + (q[1] - p[1]) * (r[1] - q[1])) / (l1 * l2);
         // cos of half the turn; capped at twice the width (a turn of 120°).
         const ch = Math.sqrt(Math.max(0, (1 + c) / 2));
         if (ch < Math.cos((10 * Math.PI) / 180)) mm = 1 / Math.max(0.5, ch);
@@ -1993,7 +1998,9 @@ export async function buildPasirRisCourse(
   // (Level with the ends of the roads that meet there, as they are drawn.)
   const padY = (j: number) => {
     // (On the ground, it lies on the ground like the roads' ends.)
-    if (!jEdges[j].some((i) => hasProfile[i]) || jRel[j] < 0.05) return undefined;
+    // (Between two pieces of a low bridge it stays up with them.)
+    const bridge = jEdges[j].every((i) => isDeck[i] && hasProfile[i]);
+    if (!jEdges[j].some((i) => hasProfile[i]) || (jRel[j] < 0.05 && !bridge)) return undefined;
     const [x, z] = M.junctions[j];
     let sum = 0;
     for (const i of jEdges[j]) {
