@@ -23,6 +23,8 @@ export interface JunctionIn {
   rank: (i: number) => number;
   /** Can this road be cut back and joined to a shaped junction? (ground roads) */
   shapeable: (i: number) => boolean;
+  /** Joints left unshaped whatever meets there (a slip road splitting off or merging: the roads just overlap). */
+  plain?: (j: number) => boolean;
   roads: SegIndex;
 }
 
@@ -113,7 +115,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
   });
   const endHalf = (i: number, j: number) => I.halfAt(i, edges[i].a === j ? 0 : EP[i].length - 1);
   const rad = jE.map((l, j) => Math.max(0, ...l.map((i) => endHalf(i, j))));
-  const eligible = jE.map((l) => l.length >= 3 && l.every((i) => I.shapeable(i) && edges[i].a !== edges[i].b));
+  const eligible = jE.map((l, j) => l.length >= 3 && !I.plain?.(j) && l.every((i) => I.shapeable(i) && edges[i].a !== edges[i].b));
   // A major junction: two big roads (secondary and up) cross or meet there.
   const major = jE.map((l) => l.filter((i) => I.rank(i) >= 3).length >= 2);
 

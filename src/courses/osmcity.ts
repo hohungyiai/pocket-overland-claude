@@ -523,6 +523,29 @@ export async function buildPasirRisCourse(
     }
     return best;
   };
+  // A split or a merge: three roads at a joint, two of them leaving side by
+  // side (within 35 degrees) and the third opposite. The third carries on
+  // as the wider of the two (whatever their names), the other being its
+  // slip road.
+  const splitAt = new Map<number, [number, number]>();
+  {
+    const COS35 = Math.cos((35 * Math.PI) / 180);
+    jE.forEach((all, j) => {
+      const l = all.filter((i) => edges[i].a !== edges[i].b);
+      if (l.length !== 3 || all.length !== 3 || l.some((i) => isDeck[i] || ELEN[i] < 30)) return;
+      const h = l.map((i) => headOut(i, j));
+      const dot = (x: number, y: number) => h[x][0] * h[y][0] + h[x][1] * h[y][1];
+      for (const [x, y, w] of [[0, 1, 2], [0, 2, 1], [1, 2, 0]]) {
+        if (dot(x, y) < COS35 || dot(w, x) > -COS35 || dot(w, y) > -COS35) continue;
+        const A = l[x], B = l[y], W = l[w];
+        const key = (i: number) => [EHALF[i], edges[i].name && edges[i].name === edges[W].name ? 1 : 0, -i];
+        const ka = key(A), kb = key(B);
+        let first = true;
+        for (let t = 0; t < 3; t++) if (ka[t] !== kb[t]) { first = ka[t] > kb[t]; break; }
+        splitAt.set(j, [W, first ? A : B]);
+      }
+    });
+  }
   const mate = (i: number, j: number) => {
     const o = throughOf(j, i);
     if (o !== undefined) return o !== i && throughOf(j, o) === i ? o : undefined;
@@ -587,8 +610,38 @@ export async function buildPasirRisCourse(
     const fast = list.some(({ i: q }) => /^(motorway|trunk)/.test(edges[q].cls));
     let rate = (fast ? WIDTH_RATE_FAST : WIDTH_RATE) / 2;
     const osm = smooth.slice();
+    // Where the road splits (or two join): a slip road leaves the joint
+    // alongside the narrower piece. The lane it takes is still part of the
+    // road there, so the narrower piece starts at the wider one's width
+    // and tapers down to its own, rather than the wider one pinching in.
+    const FLARE = false; // (off: no visible gain yet, and it steepens short pieces)
+    const flares: { m0: number; dir: number; h: number }[] = [];
+    {
+      const COS35 = Math.cos((35 * Math.PI) / 180);
+      let start = 0;
+      for (let x = 0; x + 1 < list.length; x++) {
+        start += ELEN[list[x].i];
+        const A = list[x], B = list[x + 1];
+        const node = A.fwd ? edges[A.i].b : edges[A.i].a;
+        if (Math.abs(EHALF[A.i] - EHALF[B.i]) < 0.15) continue;
+        const narrow = EHALF[A.i] < EHALF[B.i] ? A.i : B.i;
+        const hn = headOut(narrow, node);
+        const slip = (jE[node] ?? []).some((t) => {
+          if (t === A.i || t === B.i || isDeck[t] || ELEN[t] < 20 || edges[t].a === edges[t].b) return false;
+          const ht = headOut(t, node);
+          return hn[0] * ht[0] + hn[1] * ht[1] > COS35;
+        });
+        if (slip && FLARE) flares.push({ m0: start, dir: narrow === A.i ? -1 : 1, h: Math.max(EHALF[A.i], EHALF[B.i]) });
+      }
+    }
     const envelope = () => {
       smooth.set(osm);
+      for (const f of flares)
+        for (let m = Math.round(f.m0) + (f.dir > 0 ? 0 : -1), d = 0; m >= 0 && m <= n; m += f.dir, d++) {
+          const v = f.h - rate * d;
+          if (v <= smooth[m]) break;
+          smooth[m] = v;
+        }
       for (let pass = 0; pass < (loop ? 2 : 1); pass++) {
         for (let m = 1; m <= n; m++) smooth[m] = Math.min(smooth[m], smooth[m - 1] + rate);
         if (loop) smooth[0] = Math.min(smooth[0], smooth[n - 1] + rate);
@@ -623,6 +676,25 @@ export async function buildPasirRisCourse(
     const u = s - m;
     return R.smooth[m] + (R.smooth[Math.min(R.len, m + 1)] - R.smooth[m]) * u;
   };
+  // Joints within 300 m (along the roads) of a flyover's end.
+  const nearDeck = new Uint8Array(M.junctions.length);
+  {
+    const dist = new Float32Array(M.junctions.length).fill(Infinity);
+    const queue: number[] = [];
+    edges.forEach((e, i) => {
+      if (!elevated[i]) return;
+      for (const j of [e.a, e.b]) if (dist[j] > 0) (dist[j] = 0), queue.push(j);
+    });
+    while (queue.length) {
+      const j = queue.pop()!;
+      nearDeck[j] = 1;
+      for (const i of jE[j] ?? []) {
+        const o = edges[i].a === j ? edges[i].b : edges[i].a;
+        const d = dist[j] + ELEN[i];
+        if (d < 300 && d < dist[o]) (dist[o] = d), queue.push(o);
+      }
+    }
+  }
   const JX = shapeJunctions({
     junctions: M.junctions,
     edges,
@@ -632,6 +704,12 @@ export async function buildPasirRisCourse(
     rank: (i) => rankOf(edges[i].cls),
     // Flyover decks keep plain pads; ramps and ground roads join shaped junctions.
     shapeable: (i) => !isDeck[i],
+    // A split or a merge is no junction: the slip road runs into the road
+    // it joins, and the wedge between them is paved (see gores).
+    // (On expressways and slip roads; a side street forking is a junction.)
+    // (And on the ground: near a flyover the roads are on ramps, which a
+    // shaped junction holds level where they meet.)
+    plain: (j) => splitAt.has(j) && !nearDeck[j] && (jE[j] ?? []).every((i) => /^(motorway|trunk)|_link$/.test(edges[i].cls)),
     roads,
   });
   // Junction heights above the ground: full height at a flyover's ends, then
@@ -1996,6 +2074,7 @@ export async function buildPasirRisCourse(
           if ((va[0] * vb[0] + va[1] * vb[1]) / (Math.hypot(va[0], va[1]) * Math.hypot(vb[0], vb[1]) || 1) < COS) continue;
           // (Pieces: two roads may draw apart and close in again.)
           let rows: { a: XZ; b: XZ; ya: number; yb: number }[] = [];
+          let last: { a: XZ; b: XZ; ya: number; yb: number } | null = null;
           const finish = () => {
             if (rows.length >= 2) gores.push({ ring: [...rows.map((r) => r.a), ...rows.map((r) => r.b).reverse()], rows });
             rows = [];
@@ -2018,10 +2097,18 @@ export async function buildPasirRisCourse(
             // (Two roads at different levels part as one climbs: no gore.)
             if (Math.abs(ya - yb) > 0.8) {
               finish();
+              last = null;
               continue;
             }
-            if (sep < 0.05 && !rows.length) continue;
+            // (The wedge starts from the last spot where the two still
+            // overlap, so no sliver opens before its first row.)
+            if (sep < 0.05 && !rows.length) {
+              last = { a: ea, b: eb, ya, yb };
+              continue;
+            }
             if (sep >= GORE + 1 && !rows.length) continue;
+            if (!rows.length && last) rows.push(last);
+            last = null;
             rows.push({ a: ea, b: eb, ya, yb });
             if (sep >= GORE) finish();
           }
