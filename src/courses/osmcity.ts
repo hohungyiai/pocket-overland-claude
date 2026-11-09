@@ -482,6 +482,7 @@ export async function buildPasirRisCourse(
   // (WIDTH_RATE). (At a junction, the junction's own shape joins roads of
   // different widths.)
   const WIDTH_RATE = 1 / 20;
+  const WIDTH_RATE_FAST = 1 / 50;
   /** The next piece of the same road at a plain joint (two roads), if any. */
   const throughOf = (j: number, me: number) => {
     const l = (jE[j] ?? []).filter((o) => edges[o].a !== edges[o].b);
@@ -491,13 +492,50 @@ export async function buildPasirRisCourse(
   // A road's pieces, joined end to end where one carries straight on from
   // the next, are a run; along each run the width changes no faster than
   // WIDTH_RATE.
+  // Through a junction too: the piece that carries a road straight on
+  // (the same name, or the same class with no name, turning under 30
+  // degrees, each the other's best), so its width tapers through a merge
+  // or a split instead of stepping at the junction.
+  const headOut = (i: number, j: number): XZ => {
+    const P = EP[i];
+    const atA = edges[i].a === j;
+    const p0 = atA ? P[0] : P[P.length - 1];
+    let k = atA ? 1 : P.length - 2;
+    const c = ECUM[i];
+    while (k > 0 && k < P.length - 1 && Math.abs(c[k] - (atA ? 0 : ELEN[i])) < 12) k += atA ? 1 : -1;
+    const q = P[Math.max(0, Math.min(P.length - 1, k))];
+    const l = Math.hypot(q[0] - p0[0], q[1] - p0[1]) || 1;
+    return [(q[0] - p0[0]) / l, (q[1] - p0[1]) / l];
+  };
+  const sameRoad = (i: number, o: number) => (edges[i].name ? edges[i].name === edges[o].name : !edges[o].name && edges[i].cls === edges[o].cls);
+  const COS30 = Math.cos((30 * Math.PI) / 180);
+  const carryOn = (j: number, i: number) => {
+    let best: number | undefined;
+    let bd = COS30;
+    const hi = headOut(i, j);
+    for (const o of jE[j] ?? []) {
+      if (o === i || edges[o].a === edges[o].b || ELEN[o] < 30 || !sameRoad(i, o) || isDeck[o] !== isDeck[i]) continue;
+      // (More than twice the width: a road opening into a junction's approach, not a lane more or less.)
+      if (Math.max(EHALF[i], EHALF[o]) > 2 * Math.min(EHALF[i], EHALF[o])) continue;
+      const ho = headOut(o, j);
+      const d = -(hi[0] * ho[0] + hi[1] * ho[1]); // straight on: opposite headings
+      if (d > bd) (bd = d), (best = o);
+    }
+    return best;
+  };
   const mate = (i: number, j: number) => {
     const o = throughOf(j, i);
-    return o !== undefined && o !== i && throughOf(j, o) === i ? o : undefined;
+    if (o !== undefined) return o !== i && throughOf(j, o) === i ? o : undefined;
+    if ((jE[j]?.length ?? 0) < 3) return undefined;
+    // (Not the short pieces inside a big junction: its shape joins those.)
+    // (Nor flyover decks: the roads beside a deck are set out from its full width.)
+    if (ELEN[i] < 30 || isDeck[i]) return undefined;
+    const c = carryOn(j, i);
+    return c !== undefined && carryOn(j, c) === i ? c : undefined;
   };
   /** Each edge's run, where it starts along it, and which way it runs. */
   const runOf = edges.map(() => ({ run: -1, at: 0, fwd: true }));
-  const runs: { len: number; smooth: Float32Array }[] = [];
+  const runs: { len: number; smooth: Float32Array; rate: number }[] = [];
   edges.forEach((e0, i0) => {
     if (runOf[i0].run >= 0) return;
     // Walk back to the start of the run (or once round a loop).
@@ -545,14 +583,36 @@ export async function buildPasirRisCourse(
     // for a run round a loop.)
     const last = list[list.length - 1];
     const loop = list.length > 1 && mate(last.i, last.fwd ? edges[last.i].b : edges[last.i].a) === list[0].i;
-    const rate = WIDTH_RATE / 2;
-    for (let pass = 0; pass < (loop ? 2 : 1); pass++) {
-      for (let m = 1; m <= n; m++) smooth[m] = Math.min(smooth[m], smooth[m - 1] + rate);
-      if (loop) smooth[0] = Math.min(smooth[0], smooth[n - 1] + rate);
-      for (let m = n - 1; m >= 0; m--) smooth[m] = Math.min(smooth[m], smooth[m + 1] + rate);
-      if (loop) smooth[n] = Math.min(smooth[n], smooth[1] + rate);
+    // (Expressways and their slip roads taper over longer: 1 m per 50 m.)
+    const fast = list.some(({ i: q }) => /^(motorway|trunk)/.test(edges[q].cls));
+    let rate = (fast ? WIDTH_RATE_FAST : WIDTH_RATE) / 2;
+    const osm = smooth.slice();
+    const envelope = () => {
+      smooth.set(osm);
+      for (let pass = 0; pass < (loop ? 2 : 1); pass++) {
+        for (let m = 1; m <= n; m++) smooth[m] = Math.min(smooth[m], smooth[m - 1] + rate);
+        if (loop) smooth[0] = Math.min(smooth[0], smooth[n - 1] + rate);
+        for (let m = n - 1; m >= 0; m--) smooth[m] = Math.min(smooth[m], smooth[m + 1] + rate);
+        if (loop) smooth[n] = Math.min(smooth[n], smooth[1] + rate);
+      }
+    };
+    envelope();
+    // (A long taper must not swallow a short wide piece: if any piece is
+    // left under three quarters of its width half way along, the run
+    // falls back to the ordinary taper.)
+    if (fast) {
+      let start = 0;
+      for (const { i: q } of list) {
+        const mid = Math.min(n, Math.round(start + ELEN[q] / 2));
+        if (smooth[mid] < 0.75 * EHALF[q]) {
+          rate = WIDTH_RATE / 2;
+          envelope();
+          break;
+        }
+        start += ELEN[q];
+      }
     }
-    runs.push({ len: n, smooth });
+    runs.push({ len: n, smooth, rate: rate * 2 });
   });
   const halfAtE = (i: number, k: number) => {
     const { run, at, fwd } = runOf[i];
@@ -3341,7 +3401,7 @@ export async function buildPasirRisCourse(
       JX,
       halfAtE,
       cutOf,
-      needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, ELEN, tiltAt, LIMITS, WL, throughOf, WIDTH_RATE, runOf, runs,
+      needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, ELEN, tiltAt, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
       fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
