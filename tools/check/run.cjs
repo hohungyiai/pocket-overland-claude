@@ -7,7 +7,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
-const DEPS = { 'drive.js': ['seams.js'], 'routes.js': ['bot.js'] };
+const DEPS = { 'drive.js': ['seams.js'], 'lanes.js': ['seams.js'], 'routes.js': ['bot.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
@@ -32,6 +32,9 @@ const CHECKS = [
   ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, 14],
   ['No side tilt that could tip the car', 'drive.js', '__checkTilt', 0],
   ['The drive bot gets through the hard spots', 'routes.js', '__checkRoutes', 0],
+  ['No kerb or road line across a lane', 'lanes.js', '__checkLanes', 0],
+  ['No bite out of a road\'s edge', 'lanes.js', '__checkEdges', 0],
+  ['Widths change no faster than 1 m per 20 m', 'lanes.js', '__checkWidths', 0],
 ];
 
 (async () => {
