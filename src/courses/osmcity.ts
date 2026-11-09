@@ -177,13 +177,16 @@ export async function buildPasirRisCourse(
           }
         }
         if (!side) side = 1;
-        // Smoothed (a running max over 8 m either side), then eased in and out.
-        EP[o] = Po.map((p, k) => {
+        // Smoothed (a running max over 8 m either side), eased in and out,
+        // then rounded off so the road bends aside without a kink.
+        let f = Po.map((_, k) => {
           let m = 0;
           for (let q = 0; q < Po.length; q++) if (Math.abs(co[q] - co[k]) <= 8) m = Math.max(m, short[q]);
-          const f = m * smoothstep(0, PUSH_IN, co[k]) * smoothstep(0, PUSH_OUT, len - co[k]);
-          return [p[0] + nrm[k][0] * side * f, p[1] + nrm[k][1] * side * f] as XZ;
+          return m * smoothstep(0, PUSH_IN, co[k]) * smoothstep(0, PUSH_OUT, len - co[k]);
         });
+        for (let pass = 0; pass < 2; pass++)
+          f = f.map((v, k) => (k === 0 || k === f.length - 1 ? v : Math.max(v, (f[k - 1] + 2 * v + f[k + 1]) / 4)));
+        EP[o] = Po.map((p, k) => [p[0] + nrm[k][0] * side * f[k], p[1] + nrm[k][1] * side * f[k]] as XZ);
         if (!fromA) EP[o].reverse();
       }
     }
@@ -460,18 +463,92 @@ export async function buildPasirRisCourse(
   // ---------- Junction shapes ----------
   // Half width along a road: where two pieces of one road meet with different
   // widths (OSM lane counts change), both taper to the average.
-  const otherHalf = (j: number, me: number) => {
-    const l = jE[j];
-    const o = l[0] === me ? l[1] : l[0];
-    return o === undefined ? EHALF[me] : EHALF[o];
+  // Widths change gently: where a road meets the next piece of the same road
+  // at a different width (OSM splits a way where a lane is added or dropped),
+  // the wider one tapers to the narrower at no more than 1 m per 20 m
+  // (WIDTH_RATE). (At a junction, the junction's own shape joins roads of
+  // different widths.)
+  const WIDTH_RATE = 1 / 20;
+  /** The next piece of the same road at a plain joint (two roads), if any. */
+  const throughOf = (j: number, me: number) => {
+    const l = (jE[j] ?? []).filter((o) => edges[o].a !== edges[o].b);
+    if (l.length !== 2 || !l.includes(me)) return undefined;
+    return l[0] === me ? l[1] : l[0];
   };
+  // A road's pieces, joined end to end where one carries straight on from
+  // the next, are a run; along each run the width changes no faster than
+  // WIDTH_RATE.
+  const mate = (i: number, j: number) => {
+    const o = throughOf(j, i);
+    return o !== undefined && o !== i && throughOf(j, o) === i ? o : undefined;
+  };
+  /** Each edge's run, where it starts along it, and which way it runs. */
+  const runOf = edges.map(() => ({ run: -1, at: 0, fwd: true }));
+  const runs: { len: number; smooth: Float32Array }[] = [];
+  edges.forEach((e0, i0) => {
+    if (runOf[i0].run >= 0) return;
+    // Walk back to the start of the run (or once round a loop).
+    let i = i0;
+    let j = e0.a; // the end we walk out of
+    const seen = new Set([i0]);
+    for (;;) {
+      const o = mate(i, j);
+      if (o === undefined || seen.has(o)) break;
+      seen.add(o);
+      j = edges[o].a === j ? edges[o].b : edges[o].a;
+      i = o;
+    }
+    // Now walk forward from i, entering at j.
+    const list: { i: number; fwd: boolean }[] = [];
+    const inRun = new Set<number>();
+    let at = j;
+    for (let q = i; q !== undefined && !inRun.has(q) && runOf[q].run < 0; ) {
+      const fwd = edges[q].a === at;
+      list.push({ i: q, fwd });
+      inRun.add(q);
+      at = fwd ? edges[q].b : edges[q].a;
+      q = mate(q, at) as number;
+    }
+    const r = runs.length;
+    let len = 0;
+    for (const { i: q, fwd } of list) {
+      runOf[q] = { run: r, at: len, fwd };
+      len += ELEN[q];
+    }
+    // The OSM widths every metre along the run.
+    const n = Math.max(1, Math.ceil(len));
+    const smooth = new Float32Array(n + 1);
+    {
+      let q = 0;
+      let start = 0;
+      for (let m = 0; m <= n; m++) {
+        while (q < list.length - 1 && m > start + ELEN[list[q].i]) start += ELEN[list[q++].i];
+        smooth[m] = EHALF[list[q].i];
+      }
+    }
+    // Where it narrows, the wider piece tapers in to meet the narrower one
+    // (as a lane is dropped), so the road is never drawn wider than OSM
+    // has it: the narrowest width within reach, plus the taper. (Twice over
+    // for a run round a loop.)
+    const last = list[list.length - 1];
+    const loop = list.length > 1 && mate(last.i, last.fwd ? edges[last.i].b : edges[last.i].a) === list[0].i;
+    const rate = WIDTH_RATE / 2;
+    for (let pass = 0; pass < (loop ? 2 : 1); pass++) {
+      for (let m = 1; m <= n; m++) smooth[m] = Math.min(smooth[m], smooth[m - 1] + rate);
+      if (loop) smooth[0] = Math.min(smooth[0], smooth[n - 1] + rate);
+      for (let m = n - 1; m >= 0; m--) smooth[m] = Math.min(smooth[m], smooth[m + 1] + rate);
+      if (loop) smooth[n] = Math.min(smooth[n], smooth[1] + rate);
+    }
+    runs.push({ len: n, smooth });
+  });
   const halfAtE = (i: number, k: number) => {
-    const e = edges[i];
-    const half = EHALF[i];
-    const cum = ECUM[i];
-    const ha = jE[e.a]?.length === 2 ? (otherHalf(e.a, i) - half) / 2 : 0;
-    const hb = jE[e.b]?.length === 2 ? (otherHalf(e.b, i) - half) / 2 : 0;
-    return half + ha * (1 - smoothstep(0, 16, cum[k])) + hb * (1 - smoothstep(0, 16, ELEN[i] - cum[k]));
+    const { run, at, fwd } = runOf[i];
+    const R = runs[run];
+    if (!R) return EHALF[i];
+    const s = Math.max(0, Math.min(R.len, at + (fwd ? ECUM[i][k] : ELEN[i] - ECUM[i][k])));
+    const m = Math.floor(s);
+    const u = s - m;
+    return R.smooth[m] + (R.smooth[Math.min(R.len, m + 1)] - R.smooth[m]) * u;
   };
   const JX = shapeJunctions({
     junctions: M.junctions,
@@ -1426,7 +1503,20 @@ export async function buildPasirRisCourse(
     const hi = o.hi ?? pts.length - 1;
     for (let k = k0; k <= k1; k++) {
       const jn = o.join?.(k) ?? null;
-      const mm = jn ? jn.m : 1;
+      // At a bend the sides stand out along the mitre, so the road keeps its
+      // full width round the outside of a sharp corner (more than 20°; a
+      // gentle curve loses next to nothing).
+      let mm = 1;
+      if (jn) mm = jn.m;
+      else if (k > lo && k < hi) {
+        const p = pts[k - 1], q = pts[k], r = pts[k + 1];
+        const l1 = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
+        const l2 = Math.hypot(r[0] - q[0], r[1] - q[1]) || 1;
+        const c = ((q[0] - p[0]) * (r[0] - q[0]) + (q[1] - p[1]) * (r[1] - q[1])) / (l1 * l2);
+        // cos of half the turn; capped at twice the width (a turn of 120°).
+        const ch = Math.sqrt(Math.max(0, (1 + c) / 2));
+        if (ch < Math.cos((10 * Math.PI) / 180)) mm = 1 / Math.max(0.5, ch);
+      }
       const half = (typeof halfIn === 'number' ? halfIn : halfIn(k)) * mm;
       const off = (o.off === undefined ? 0 : typeof o.off === 'number' ? o.off : o.off(k)) * mm;
       const a = pts[Math.max(lo, k - 1)];
@@ -1668,7 +1758,7 @@ export async function buildPasirRisCourse(
   const coveredBy = (line: number, x: number, z: number, y: number) => {
     let hit = false;
     roads.each(x, z, 16, (i, seg, u, d) => {
-      if (hit || i === line || d > EHALF[i] + 0.2) return;
+      if (hit || i === line || d > Math.max(halfAtE(i, seg), halfAtE(i, seg + 1)) + 0.2) return;
       if (y !== y) hit = !elevated[i];
       else hit = Math.abs((hasProfile[i] ? deckAtHit(i, seg, u) : heightAt(x, z)) - y) < 3;
     });
@@ -1685,7 +1775,6 @@ export async function buildPasirRisCourse(
         const e = edges[line];
         const pts = EP[line];
         const cum = ECUM[line];
-        const half = EHALF[line];
         const rank = rankOf(e.cls);
         const len = cum[cum.length - 1];
         const halfAt = (kk: number) => halfAtE(line, kk);
@@ -1719,11 +1808,14 @@ export async function buildPasirRisCourse(
               const at = (t: number) => {
                 const x = lerp(a[0], b[0], t) + ((b[1] - a[1]) / tl) * o;
                 const z = lerp(a[1], b[1], t) - ((b[0] - a[0]) / tl) * o;
-                return onIsland(x, z) || inPaving(x, z, dy ? lerp(dy[kk], dy[kk + 1], t) : NaN);
+                const y = dy ? lerp(dy[kk], dy[kk + 1], t) : NaN;
+                // (On another road's surface, where two roads merge or run
+                // side by side, a kerb would stand across its lanes.)
+                return onIsland(x, z) || inPaving(x, z, y) || coveredBy(line, x, z, y);
               };
               return !at(0.5) && !at(0.2) && !at(0.8);
             };
-            const clearAt = (x: number, y: number, z: number) => !inPaving(x, z, dy ? y : NaN);
+            const clearAt = (x: number, y: number, z: number) => !inPaving(x, z, dy ? y : NaN) && !coveredBy(line, x, z, dy ? y : NaN);
             strip(kerb, P, cum, lo, hi, 0.25, 0.07, { ...opt, off, keep, clearAt });
           }
         // Where two roads at one level meet or overlap, a road's own surface is
@@ -1775,7 +1867,7 @@ export async function buildPasirRisCourse(
         const ca = crossEnd.has(`${line}:0`) ? JX.trimA[line] + STOP_AT + 0.5 : stopAt(e.a, JX.trimA[line]);
         const cb = crossEnd.has(`${line}:1`) ? JX.trimB[line] + STOP_AT + 0.5 : stopAt(e.b, JX.trimB[line]);
         const ends = (kk: number) => cum[kk] > ca && cum[kk + 1] < len - cb;
-        const lineClear = (x: number, y: number, z: number) => !inPaving(x, z, dy ? y : NaN);
+        const lineClear = (x: number, y: number, z: number) => !inPaving(x, z, dy ? y : NaN) && !coveredBy(line, x, z, dy ? y : NaN);
         const solid = (off: (kk: number) => number) => (kk: number) => ends(kk) && clear(kk, off(kk));
         const dashed = (off: (kk: number) => number) => (kk: number) => kk % 3 === 0 && ends(kk) && clear(kk, off(kk));
         if (rank >= 2) {
@@ -1787,8 +1879,8 @@ export async function buildPasirRisCourse(
         const lanes = Math.max(1, Math.round((e.w - 0.7) / 3.3));
         if (e.one) {
           for (let l = 1; l < lanes; l++) {
-            const off = () => -half + (l * e.w) / lanes;
-            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off: off(), keep: dashed(off), yAt, tilt, clearAt: lineClear });
+            const off = (kk: number) => halfAt(kk) * (-1 + (2 * l) / lanes);
+            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off, keep: dashed(off), yAt, tilt, clearAt: lineClear });
           }
         } else if (rank >= 1 && e.w >= 6) {
           const off = () => 0;
@@ -3001,7 +3093,7 @@ export async function buildPasirRisCourse(
       JX,
       halfAtE,
       cutOf,
-      needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, ELEN, tiltAt, LIMITS, WL,
+      needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, ELEN, tiltAt, LIMITS, WL, throughOf, WIDTH_RATE, runOf, runs,
       fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
