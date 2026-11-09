@@ -142,8 +142,9 @@ window.__checkEdges = (all = false) => {
 };
 
 // In-page check: road widths change gently, no faster than 1 m of width per
-// 20 m (WIDTH_RATE), along each road and from one piece of a road to the
-// next (where OSM splits a road as a lane is added or dropped).
+// 20 m (1 m per 50 m on expressways and their slip roads), along each road
+// and from one piece of a road to the next (where OSM splits a road as a
+// lane is added or dropped), through junctions too.
 window.__checkWidths = (all = false) => {
   const d = globalThis.__osm;
   const bad = [];
@@ -160,8 +161,8 @@ window.__checkWidths = (all = false) => {
       n++;
       const rate = (2 * Math.abs(d.halfAtE(i, k + 1) - d.halfAtE(i, k))) / sl;
       // (Listed once for each run of a road's pieces.)
-      if (rate > d.WIDTH_RATE * 1.05) {
-        const run = d.runOf[i].run;
+      const run = d.runOf[i].run;
+      if (rate > (d.runs[run]?.rate ?? d.WIDTH_RATE) * 1.05) {
         const prev = byRun.get(run);
         if (prev && prev.value >= rate) continue;
         const o = { road: e.name || e.cls, i, s: +cum[k].toFixed(1), x: +P[k][0].toFixed(1), z: +P[k][1].toFixed(1), what: 'narrows or widens fast', value: +rate.toFixed(3) };
@@ -171,8 +172,10 @@ window.__checkWidths = (all = false) => {
       }
     }
     for (const j of [e.a, e.b]) {
-      const o = d.throughOf(j, i);
-      if (o === undefined || o < i || d.throughOf(j, o) !== i || d.JX.internal[o]) continue;
+      // (The next piece of the same road: at a plain joint, or carrying
+      // straight on through a junction.)
+      const o = d.mateOf(i, j);
+      if (o === undefined || o < i || d.JX.internal[o]) continue;
       n++;
       const jump = 2 * Math.abs(halfEnd(i, j) - halfEnd(o, j));
       if (jump > 0.1) bad.push({ road: e.name || e.cls, i, other: o, x: +(e.a === j ? P[0] : P[P.length - 1])[0].toFixed(1), z: +(e.a === j ? P[0] : P[P.length - 1])[1].toFixed(1), what: 'width jumps where pieces meet', value: +jump.toFixed(2) });
