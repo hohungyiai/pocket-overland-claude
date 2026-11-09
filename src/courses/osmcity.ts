@@ -140,8 +140,21 @@ export async function buildPasirRisCourse(
         // clear, past the joint), if any.
         let i = -1;
         let most = 0;
+        // (Only a deck leaving the joint on o's side of it, within 90°: one
+        // carrying on from o, as a bridge piece of the same road, is not
+        // beside it.)
+        const dirOut = (P: XZ[], atStart: boolean): XZ => {
+          const n = P.length;
+          const k = Math.min(n - 1, 3);
+          const [a, b] = atStart ? [P[0], P[k]] : [P[n - 1], P[n - 1 - k]];
+          const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+          return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+        };
+        const od = dirOut(Po, true);
         for (const d of list) {
           if (!deck(d)) continue;
+          const dd = dirOut(EP[d], edges[d].a === j);
+          if (od[0] * dd[0] + od[1] * dd[1] < 0) continue;
           const need = half(d) + half(o) + 0.5;
           let over = 0;
           Po.forEach((p, k) => {

@@ -38,6 +38,8 @@ const CHECKS = [
   ['No kerb or road line across a lane', 'lanes.js', '__checkLanes', 0, 5],
   ['No bite out of a road\'s edge', 'lanes.js', '__checkEdges', 0],
   ['Widths change no faster than 1 m per 20 m', 'lanes.js', '__checkWidths', 0],
+  // (79: corners OSM itself draws as a jog, nearly all on service lanes.)
+  ['No road jogs sideways (sharp turn and straight back)', 'kinks.js', '__checkKinks', 0, 79],
 ];
 
 (async () => {
