@@ -68,7 +68,11 @@ window.__checkLanes = (all = false) => {
     const Y = d.hasProfile[i] ? d.deckY(i) : null;
     // Lane middles, as fractions across the road (-1 .. 1).
     const lanes = Math.max(1, Math.round((e.w - 0.7) / 3.3));
-    const mids = e.one ? Array.from({ length: lanes }, (_, l) => -1 + (2 * l + 1) / lanes) : lanes > 1 ? [-0.5, 0.5] : [0];
+    // (On a one-way road the lanes keep their width, counted from the
+    // right-hand side: offsets in metres from the middle, given the half
+    // width there.)
+    const laneW = (2 * d.EHALF[i]) / lanes;
+    const mids = (half) => (e.one ? Array.from({ length: lanes }, (_, l) => -half + (l + 0.5) * laneW).filter((o) => o < half - 0.8) : lanes > 1 ? [-0.5 * half, 0.5 * half] : [0]);
     // (Only along the road itself: inside a junction, the junction checks.)
     const s0 = (d.JX.trimA[i] || 0) + 1, s1 = len - (d.JX.trimB[i] || 0) - 1;
     let k = 0;
@@ -78,9 +82,9 @@ window.__checkLanes = (all = false) => {
       const u = (s - cum[k]) / sl;
       const tx = (P[k + 1][0] - P[k][0]) / sl, tz = (P[k + 1][1] - P[k][1]) / sl;
       const half = d.halfAtE(i, k);
-      for (const f of mids) {
-        const x = P[k][0] + (P[k + 1][0] - P[k][0]) * u + tz * f * half;
-        const z = P[k][1] + (P[k + 1][1] - P[k][1]) * u - tx * f * half;
+      for (const o of mids(half)) {
+        const x = P[k][0] + (P[k + 1][0] - P[k][0]) * u + tz * o;
+        const z = P[k][1] + (P[k + 1][1] - P[k][1]) * u - tx * o;
         if (Math.abs(x) > 3590 || Math.abs(z) > 3590) continue;
         const y = (Y ? Y[k] + (Y[k + 1] - Y[k]) * u : d.surfaceAt(x, z)) + 0.1;
         n++;

@@ -610,38 +610,8 @@ export async function buildPasirRisCourse(
     const fast = list.some(({ i: q }) => /^(motorway|trunk)/.test(edges[q].cls));
     let rate = (fast ? WIDTH_RATE_FAST : WIDTH_RATE) / 2;
     const osm = smooth.slice();
-    // Where the road splits (or two join): a slip road leaves the joint
-    // alongside the narrower piece. The lane it takes is still part of the
-    // road there, so the narrower piece starts at the wider one's width
-    // and tapers down to its own, rather than the wider one pinching in.
-    const FLARE = false; // (off: no visible gain yet, and it steepens short pieces)
-    const flares: { m0: number; dir: number; h: number }[] = [];
-    {
-      const COS35 = Math.cos((35 * Math.PI) / 180);
-      let start = 0;
-      for (let x = 0; x + 1 < list.length; x++) {
-        start += ELEN[list[x].i];
-        const A = list[x], B = list[x + 1];
-        const node = A.fwd ? edges[A.i].b : edges[A.i].a;
-        if (Math.abs(EHALF[A.i] - EHALF[B.i]) < 0.15) continue;
-        const narrow = EHALF[A.i] < EHALF[B.i] ? A.i : B.i;
-        const hn = headOut(narrow, node);
-        const slip = (jE[node] ?? []).some((t) => {
-          if (t === A.i || t === B.i || isDeck[t] || ELEN[t] < 20 || edges[t].a === edges[t].b) return false;
-          const ht = headOut(t, node);
-          return hn[0] * ht[0] + hn[1] * ht[1] > COS35;
-        });
-        if (slip && FLARE) flares.push({ m0: start, dir: narrow === A.i ? -1 : 1, h: Math.max(EHALF[A.i], EHALF[B.i]) });
-      }
-    }
     const envelope = () => {
       smooth.set(osm);
-      for (const f of flares)
-        for (let m = Math.round(f.m0) + (f.dir > 0 ? 0 : -1), d = 0; m >= 0 && m <= n; m += f.dir, d++) {
-          const v = f.h - rate * d;
-          if (v <= smooth[m]) break;
-          smooth[m] = v;
-        }
       for (let pass = 0; pass < (loop ? 2 : 1); pass++) {
         for (let m = 1; m <= n; m++) smooth[m] = Math.min(smooth[m], smooth[m - 1] + rate);
         if (loop) smooth[0] = Math.min(smooth[0], smooth[n - 1] + rate);
@@ -2271,9 +2241,16 @@ export async function buildPasirRisCourse(
         }
         const lanes = Math.max(1, Math.round((e.w - 0.7) / 3.3));
         if (e.one) {
+          // Lane lines follow the lanes: each a full lane's width from the
+          // last, counted from the right-hand (fast) side, so where the
+          // road tapers the lines run on straight and the nearside lane
+          // narrows until its line ends (a lane dropped, or one added),
+          // rather than every lane squeezing.
+          const laneW = (2 * EHALF[line]) / lanes;
           for (let l = 1; l < lanes; l++) {
-            const off = (kk: number) => halfAt(kk) * (-1 + (2 * l) / lanes);
-            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off, keep: dashed(off), yAt, tilt, clearAt: lineClear });
+            const off = (kk: number) => -halfAt(kk) + l * laneW;
+            const room = (kk: number) => halfAt(kk) - off(kk) > 0.6 * laneW && halfAt(kk + 1) - off(kk + 1) > 0.6 * laneW;
+            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off, keep: (kk) => room(kk) && dashed(off)(kk), yAt, tilt, clearAt: lineClear });
           }
         } else if (rank >= 1 && e.w >= 6) {
           const off = () => 0;
