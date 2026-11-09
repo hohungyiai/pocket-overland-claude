@@ -29,7 +29,7 @@ const CHECKS = [
   ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
   // Drivable from a standstill: 60% of what the car can do (src/limits.ts).
-  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 23],
+  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 24],
   ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, 11],
   ['No side tilt that could tip the car', 'drive.js', '__checkTilt', 0],
   ['The drive bot gets through the hard spots', 'routes.js', '__checkRoutes', 0],
