@@ -148,6 +148,7 @@ window.__checkWidths = (all = false) => {
   const d = globalThis.__osm;
   const bad = [];
   let n = 0;
+  const byRun = new Map();
   const halfEnd = (i, j) => (d.edges[i].a === j ? d.halfAtE(i, 0) : d.halfAtE(i, d.EP[i].length - 1));
   d.edges.forEach((e, i) => {
     if (d.JX.internal[i]) return;
@@ -158,8 +159,16 @@ window.__checkWidths = (all = false) => {
       if (sl < 0.5) continue;
       n++;
       const rate = (2 * Math.abs(d.halfAtE(i, k + 1) - d.halfAtE(i, k))) / sl;
-      // (A road too short for its taper changes faster: listed.)
-      if (rate > d.WIDTH_RATE * 1.05) bad.push({ road: e.name || e.cls, i, s: +cum[k].toFixed(1), x: +P[k][0].toFixed(1), z: +P[k][1].toFixed(1), what: 'narrows or widens fast', value: +rate.toFixed(3) });
+      // (Listed once for each run of a road's pieces.)
+      if (rate > d.WIDTH_RATE * 1.05) {
+        const run = d.runOf[i].run;
+        const prev = byRun.get(run);
+        if (prev && prev.value >= rate) continue;
+        const o = { road: e.name || e.cls, i, s: +cum[k].toFixed(1), x: +P[k][0].toFixed(1), z: +P[k][1].toFixed(1), what: 'narrows or widens fast', value: +rate.toFixed(3) };
+        if (prev) bad[bad.indexOf(prev)] = o;
+        else bad.push(o);
+        byRun.set(run, o);
+      }
     }
     for (const j of [e.a, e.b]) {
       const o = d.throughOf(j, i);

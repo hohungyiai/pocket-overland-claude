@@ -177,17 +177,15 @@ export async function buildPasirRisCourse(
           }
         }
         if (!side) side = 1;
-        // The push, smoothed so the road bends gently aside: never steeper
-        // than 3 in 10 out from the joint, or along it (an envelope over the
-        // shortfall), then rounded off.
-        const SLOPE = 0.3;
+        // Smoothed (a running max over 8 m either side), eased in and out,
+        // then rounded off so the road bends aside without a kink.
         let f = Po.map((_, k) => {
           let m = 0;
-          for (let q = 0; q < Po.length; q++) m = Math.max(m, short[q] - SLOPE * Math.abs(co[q] - co[k]));
-          return Math.min(m, SLOPE * Math.max(0, co[k] - 2), SLOPE * Math.max(0, len - 2 - co[k]));
+          for (let q = 0; q < Po.length; q++) if (Math.abs(co[q] - co[k]) <= 8) m = Math.max(m, short[q]);
+          return m * smoothstep(0, PUSH_IN, co[k]) * smoothstep(0, PUSH_OUT, len - co[k]);
         });
-        for (let pass = 0; pass < 3; pass++)
-          f = f.map((v, k) => (k === 0 || k === f.length - 1 ? v : (f[k - 1] + 2 * v + f[k + 1]) / 4));
+        for (let pass = 0; pass < 2; pass++)
+          f = f.map((v, k) => (k === 0 || k === f.length - 1 ? v : Math.max(v, (f[k - 1] + 2 * v + f[k + 1]) / 4)));
         EP[o] = Po.map((p, k) => [p[0] + nrm[k][0] * side * f[k], p[1] + nrm[k][1] * side * f[k]] as XZ);
         if (!fromA) EP[o].reverse();
       }
@@ -467,41 +465,19 @@ export async function buildPasirRisCourse(
   // widths (OSM lane counts change), both taper to the average.
   // Widths change gently: where a road meets the next piece of the same road
   // at a different width (OSM splits a way where a lane is added or dropped),
-  // the width eases from one to the other at no more than 1 m per 20 m
-  // (WIDTH_RATE). That goes for a plain joint, and for a road carrying
-  // straight on through a junction (unless a third road runs alongside it
-  // there: a merge, which keeps its widths).
+  // the wider one tapers to the narrower at no more than 1 m per 20 m
+  // (WIDTH_RATE). (At a junction, the junction's own shape joins roads of
+  // different widths.)
   const WIDTH_RATE = 1 / 20;
-  const dirAt = (i: number, j: number): XZ => {
-    const P = EP[i];
-    const n = P.length;
-    const k = Math.min(n - 1, 2);
-    const [a, b] = edges[i].a === j ? [P[0], P[k]] : [P[n - 1], P[n - 1 - k]];
-    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-    return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
-  };
-  const dot = (a: XZ, b: XZ) => a[0] * b[0] + a[1] * b[1];
-  /** The road that carries straight on from road me at joint j, if any. */
+  /** The next piece of the same road at a plain joint (two roads), if any. */
   const throughOf = (j: number, me: number) => {
     const l = (jE[j] ?? []).filter((o) => edges[o].a !== edges[o].b);
-    if (!l.includes(me)) return undefined;
-    if (l.length === 2) return l[0] === me ? l[1] : l[0];
-    if (l.length < 2) return undefined;
-    const dm = dirAt(me, j);
-    let best = -1;
-    let bd = -0.9;
-    for (const o of l) if (o !== me && dot(dm, dirAt(o, j)) < bd) (bd = dot(dm, dirAt(o, j))), (best = o);
-    if (best < 0) return undefined;
-    const db = dirAt(best, j);
-    const ALONG = Math.cos((30 * Math.PI) / 180);
-    for (const q of l) if (q !== me && q !== best && (dot(dirAt(q, j), dm) > ALONG || dot(dirAt(q, j), db) > ALONG)) return undefined;
-    return best;
+    if (l.length !== 2 || !l.includes(me)) return undefined;
+    return l[0] === me ? l[1] : l[0];
   };
   // A road's pieces, joined end to end where one carries straight on from
-  // the next, are a run; along each run the width is the drawn widths
-  // averaged over a window long enough that it changes no faster than
-  // WIDTH_RATE (a short piece between two others takes a width between
-  // theirs, instead of stepping in and out).
+  // the next, are a run; along each run the width changes no faster than
+  // WIDTH_RATE.
   const mate = (i: number, j: number) => {
     const o = throughOf(j, i);
     return o !== undefined && o !== i && throughOf(j, o) === i ? o : undefined;
@@ -539,48 +515,29 @@ export async function buildPasirRisCourse(
       runOf[q] = { run: r, at: len, fwd };
       len += ELEN[q];
     }
-    // The drawn widths every metre along the run.
+    // The OSM widths every metre along the run.
     const n = Math.max(1, Math.ceil(len));
-    const raw = new Float32Array(n + 1);
-    let maxStep = 0;
+    const smooth = new Float32Array(n + 1);
     {
       let q = 0;
       let start = 0;
       for (let m = 0; m <= n; m++) {
         while (q < list.length - 1 && m > start + ELEN[list[q].i]) start += ELEN[list[q++].i];
-        raw[m] = EHALF[list[q].i];
-        if (m > 0) maxStep = Math.max(maxStep, Math.abs(raw[m] - raw[m - 1]));
+        smooth[m] = EHALF[list[q].i];
       }
     }
-    // (A run round a loop wraps round.)
+    // Where it narrows, the wider piece tapers in to meet the narrower one
+    // (as a lane is dropped), so the road is never drawn wider than OSM
+    // has it: the narrowest width within reach, plus the taper. (Twice over
+    // for a run round a loop.)
     const last = list[list.length - 1];
     const loop = list.length > 1 && mate(last.i, last.fwd ? edges[last.i].b : edges[last.i].a) === list[0].i;
-    const pre = new Float64Array(n + 2);
-    for (let m = 0; m <= n; m++) pre[m + 1] = pre[m] + raw[m];
-    const sum = (lo: number, hi: number) => pre[hi + 1] - pre[lo];
-    const avg = (W: number) => {
-      const h = Math.min(Math.round(W / 2), loop ? Math.floor(n / 2) : n);
-      return Float32Array.from(raw, (_, m) => {
-        if (loop) {
-          // Over the n metres 0 .. n-1 (metre n is metre 0 again).
-          const lo = (((m - h) % n) + n) % n;
-          const span = 2 * h + 1;
-          return (lo + span <= n ? sum(lo, lo + span - 1) : sum(lo, n - 1) + sum(0, lo + span - 1 - n)) / span;
-        }
-        const lo = Math.max(0, m - h), hi = Math.min(n, m + h);
-        return sum(lo, hi) / (hi - lo + 1);
-      });
-    };
-    let smooth = raw;
-    if (maxStep > 0) {
-      // A box average turns a step of dh into a ramp of slope dh / W, and
-      // width changes at twice its half-width's rate.
-      for (let W = (2 * maxStep) / WIDTH_RATE; ; W *= 1.25) {
-        smooth = avg(W);
-        let worst = 0;
-        for (let m = 1; m <= n; m++) worst = Math.max(worst, 2 * Math.abs(smooth[m] - smooth[m - 1]));
-        if (worst <= WIDTH_RATE * 1.02 || W > 2 * n) break;
-      }
+    const rate = WIDTH_RATE / 2;
+    for (let pass = 0; pass < (loop ? 2 : 1); pass++) {
+      for (let m = 1; m <= n; m++) smooth[m] = Math.min(smooth[m], smooth[m - 1] + rate);
+      if (loop) smooth[0] = Math.min(smooth[0], smooth[n - 1] + rate);
+      for (let m = n - 1; m >= 0; m--) smooth[m] = Math.min(smooth[m], smooth[m + 1] + rate);
+      if (loop) smooth[n] = Math.min(smooth[n], smooth[1] + rate);
     }
     runs.push({ len: n, smooth });
   });
@@ -1547,7 +1504,8 @@ export async function buildPasirRisCourse(
     for (let k = k0; k <= k1; k++) {
       const jn = o.join?.(k) ?? null;
       // At a bend the sides stand out along the mitre, so the road keeps its
-      // full width round the outside of the corner.
+      // full width round the outside of a sharp corner (more than 20°; a
+      // gentle curve loses next to nothing).
       let mm = 1;
       if (jn) mm = jn.m;
       else if (k > lo && k < hi) {
@@ -1556,7 +1514,8 @@ export async function buildPasirRisCourse(
         const l2 = Math.hypot(r[0] - q[0], r[1] - q[1]) || 1;
         const c = ((q[0] - p[0]) * (r[0] - q[0]) + (q[1] - p[1]) * (r[1] - q[1])) / (l1 * l2);
         // cos of half the turn; capped at twice the width (a turn of 120°).
-        mm = 1 / Math.max(0.5, Math.sqrt(Math.max(0, (1 + c) / 2)));
+        const ch = Math.sqrt(Math.max(0, (1 + c) / 2));
+        if (ch < Math.cos((10 * Math.PI) / 180)) mm = 1 / Math.max(0.5, ch);
       }
       const half = (typeof halfIn === 'number' ? halfIn : halfIn(k)) * mm;
       const off = (o.off === undefined ? 0 : typeof o.off === 'number' ? o.off : o.off(k)) * mm;
@@ -1816,7 +1775,6 @@ export async function buildPasirRisCourse(
         const e = edges[line];
         const pts = EP[line];
         const cum = ECUM[line];
-        const half = EHALF[line];
         const rank = rankOf(e.cls);
         const len = cum[cum.length - 1];
         const halfAt = (kk: number) => halfAtE(line, kk);
@@ -1921,8 +1879,8 @@ export async function buildPasirRisCourse(
         const lanes = Math.max(1, Math.round((e.w - 0.7) / 3.3));
         if (e.one) {
           for (let l = 1; l < lanes; l++) {
-            const off = () => -half + (l * e.w) / lanes;
-            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off: off(), keep: dashed(off), yAt, tilt, clearAt: lineClear });
+            const off = (kk: number) => halfAt(kk) * (-1 + (2 * l) / lanes);
+            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off, keep: dashed(off), yAt, tilt, clearAt: lineClear });
           }
         } else if (rank >= 1 && e.w >= 6) {
           const off = () => 0;
@@ -3135,7 +3093,7 @@ export async function buildPasirRisCourse(
       JX,
       halfAtE,
       cutOf,
-      needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, ELEN, tiltAt, LIMITS, WL, throughOf, WIDTH_RATE,
+      needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, ELEN, tiltAt, LIMITS, WL, throughOf, WIDTH_RATE, runOf, runs,
       fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
