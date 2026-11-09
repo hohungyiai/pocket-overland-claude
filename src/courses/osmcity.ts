@@ -796,7 +796,12 @@ export async function buildPasirRisCourse(
   // - any other road crossing under stays down (its junctions nearby are
   //   capped), and if it can't go low enough the road above is raised.
   const HEAD = 6.0; // 4.8 m clear under a 1.2 m deck
-  {
+  // Pairs found crossing at the same height (see the level pass below):
+  // never treated as a slip road merging alongside.
+  const crossing = new Set<string>();
+  // Flyovers sent up a level: no road alongside is pulled up with them.
+  const bumped = new Uint8Array(edges.length);
+  const settle = (passes: number) => {
     const raised = (i: number) => elevated[i] || jRel[edges[i].a] > 0.02 || jRel[edges[i].b] > 0.02 || needs[i].length > 0;
     const dirAt = (i: number, k: number, u = 0) => {
       const P = EP[i];
@@ -834,12 +839,12 @@ export async function buildPasirRisCourse(
     };
     const isLink = (o: number) => /_link$/.test(edges[o].cls);
     const capped = new Uint8Array(edges.length);
-    const merges = (h: Hit) => h.dot > 0.8 && !capped[h.o] && (isLink(h.o) || raised(h.o));
+    const merges = (h: Hit) => h.dot > 0.8 && !capped[h.o] && !bumped[h.i] && !crossing.has(h.i + ',' + h.o) && (isLink(h.o) || raised(h.o));
     // Can road o rise to `rel` at s, no steeper than 1 in 10 from a capped end?
     const MAXG = 0.1;
     const canRise = (o: number, s: number, rel: number) =>
       rel - MAXG * runA(o, s) <= jCap[edges[o].a] && rel - MAXG * runB(o, s) <= jCap[edges[o].b];
-    for (let pass = 0; pass < 4; pass++) {
+    for (let pass = 0; pass < passes; pass++) {
       let changed = false;
       const hits = hitsNow();
       const hold = (h: Hit) => {
@@ -879,6 +884,64 @@ export async function buildPasirRisCourse(
       });
       lift();
       if (!changed) break;
+    }
+  };
+  settle(4);
+  // Levels. Two roads that cross on the map without a junction can't both
+  // be at the same height: that happens where a flyover crosses a road
+  // raised on a ramp to its own flyover. The flyover on top (the higher OSM
+  // layer, then a bridge over a road that isn't one, then a slip road over
+  // a through road) goes up a level there, 6.5 m over the road below; then
+  // every height is worked out again.
+  {
+    const over = (i: number, o: number) => {
+      const key = (n: number) => [edges[n].lv ?? 0, isDeck[n] ? 1 : 0, /_link$/.test(edges[n].cls) ? 1 : 0, -n];
+      const a = key(i), b = key(o);
+      for (let t = 0; t < a.length; t++) if (a[t] !== b[t]) return a[t] > b[t];
+      return false;
+    };
+    const yOf = (i: number, s: number, x: number, z: number) => roadBase(i, s, x, z) + relAlong(i, s);
+    const up: { i: number; s: number; rel: number }[] = []; // where a flyover must rise
+    // Pass 1 finds the pairs (centre lines crossing at one height); pass 2
+    // asks for a level over the road below wherever the deck overlaps it.
+    for (const pass of [1, 2])
+    edges.forEach((_, i) => {
+      if (!elevated[i]) return;
+      const P = EP[i];
+      for (let k = 0; k < P.length; k++) {
+        const yi = yOf(i, ECUM[i][k], P[k][0], P[k][1]);
+        roads.each(P[k][0], P[k][1], EHALF[i] + 12, (o, seg, u, dd) => {
+          if (pass === 2) {
+            if (!crossing.has(i + ',' + o) || dd > EHALF[i] + EHALF[o]) return;
+          } else if (o === i || dd > 1 || shares(i, o) || (edges[o].lv ?? 0) < 0 || !over(i, o)) return;
+          const c = ECUM[o];
+          const Q = EP[o];
+          const q = Q[Math.min(Q.length - 1, seg + 1)];
+          const so = c[seg] + (c[Math.min(c.length - 1, seg + 1)] - c[seg]) * u;
+          const x = lerp(Q[seg][0], q[0], u), z = lerp(Q[seg][1], q[1], u);
+          const bo = roadBase(o, so, x, z);
+          const yo = yOf(o, so, x, z);
+          if (pass === 1) {
+            if (Math.abs(yi - yo) < 0.3 && yo - bo > 2) crossing.add(i + ',' + o);
+            return;
+          }
+          if (yi - yo >= DECK_H) return;
+          // (A whole level over the road below: levels stand 6.5 m apart.)
+          up.push({ i, s: ECUM[i][k], rel: yo - bo + DECK_H });
+        });
+      }
+    });
+    if (up.length) {
+      // (The deck climbs to it and back down at RAMP_GRADE where it has
+      // room, up to 1 in 10 where it hasn't; its ends stay at their level.)
+      jCap.fill(Infinity);
+      needs.forEach((l) => (l.length = 0));
+      for (const u of up) {
+        needs[u.i].push({ s: u.s, rel: u.rel });
+        bumped[u.i] = 1;
+      }
+      lift();
+      settle(6);
     }
   }
   // Roads (not decks) that climb to a flyover: the ground rises under them.

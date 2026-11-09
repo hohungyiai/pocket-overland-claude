@@ -17,6 +17,7 @@ const CHECKS = [
   // (Known: the Tampines Viaduct over the Upper Changi Rd North slip road, held
   // 0.7 m low so the slip road beside it is climbable from a standstill.)
   ['At least 4.8 m headroom under every road above', 'headroom.js', '__checkHeadroom', 0, 1],
+  ['No two roads cross at the same height', 'headroom.js', '__checkCrossings', 0],
   ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0, 1],
   ['No two junctions overlap', 'junctions.js', '__checkJunctionOverlap', 0],
   ['No kerb across a road', 'junctions.js', '__checkKerbAcross', 0],
