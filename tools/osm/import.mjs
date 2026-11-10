@@ -238,16 +238,21 @@ export function build(raw, origin) {
   for (const [id, list] of ends) {
     const live = list.filter((i) => !dead.has(i));
     if (live.length !== 2) continue;
-    const [ia, ib] = live;
+    let [ia, ib] = live;
     if (ia === ib) continue;
-    const a = pieces[ia];
-    const b = pieces[ib];
+    let a = pieces[ia];
+    let b = pieces[ib];
     if (a.cls !== b.cls || a.oneway !== b.oneway || a.name !== b.name || a.level !== b.level || a.viaduct !== b.viaduct) continue;
-    // Orient a to end at id, b to start at id.
-    if (a.ids[a.ids.length - 1] !== id) a.ids.reverse();
-    if (b.ids[0] !== id) {
-      if (b.oneway) continue; // would flip a one-way street
-      b.ids.reverse();
+    // Orient a to end at id, b to start at id. (A one-way street is never
+    // turned round: its pieces join head to tail as they are, or not at all.)
+    if (a.oneway) {
+      if (a.ids[0] === id && b.ids[b.ids.length - 1] === id) {
+        [ia, ib] = [ib, ia];
+        [a, b] = [b, a];
+      }
+    } else {
+      if (a.ids[a.ids.length - 1] !== id) a.ids.reverse();
+      if (b.ids[0] !== id) b.ids.reverse();
     }
     if (a.ids[a.ids.length - 1] !== id || b.ids[0] !== id) continue;
     a.ids = a.ids.concat(b.ids.slice(1));
