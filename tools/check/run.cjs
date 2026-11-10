@@ -60,9 +60,9 @@ const CHECKS = [
   // every road, whatever rule drew it. (Known: counted on the map as it
   // stood when these checks were written.)
   ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, 152],
-  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 330],
+  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 202],
   ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 201],
-  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 42],
+  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 41],
   ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, 54],
   // The performance budget (perf.js: the figures and where they come from).
   ['The game starts within 20 s', 'perf.js', '__checkStart', 0],
