@@ -263,6 +263,9 @@ export function build(raw, origin) {
   const jPos = new Map();
   for (const p of edgesRaw) for (const id of [p.ids[0], p.ids[p.ids.length - 1]]) if (!jPos.has(id)) jPos.set(id, proj(id));
   const jIds = [...jPos.keys()];
+  const jLevels = new Map(jIds.map((id) => [id, new Set()]));
+  for (const p of edgesRaw) for (const id of [p.ids[0], p.ids[p.ids.length - 1]]) jLevels.get(id).add(p.level);
+  let crossLevel = 0;
   const parent = new Map(jIds.map((id) => [id, id]));
   const find = (id) => (parent.get(id) === id ? id : (parent.set(id, find(parent.get(id))), parent.get(id)));
   const grid = new Map();
@@ -278,8 +281,18 @@ export function build(raw, origin) {
     const cj = Math.floor(z / 8);
     for (let di = -1; di <= 1; di++)
       for (let dj = -1; dj <= 1; dj++)
-        for (const o of grid.get(`${ci + di},${cj + dj}`) ?? []) if (o !== id && dist(jPos.get(o), [x, z]) < 4) parent.set(find(o), find(id));
+        for (const o of grid.get(`${ci + di},${cj + dj}`) ?? []) {
+          if (o === id || dist(jPos.get(o), [x, z]) >= 4) continue;
+          // (Never across levels: a junction up on a flyover and one on the
+          // ground beneath it are two junctions, however close on the map.)
+          if (![...jLevels.get(o)].some((lv) => jLevels.get(id).has(lv))) {
+            crossLevel++;
+            continue;
+          }
+          parent.set(find(o), find(id));
+        }
   }
+  if (crossLevel) console.log(`kept apart: ${crossLevel / 2} pairs of junctions at different levels`);
   const junctions = new Map(); // root -> { i, x, z, n }
   for (const id of jIds) {
     const r = find(id);
