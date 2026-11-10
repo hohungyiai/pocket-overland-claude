@@ -1922,15 +1922,38 @@ export async function buildPasirRisCourse(
       }
     }
     const P = acc.pos;
+    // Round the inside of a tight bend (or a bend right at a junction's
+    // mouth) a side would double back on itself, folding the piece over so
+    // half of it faces the ground: that side stays where it is instead.
+    // (Only this run's inner cross-sections move: its ends are shared.)
+    const folded = (k: number, s: number) => {
+      const v0 = (base + (k - 1 - k0) * 2 + s) * 3, v1 = v0 + 6;
+      return (P[v1] - P[v0]) * (pts[k][0] - pts[k - 1][0]) + (P[v1 + 2] - P[v0 + 2]) * (pts[k][1] - pts[k - 1][1]) < 0;
+    };
+    const put = (from: number, to: number) => {
+      for (let c = 0; c < 3; c++) P[to * 3 + c] = P[from * 3 + c];
+    };
+    for (const s of [0, 1]) {
+      for (let k = k0 + 1; k < k1; k++) if (folded(k, s)) put(base + (k - 1 - k0) * 2 + s, base + (k - k0) * 2 + s);
+      for (let k = k1; k > k0 + 1 && folded(k, s); k--) put(base + (k - k0) * 2 + s, base + (k - 1 - k0) * 2 + s);
+    }
     const clearAt = o.clearAt;
     const corner = (v: number) => clearAt!(P[v * 3], P[v * 3 + 1] - lift, P[v * 3 + 2]);
     for (let k = k0; k < k1; k++) {
       if (o.keep && !o.keep(k)) continue;
       const a = base + (k - k0) * 2;
       if (clearAt && !(corner(a) && corner(a + 1) && corner(a + 2) && corner(a + 3))) continue;
-      acc.idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+      // (Each half faces up, even where a piece of two cross-sections folds.)
+      faceUp(acc, a, a + 2, a + 1);
+      faceUp(acc, a + 1, a + 2, a + 3);
     }
   };
+  /** Adds the triangle u, v, w, wound whichever way round faces up. */
+  function faceUp(acc: Acc, u: number, v: number, w: number) {
+    const P = acc.pos;
+    const up = (P[v * 3 + 2] - P[u * 3 + 2]) * (P[w * 3] - P[u * 3]) - (P[v * 3] - P[u * 3]) * (P[w * 3 + 2] - P[u * 3 + 2]) >= 0;
+    acc.idx.push(u, up ? v : w, up ? w : v);
+  }
   const disc = (acc: Acc, x: number, z: number, r: number, lift: number, y?: number) => {
     const base = acc.pos.length / 3;
     const yc = (y ?? Math.max(rawHeight(x, z), WL + 0.15)) + lift;
@@ -2051,15 +2074,19 @@ export async function buildPasirRisCourse(
     let hi = n - 1;
     let ylo = NaN;
     let yhi = NaN;
+    // (A cut landing on one of the road's own points starts from that point:
+    // a hair's-length first piece has no direction, and its end of the road
+    // would be drawn twisted round.)
+    const near = (p: XZ, q: XZ) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.05;
     if (ta) {
       const c = at(ta);
-      lo = c.k;
+      lo = c.k + 1 < n - 1 && near(c.p, pts[c.k + 1]) ? c.k + 1 : c.k;
       P[lo] = c.p;
       ylo = c.y;
     }
     if (tb) {
       const c = at(ELEN[line] - tb);
-      hi = c.k + 1;
+      hi = c.k > 0 && near(c.p, pts[c.k]) ? c.k : c.k + 1;
       P[hi] = c.p;
       yhi = c.y;
     }
@@ -2268,13 +2295,17 @@ export async function buildPasirRisCourse(
             road.pos.push(r.a[0], r.ya + 0.087, r.a[1], r.b[0], r.yb + 0.087, r.b[1]);
             road.uv.push(r.a[0] / 6, r.a[1] / 6, r.b[0] / 6, r.b[1] / 6);
           }
-          // Facing up: which side is which depends on the pair.
-          const r0 = rows[0], r1 = rows[rows.length - 1];
-          const up = (r0.b[0] - r0.a[0]) * (r1.a[1] - r0.a[1]) - (r0.b[1] - r0.a[1]) * (r1.a[0] - r0.a[0]) > 0;
+          // Facing up: which side is which depends on the pair, and may
+          // change along it (the wedge starts where the two still overlap,
+          // its sides crossed over): each half of each piece by its own lie.
           for (let q = 0; q + 1 < rows.length; q++) {
             const a = base + q * 2;
-            if (up) road.idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-            else road.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+            const V = [rows[q].a, rows[q].b, rows[q + 1].a, rows[q + 1].b];
+            for (const [u, v, w] of [[0, 2, 1], [1, 2, 3]]) {
+              const up = (V[v][1] - V[u][1]) * (V[w][0] - V[u][0]) - (V[v][0] - V[u][0]) * (V[w][1] - V[u][1]) >= 0;
+              if (up) road.idx.push(a + u, a + v, a + w);
+              else road.idx.push(a + u, a + w, a + v);
+            }
           }
         }
       });
@@ -2865,7 +2896,8 @@ export async function buildPasirRisCourse(
             const along = (t: number) => inPaving(lerp(F[q][0], F[q + 1][0], t), lerp(F[q][1], F[q + 1][1], t), NaN, id);
             if (along(0.25) || along(0.5) || along(0.75)) continue;
             const a = kb + q * 2;
-            kerb.idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+            faceUp(kerb, a, a + 2, a + 1);
+            faceUp(kerb, a + 1, a + 2, a + 3);
           }
         }
       }

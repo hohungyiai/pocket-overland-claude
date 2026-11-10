@@ -519,6 +519,32 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       }
       if (spills(ring)) return 'spill';
       centre = mean(hull);
+      // (Eased sides curve inward: where the outline then folds as seen from
+      // the middle of the hull, the paving is filled from the point that
+      // sees it best instead.)
+      const sees = (c: XZ) => {
+        let least = Infinity;
+        for (let k = 0; k < ring.length; k++) {
+          const p = ring[k];
+          const q = ring[(k + 1) % ring.length];
+          least = Math.min(least, cross([p[0] - c[0], p[1] - c[1]], [q[0] - c[0], q[1] - c[1]]));
+        }
+        return least;
+      };
+      let best = sees(centre);
+      if (best <= 1e-6) {
+        const x0 = Math.min(...ring.map((p) => p[0])), x1 = Math.max(...ring.map((p) => p[0]));
+        const z0 = Math.min(...ring.map((p) => p[1])), z1 = Math.max(...ring.map((p) => p[1]));
+        const step = Math.max(0.5, Math.max(x1 - x0, z1 - z0) / 40);
+        for (let z = z0; z <= z1; z += step)
+          for (let x = x0; x <= x1; x += step) {
+            const v = sees([x, z]);
+            if (v > best) {
+              best = v;
+              centre = [x, z];
+            }
+          }
+      }
       got = { ms: mouths, ring, corners, kerbs: [] };
       isHull = true;
     }
