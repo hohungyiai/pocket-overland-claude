@@ -333,7 +333,8 @@ export function build(raw, origin) {
   // --- Paths (park connectors, footpaths) ---
   const paths = ways
     .filter((wy) => PATHS.has(wy.tags?.highway) && wy.tags?.area !== 'yes')
-    .map((wy) => ({ k: wy.tags.highway === 'cycleway' || wy.tags.bicycle === 'designated' ? 'cycle' : 'foot', pts: qp(simplify(chaikin(simplify(wayPts(wy), 0.8), 2), 0.1)) }))
+    // (b: a bridge, which the game lifts over any road it crosses.)
+    .map((wy) => ({ k: wy.tags.highway === 'cycleway' || wy.tags.bicycle === 'designated' ? 'cycle' : 'foot', ...(wy.tags.bridge === 'yes' || wy.tags.bridge === 'viaduct' ? { b: 1 } : {}), pts: qp(simplify(chaikin(simplify(wayPts(wy), 0.8), 2), 0.1)) }))
     .filter((p) => p.pts.length > 1);
 
   // --- Areas ---
