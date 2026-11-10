@@ -8,7 +8,7 @@
 // on its side, that spot is reported and the next trip starts elsewhere.
 // The trips are the same every run (the dice are seeded), so a spot that
 // fails keeps failing until the road there is fixed.
-window.__driveWalk = async ({ seed = 1, metres = 10000, trip = 1500, cruise = 11, minRank = 0, log = false } = {}) => {
+window.__driveWalk = async ({ seed = 1, metres = 10000, trip = 1500, cruise = 11, minRank = 0, log = false, only = null } = {}) => {
   const d = globalThis.__osm;
   // (mulberry32)
   let a = seed >>> 0;
@@ -41,6 +41,7 @@ window.__driveWalk = async ({ seed = 1, metres = 10000, trip = 1500, cruise = 11
     const route = [];
     const used = new Set();
     let len = 0;
+    let came = null;
     while (len < trip) {
       used.add(i);
       const L = d.ELEN[i];
@@ -49,12 +50,19 @@ window.__driveWalk = async ({ seed = 1, metres = 10000, trip = 1500, cruise = 11
       len += L;
       const j = fwd ? d.edges[i].b : d.edges[i].a;
       const inDir = away(i, j);
+      // (Where this piece is a short one, the way the trip came into it
+      // counts too: two square turns a few metres apart, through a gap in
+      // the median, are a U-turn no car makes in one sweep.)
+      const before = L < 15 && came ? came : null;
       const next = (jE.get(j) ?? []).filter((o) => {
         if (o === i || used.has(o) || rank(o) < minRank || !inMap(o) || d.edges[o].a === d.edges[o].b) return false;
         // (Not straight back the way it came: no turn sharper than 120°.)
         const out = away(o, j);
+        if (before && before[0] * out[0] + before[1] * out[1] > 0.5) return false;
         return inDir[0] * out[0] + inDir[1] * out[1] < 0.5;
       });
+      // (Pointing back along this piece from its far end, as `away` does.)
+      came = L < 15 && came ? came : inDir;
       if (!next.length) break;
       const o = next[Math.floor(rnd() * next.length)];
       fwd = d.edges[o].a === j;
@@ -75,16 +83,19 @@ window.__driveWalk = async ({ seed = 1, metres = 10000, trip = 1500, cruise = 11
   let done = 0;
   let sim = 0;
   const t0 = performance.now();
-  while (done < metres && trips.length < 200) {
+  // (only: drive just these trips of the run, by their place in it, to look
+  // at one again; the trips before them are dealt but not driven.)
+  for (let n = 0; only ? n <= Math.max(...only) : done < metres && trips.length < 200; ) {
     const { route, len } = makeTrip();
     if (len < 60) continue;
-    const r = await window.__driveRoute(route, { cruise, timeout: 60 + len / 2 });
+    if (only && !only.includes(n++)) continue;
+    const r = await window.__driveRoute(route, { cruise, smooth: true, timeout: 60 + len / 2 });
     done += r.at;
     sim += r.seconds ?? 0;
     const i = where(route, r.at);
     const t = { from: route[0][0], pieces: route.length, metres: r.at, of: r.total, done: !!r.done, maxLeanDeg: r.maxLeanDeg, offRoadM: r.offRoadM, offRoadAt: r.offRoadAt };
     if (!r.done) Object.assign(t, { what: r.tipped ? 'tipped over' : r.stalled ? 'page stopped' : 'stuck', at: r.tipped ?? r.stuck ?? null, edge: i, road: d.edges[i].name || d.edges[i].cls });
-    if (log) t.log = r.log;
+    if (log) Object.assign(t, { log: r.log, route });
     trips.push(t);
   }
   return { trips, metres: done, carSeconds: Math.round(sim), wallSeconds: Math.round((performance.now() - t0) / 1000) };
