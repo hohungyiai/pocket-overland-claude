@@ -284,9 +284,43 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   car.sync();
   placeCamera(0, true);
 
+  // For the drive bot (tools/check/bot.js): `sim.fast` physics steps a frame,
+  // run ahead of the clock with nothing drawn, so a test drive across the map
+  // takes seconds. The car waits wherever the ground ahead is not built yet.
+  const sim = { fast: 0, steps: 0 };
+  const fastFrame = (now: number) => {
+    const t0 = performance.now();
+    const built = () => {
+      if (!course.solidAt) return true;
+      const p = car.body.translation();
+      const v = car.body.linvel();
+      for (const [dx, dz] of [[0, 0], [15, 0], [-15, 0], [0, 15], [0, -15], [v.x * 1.5, v.z * 1.5]]) if (!course.solidAt(p.x + dx, p.z + dz)) return false;
+      return true;
+    };
+    for (let n = 0; n < sim.fast && performance.now() - t0 < 12; n++) {
+      if (!built()) break;
+      controls.update(STEP);
+      car.update(STEP, controls.input);
+      world.step();
+      car.capture();
+      sim.steps++;
+    }
+    car.sync(1);
+    // (Tiles build in slices of a few milliseconds: several slices a frame.)
+    do course.update?.(now / 1000, 0, undefined, car.mesh.position);
+    while (!built() && performance.now() - t0 < 40);
+    last = now;
+    acc = 0;
+  };
+
   const frame = (now: number) => {
     if (fullMap.isOpen) {
       fullMap.draw();
+      requestAnimationFrame(frame);
+      return;
+    }
+    if (sim.fast > 0) {
+      fastFrame(now);
       requestAnimationFrame(frame);
       return;
     }
@@ -352,7 +386,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   $('loading').remove();
 
   // Handy for testing in the console.
-  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera, weather, camps } });
+  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera, weather, camps, sim } });
 }
 
 // ---- Course picker ----

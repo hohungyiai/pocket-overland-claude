@@ -4253,7 +4253,7 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
-      blds, deckSplits, throughLines, throughPairs, paveY, giveWays, bldRoads,
+      blds, rankOf, deckSplits, throughLines, throughPairs, paveY, giveWays, bldRoads,
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),
@@ -4325,6 +4325,7 @@ export async function buildPasirRisCourse(
       return g;
     },
     streamStats: () => streamer.stats,
+    solidAt: (x, z) => streamer.solidAt(x, z),
     update(time, _dt, cam, player) {
       wind.value = time;
       setLights(time);

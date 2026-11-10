@@ -56,6 +56,8 @@ export interface Course {
   surfaceY?(x: number, z: number, y: number): number;
   /** Load the world around a point right away (before placing the car there). */
   prepareAt?(x: number, z: number): void;
+  /** Is the solid ground (and road) under (x, z) built yet? (Courses that stream their tiles.) */
+  solidAt?(x: number, z: number): boolean;
   /** Tile streaming counters, for the debug overlay. */
   streamStats?: () => { near: number; far: number; horizon: number; pending: number; maxStepMs: number };
   /** Places where you can make camp (rest and save). */
