@@ -2602,15 +2602,15 @@ export async function buildPasirRisCourse(
   };
   const roadRuns = runsOf(EP);
   // A run is drawn a few pieces at a time, each its own build slice: by
-  // ramps and flyovers, where working out the ground takes longest, 4 road
-  // pieces (about 16 m) to a slice; elsewhere 24. (r0 to r1 is the whole
+  // ramps and flyovers, where working out the ground takes longest, 2 road
+  // pieces (about 8 m) to a slice; elsewhere 24. (r0 to r1 is the whole
   // run in the tile, k0 to k1 the part drawn in this slice.)
   const inSlices = (all: { line: number; k0: number; k1: number }[]) => {
     const out: { line: number; r0: number; r1: number; k0: number; k1: number }[] = [];
     for (const { line, k0, k1 } of all) {
       let ramp = false;
       for (let k = k0; k <= k1 && !ramp; k++) ramp = nearRamp(EP[line][k][0], EP[line][k][1]);
-      const n = ramp ? 4 : 24;
+      const n = ramp ? 2 : 24;
       for (let a = k0; a < k1; a += n) out.push({ line, r0: k0, r1: k1, k0: a, k1: Math.min(k1, a + n) });
     }
     return out;
@@ -2956,12 +2956,13 @@ export async function buildPasirRisCourse(
   const dropY = (x: number, z: number) => Math.max(rawHeight(x, z), WL + 0.15);
   const RINGS = [1 / 3, 2 / 3, 1];
   for (const [k, all] of shapesByTile)
-    inChunks('far', k, 'junctions', all, 1, (list, _kit, acc) => {
+    // (Each junction in three slices: its lines, its paving, its kerbs.)
+    inChunks('far', k, 'junctions', all.flatMap((id) => [0, 1, 2].map((part) => ({ id, part }))), 1, (list, _kit, acc) => {
       const road = acc('road');
       const kerb = acc('kerb');
-      for (const id of list) {
+      for (const { id, part } of list) {
         // The through road's lines, on the paving.
-        for (const ln of throughLines.get(id) ?? []) {
+        if (part === 0) for (const ln of throughLines.get(id) ?? []) {
           const into = acc(ln.kind);
           const ring = JPOLY[id].ring;
           const base = into.pos.length / 3;
@@ -2991,26 +2992,28 @@ export async function buildPasirRisCourse(
         const ring = sh.ring;
         const n = ring.length;
         const surfY = (x: number, z: number) => jTop(id, x, z);
-        const base = road.pos.length / 3;
-        road.pos.push(cx, surfY(cx, cz) + lift, cz);
-        road.uv.push(cx / 6, cz / 6);
-        for (const t of RINGS)
-          for (const p of ring) {
-            const x = cx + (p[0] - cx) * t;
-            const z = cz + (p[1] - cz) * t;
-            road.pos.push(x, surfY(x, z) + lift, z);
-            road.uv.push(x / 6, z / 6);
-          }
-        for (let i = 0; i < n; i++) {
-          const i1 = (i + 1) % n;
-          road.idx.push(base, base + 1 + i1, base + 1 + i);
-          for (let r = 0; r + 1 < RINGS.length; r++) {
-            const a = base + 1 + r * n;
-            const b = a + n;
-            road.idx.push(a + i, a + i1, b + i1, a + i, b + i1, b + i);
+        if (part === 1) {
+          const base = road.pos.length / 3;
+          road.pos.push(cx, surfY(cx, cz) + lift, cz);
+          road.uv.push(cx / 6, cz / 6);
+          for (const t of RINGS)
+            for (const p of ring) {
+              const x = cx + (p[0] - cx) * t;
+              const z = cz + (p[1] - cz) * t;
+              road.pos.push(x, surfY(x, z) + lift, z);
+              road.uv.push(x / 6, z / 6);
+            }
+          for (let i = 0; i < n; i++) {
+            const i1 = (i + 1) % n;
+            road.idx.push(base, base + 1 + i1, base + 1 + i);
+            for (let r = 0; r + 1 < RINGS.length; r++) {
+              const a = base + 1 + r * n;
+              const b = a + n;
+              road.idx.push(a + i, a + i1, b + i1, a + i, b + i1, b + i);
+            }
           }
         }
-        for (const F of sh.kerbs) {
+        if (part === 2) for (const F of sh.kerbs) {
           const kb = kerb.pos.length / 3;
           for (let q = 0; q < F.length; q++) {
             const a = F[Math.max(0, q - 1)];
