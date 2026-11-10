@@ -56,6 +56,14 @@ const CHECKS = [
   ['No gap where two roads split or join', 'gores.js', '__checkGores', 0],
   // (120: 69 sides of ground splits still drawn from one point, 51 paved junctions whose outline kinks.)
   ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, 10],
+  // The finished road (finish.js): what is drawn, followed along the whole of
+  // every road, whatever rule drew it. (Known: counted on the map as it
+  // stood when these checks were written.)
+  ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, 152],
+  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 330],
+  ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 201],
+  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 42],
+  ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, 54],
   // The performance budget (perf.js: the figures and where they come from).
   ['The game starts within 20 s', 'perf.js', '__checkStart', 0],
   ['No frame draws more than the budget, anywhere on the map', 'perf.js', '__checkDrawn', 0],

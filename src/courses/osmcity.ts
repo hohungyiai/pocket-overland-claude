@@ -2388,6 +2388,20 @@ export async function buildPasirRisCourse(
   });
   /** In a gore (the paved wedge where two roads split or join)? */
   const inGore = (x: number, z: number) => !!goreGrid.get(Math.floor(x / GCELL) * 100003 + Math.floor(z / GCELL))?.some((id) => inRingXZ(gores[id].ring, x, z));
+  // Does road `line` have a parapet beside piece kk of its middle line, off
+  // metres out? Not where another road at its level, a junction's paving
+  // or the paved wedge of a split lies there: all of that is road, and a
+  // parapet on it would stand across the lanes. (One answer for the parapet
+  // that is drawn and the one the car hits.)
+  const parapetClear = (line: number, kk: number, off: number) => {
+    const a = EP[line][kk];
+    const b = EP[line][kk + 1];
+    const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const x = (a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * off;
+    const z = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * off;
+    const y = hasProfile[line] ? (deckY(line)[kk] + deckY(line)[kk + 1]) / 2 : NaN;
+    return !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y) && !inGore(x, z);
+  };
   {
     const byTile = new Map<string, number[]>();
     gores.forEach((g, id) => {
@@ -2701,7 +2715,7 @@ export async function buildPasirRisCourse(
             }
             const y = (kk: number) => dy[kk] + 0.09;
             band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, 0.05, (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > 0.15);
-            band(deck, P, cum, lo, hi, off, y, 0, 0.95, (kk) => Math.min(dr[kk - lo], dr[kk + 1 - lo]) > 1.2 && clear(kk, off(kk)));
+            band(deck, P, cum, lo, hi, off, y, 0, 0.95, (kk) => Math.min(dr[kk - lo], dr[kk + 1 - lo]) > 1.2 && parapetClear(line, kk, off(kk)));
           }
         }
         if (dy && isDeck[line]) {
@@ -2712,7 +2726,7 @@ export async function buildPasirRisCourse(
           const y = (kk: number) => dy[kk] + 0.09;
           for (const sgn of [-1, 1]) {
             band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0.05, () => true);
-            band(deck, pts, cum, k0, k1, side(sgn), y, 0, 0.95, (kk) => clear(kk, side(sgn)(kk)));
+            band(deck, pts, cum, k0, k1, side(sgn), y, 0, 0.95, (kk) => parapetClear(line, kk, side(sgn)(kk)));
           }
           strip(deck, pts, cum, k0, k1, (kk) => halfAt(kk) + 0.45, 0.09 - depth, { yAt });
         }
@@ -2842,7 +2856,7 @@ export async function buildPasirRisCourse(
             const off = sgn * ((halfAt(kk) + halfAt(kk + 1)) / 2 + 0.1);
             const mx = (a[0] + b[0]) / 2 + dz * off;
             const mz = (a[1] + b[1]) / 2 - dx * off;
-            if (coveredBy(line, mx + dz * sgn * 0.6, mz - dx * sgn * 0.6, y)) continue;
+            if (coveredBy(line, mx + dz * sgn * 0.6, mz - dx * sgn * 0.6, y) || !parapetClear(line, kk, sgn * (halfAtE(line, kk) + halfAtE(line, kk + 1)) / 2 + sgn * 0.45)) continue;
             // A raised road only needs one where its side drops away.
             if (!isDeck[line] && heightAt(mx + dz * sgn * 0.6, mz - dx * sgn * 0.6) > y - 1.2) continue;
             world.createCollider(
@@ -4406,7 +4420,7 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
-      blds, rankOf, deckSplits, throughLines, throughPairs, paveY, giveWays, bldRoads,
+      blds, rankOf, deckSplits, nearDeck, WB, GORE, throughLines, throughPairs, paveY, giveWays, bldRoads,
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),
