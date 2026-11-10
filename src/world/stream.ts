@@ -35,6 +35,8 @@ interface TileLayer {
   geometries: THREE.BufferGeometry[];
   bodies: RAPIER_NS.RigidBody[];
   job: Generator<void, void, void> | null;
+  /** Build slices run so far. */
+  steps: number;
   hidden?: boolean;
   coverable: THREE.Object3D[];
 }
@@ -46,8 +48,11 @@ const LAYERS: LayerName[] = ['near', 'far', 'horizon'];
 export class TileStreamer {
   private loaded = new Map<string, TileLayer>(); // key: "near:i,j" / "far:i,j"
   private queue: { key: string; layer: LayerName; i: number; j: number; d: number }[] = [];
-  /** Built tile counts, for the debug overlay and tests. */
-  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0 };
+  /**
+   * Built tile counts, and the longest single build slice (with which tile
+   * and slice it was), for the debug overlay and tests.
+   */
+  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0, slowest: '' };
 
   constructor(
     private scene: THREE.Scene,
@@ -145,7 +150,7 @@ export class TileStreamer {
       const q = this.queue[0];
       let layer = this.loaded.get(q.key);
       if (!layer) {
-        layer = { objects: [], geometries: [], bodies: [], job: null, coverable: [] };
+        layer = { objects: [], geometries: [], bodies: [], job: null, steps: 0, coverable: [] };
         if (q.layer === 'horizon') {
           const f = this.loaded.get('far' + q.key.slice(7));
           layer.hidden = !!f && !f.job;
@@ -160,7 +165,12 @@ export class TileStreamer {
           layer.job = null;
           if (q.layer === 'far') this.cover(q.key, true);
         }
-        if (budgetMs !== Infinity) this.stats.maxStepMs = Math.max(this.stats.maxStepMs, performance.now() - s0);
+        layer.steps++;
+        const ms = performance.now() - s0;
+        if (budgetMs !== Infinity && ms > this.stats.maxStepMs) {
+          this.stats.maxStepMs = ms;
+          this.stats.slowest = `${q.key}#${layer.steps}`;
+        }
         if (performance.now() - t0 > budgetMs) return false;
       }
       this.queue.shift();

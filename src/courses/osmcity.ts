@@ -885,9 +885,14 @@ export async function buildPasirRisCourse(
         else sepB[i] = Math.max(sepB[i], s);
       }
   });
-  const trimA = (i: number) => Math.min(Math.max(elevated[i] ? 0 : JX.trimA[i] || 0, sepA[i]), ELEN[i] * 0.4);
-  const trimB = (i: number) => Math.min(Math.max(elevated[i] ? 0 : JX.trimB[i] || 0, sepB[i]), ELEN[i] * 0.4);
-  const runLen = (i: number) => Math.max(0, ELEN[i] - trimA(i) - trimB(i));
+  // (Worked out once for every road: the ground's height is asked of these
+  // tens of thousands of times for each tile built.)
+  const TRIM_A = Float64Array.from(edges, (_, i) => Math.min(Math.max(elevated[i] ? 0 : JX.trimA[i] || 0, sepA[i]), ELEN[i] * 0.4));
+  const TRIM_B = Float64Array.from(edges, (_, i) => Math.min(Math.max(elevated[i] ? 0 : JX.trimB[i] || 0, sepB[i]), ELEN[i] * 0.4));
+  const RUN_LEN = Float64Array.from(edges, (_, i) => Math.max(0, ELEN[i] - TRIM_A[i] - TRIM_B[i]));
+  const trimA = (i: number) => TRIM_A[i];
+  const trimB = (i: number) => TRIM_B[i];
+  const runLen = (i: number) => RUN_LEN[i];
   const runA = (i: number, s: number) => Math.max(0, Math.min(runLen(i), s - trimA(i)));
   const runB = (i: number, s: number) => runLen(i) - runA(i, s);
   // Every road climbs no steeper than MAX_GRADE between junctions held down
@@ -1023,6 +1028,7 @@ export async function buildPasirRisCourse(
   // 12 m) it is the junction's own, so every raised road leaves a junction
   // at the junction's one height even on a slope. (Only at a raised
   // junction: where it sits on the ground, every road follows the ground.)
+  const jBase = Float64Array.from(M.junctions, ([jx, jz]) => baseAt(jx, jz));
   const roadBase = (i: number, s: number, x: number, z: number) => {
     const b = baseAt(x, z);
     if (elevated[i]) return b;
@@ -1032,14 +1038,8 @@ export async function buildPasirRisCourse(
     const tb = trimB(i);
     // (Gone well before the far end, however short the road.)
     const F = Math.min(12, Math.max(0.5, runLen(i) / 2));
-    if (ta > 0) {
-      const [jx, jz] = M.junctions[e.a];
-      r += (1 - smoothstep(ta, ta + F, s)) * smoothstep(0.02, 0.5, jRel[e.a]) * (baseAt(jx, jz) - b);
-    }
-    if (tb > 0) {
-      const [jx, jz] = M.junctions[e.b];
-      r += (1 - smoothstep(tb, tb + F, ELEN[i] - s)) * smoothstep(0.02, 0.5, jRel[e.b]) * (baseAt(jx, jz) - b);
-    }
+    if (ta > 0) r += (1 - smoothstep(ta, ta + F, s)) * smoothstep(0.02, 0.5, jRel[e.a]) * (jBase[e.a] - b);
+    if (tb > 0) r += (1 - smoothstep(tb, tb + F, ELEN[i] - s)) * smoothstep(0.02, 0.5, jRel[e.b]) * (jBase[e.b] - b);
     return r;
   };
   // Headroom. Wherever a raised road runs over a lower one:
@@ -1202,6 +1202,20 @@ export async function buildPasirRisCourse(
   // Roads (not decks) that climb to a flyover: the ground rises under them.
   const embank = edges.map((e, i) => !isDeck[i] && ((jRel[e.a] ?? 0) > 0.02 || (jRel[e.b] ?? 0) > 0.02 || needs[i].length > 0));
   const rampIdx = new SegIndex(EP, 24, false, (i) => !embank[i]);
+  // The most each road stands above the ground anywhere along it (never
+  // less than relAlong gives): a bank reaches 3 m out for each metre up, so
+  // a point further out than that from a road needn't ask its height.
+  const relTop = (() => {
+    const own = edges.map((e, i) => {
+      let m = Math.max(jRel[e.a] ?? 0, jRel[e.b] ?? 0, elevated[i] ? DECK_H * deckLevel[i] : 0);
+      for (const n of needs[i]) m = Math.max(m, n.rel);
+      return m;
+    });
+    return Float64Array.from(own, (m, i) => {
+      for (const mt of mates[i]) m = Math.max(m, own[mt.o]);
+      return m + 1e-6;
+    });
+  })();
   // Decks and raised roads have their own surface height (not the ground's),
   // level across their width.
   const hasProfile = edges.map((_, i) => isDeck[i] || embank[i]);
@@ -1543,7 +1557,7 @@ export async function buildPasirRisCourse(
       const h0 = h;
       rampIdx.each(x, z, 48, (line, seg, u, d) => {
         const inner = EHALF[line] + 1.5;
-        if (d > inner + 2 + 3 * DECK_H * 2) return;
+        if (d > inner + 2 + 3 * DECK_H * 2 || d > inner + 2 + relTop[line] * 3) return;
         const pts = EP[line];
         const sl = Math.hypot(pts[seg + 1][0] - pts[seg][0], pts[seg + 1][1] - pts[seg][1]);
         const sa = ECUM[line][seg] + u * sl;
@@ -1558,11 +1572,19 @@ export async function buildPasirRisCourse(
       // steeper than 1 in 2. (Where that cuts a bank short, the raised road
       // gets a retaining wall.)
       levelIdx.each(x, z, 30, (line, seg, u, d) => {
-        const pts = EP[line];
-        const sl = Math.hypot(pts[seg + 1][0] - pts[seg][0], pts[seg + 1][1] - pts[seg][1]);
-        const sa = ECUM[line][seg] + u * sl;
-        const yr = hasProfile[line] ? roadBase(line, sa, lerp(pts[seg][0], pts[seg + 1][0], u), lerp(pts[seg][1], pts[seg + 1][1], u)) + relAlong(line, sa) : hb;
-        const cap = yr + Math.max(0, d - EHALF[line] - 0.6) / 2;
+        const slack = Math.max(0, d - EHALF[line] - 0.6) / 2;
+        let yr = hb;
+        if (hasProfile[line]) {
+          const pts = EP[line];
+          const sl = Math.hypot(pts[seg + 1][0] - pts[seg][0], pts[seg + 1][1] - pts[seg][1]);
+          const sa = ECUM[line][seg] + u * sl;
+          yr = roadBase(line, sa, lerp(pts[seg][0], pts[seg + 1][0], u), lerp(pts[seg][1], pts[seg + 1][1], u));
+          // (A road is never below its base: one whose base alone already
+          // clears this point needn't work out how far above it stands.)
+          if (yr + slack >= h) return;
+          yr += relAlong(line, sa);
+        }
+        const cap = yr + slack;
         if (cap < h) h = cap;
       });
     }
@@ -1692,19 +1714,36 @@ export async function buildPasirRisCourse(
   // Jobs add meshes to the tile, or fill the tile's shared buffers (one
   // mesh per material per tile, made once all jobs are done: fewer draws).
   type AccFor = (key: AccKey) => Acc;
-  type Job = (kit: TileKit, acc: AccFor) => void;
+  type Job = ((kit: TileKit, acc: AccFor) => void) & { what?: string };
   const jobs = { near: new Map<string, Job[]>(), far: new Map<string, Job[]>(), horizon: new Map<string, Job[]>() };
   const tileKey = (x: number, z: number) => `${Math.floor(x / TILE)},${Math.floor(z / TILE)}`;
-  const onTile = (layer: Layer, k: string, job: Job) => {
+  const onTile = (layer: Layer, k: string, what: string, job: Job) => {
+    job.what = what;
     const list = jobs[layer].get(k);
     if (list) list.push(job);
     else jobs[layer].set(k, [job]);
   };
+  /**
+   * What each kind of build slice has cost so far (count, total and longest
+   * in ms), for the performance check: a slice can't be interrupted, so a
+   * long one is a hitch on the road.
+   */
+  const sliceCost = new Map<string, { n: number; ms: number; max: number; at: string }>();
+  const cost = (what: string, at: string, t0: number) => {
+    const ms = performance.now() - t0;
+    const c = sliceCost.get(what) ?? sliceCost.set(what, { n: 0, ms: 0, max: 0, at: '' }).get(what)!;
+    c.n++;
+    c.ms += ms;
+    if (ms > c.max) {
+      c.max = ms;
+      c.at = at;
+    }
+  };
   /** One job per `size` items, so each build step stays short. */
-  const inChunks = <T>(layer: Layer, k: string, items: T[], size: number, job: (part: T[], kit: TileKit, acc: AccFor) => void) => {
+  const inChunks = <T>(layer: Layer, k: string, what: string, items: T[], size: number, job: (part: T[], kit: TileKit, acc: AccFor) => void) => {
     for (let s = 0; s < items.length; s += size) {
       const part = items.slice(s, s + size);
-      onTile(layer, k, (kit, acc) => job(part, kit, acc));
+      onTile(layer, k, what, (kit, acc) => job(part, kit, acc));
     }
   };
 
@@ -1923,7 +1962,13 @@ export async function buildPasirRisCourse(
     }
     const P = acc.pos;
     const clearAt = o.clearAt;
-    const corner = (v: number) => clearAt!(P[v * 3], P[v * 3 + 1] - lift, P[v * 3 + 2]);
+    // (Each corner is shared by the pieces either side of it: asked once.)
+    const asked = clearAt ? new Int8Array((k1 - k0 + 1) * 2) : null;
+    const corner = (v: number) => {
+      const q = v - base;
+      if (!asked![q]) asked![q] = clearAt!(P[v * 3], P[v * 3 + 1] - lift, P[v * 3 + 2]) ? 1 : 2;
+      return asked![q] === 1;
+    };
     for (let k = k0; k < k1; k++) {
       if (o.keep && !o.keep(k)) continue;
       const a = base + (k - k0) * 2;
@@ -2007,8 +2052,10 @@ export async function buildPasirRisCourse(
   function* flush(accs: Map<AccKey, Acc>, kit: TileKit): Generator<void, void, void> {
     for (const [key, acc] of accs) {
       yield;
+      const t0 = performance.now();
       if (key !== 'wall' && key !== 'roof') {
         accMesh(acc, MAT[key], kit, key === 'deck' || key === 'rail');
+        cost(`mesh: ${key}`, '', t0);
         continue;
       }
       if (!acc.pos.length) continue;
@@ -2021,6 +2068,7 @@ export async function buildPasirRisCourse(
       m.castShadow = true;
       m.receiveShadow = key === 'wall';
       kit.add(m);
+      cost(`mesh: ${key}`, '', t0);
     }
   }
 
@@ -2157,10 +2205,13 @@ export async function buildPasirRisCourse(
    */
   const coveredBy = (line: number, x: number, z: number, y: number) => {
     let hit = false;
+    // (The ground here is the same whichever road is asked about: worked
+    // out once, and only if a draped road is near enough to need it.)
+    let g = NaN;
     roads.each(x, z, 16, (i, seg, u, d) => {
       if (hit || i === line || d > Math.max(halfAtE(i, seg), halfAtE(i, seg + 1)) + 0.2) return;
       if (y !== y) hit = !elevated[i];
-      else hit = Math.abs((hasProfile[i] ? deckAtHit(i, seg, u) : heightAt(x, z)) - y) < 3;
+      else hit = Math.abs((hasProfile[i] ? deckAtHit(i, seg, u) : g === g ? g : (g = heightAt(x, z))) - y) < 3;
     });
     return hit;
   };
@@ -2279,7 +2330,7 @@ export async function buildPasirRisCourse(
       (byTile.get(k) ?? byTile.set(k, []).get(k)!).push(id);
     });
     for (const [k, all] of byTile)
-      inChunks('far', k, all, 30, (list, _kit, acc) => {
+      inChunks('far', k, 'gores', all, 30, (list, _kit, acc) => {
         const road = acc('road');
         for (const id of list) {
           const { rows } = gores[id];
@@ -2485,7 +2536,7 @@ export async function buildPasirRisCourse(
   };
   const roadRuns = runsOf(EP);
   for (const [k, all] of roadRuns)
-    inChunks('far', k, all, 30, (list, _kit, acc) => {
+    inChunks('far', k, 'roads', all, 30, (list, _kit, acc) => {
       const road = acc('road');
       const kerb = acc('kerb');
       const white = acc('white');
@@ -2664,7 +2715,7 @@ export async function buildPasirRisCourse(
     }
   };
   for (const [k, list] of deckRuns) {
-    onTile('far', k, (kit) => {
+    onTile('far', k, 'deck sides', (kit) => {
       const parts: THREE.BufferGeometry[] = [];
       for (const { line, k0, k1 } of list)
         pillarsOf(line, k0, k1, (x, z, top, foot, yaw, w) => {
@@ -2679,7 +2730,7 @@ export async function buildPasirRisCourse(
       m.receiveShadow = true;
       kit.add(m);
     });
-    onTile('near', k, (kit) => {
+    onTile('near', k, 'deck barriers', (kit) => {
       const body = kit.body();
       for (const { line, k0, k1 } of list) {
         const pts = EP[line];
@@ -2762,7 +2813,7 @@ export async function buildPasirRisCourse(
     else padsByTile.set(k, [j]);
   });
   for (const [k, all] of padsByTile)
-    inChunks('far', k, all, 40, (list, _kit, acc) => {
+    inChunks('far', k, 'pads', all, 40, (list, _kit, acc) => {
       const road = acc('road');
       for (const j of list) {
         const [x, z] = M.junctions[j];
@@ -2818,7 +2869,7 @@ export async function buildPasirRisCourse(
   const dropY = (x: number, z: number) => Math.max(rawHeight(x, z), WL + 0.15);
   const RINGS = [1 / 3, 2 / 3, 1];
   for (const [k, all] of shapesByTile)
-    inChunks('far', k, all, 20, (list, _kit, acc) => {
+    inChunks('far', k, 'junctions', all, 20, (list, _kit, acc) => {
       const road = acc('road');
       const kerb = acc('kerb');
       for (const id of list) {
@@ -2920,7 +2971,7 @@ export async function buildPasirRisCourse(
     acc.idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
   };
   for (const [k, list] of crossByTile)
-    onTile('far', k, (_kit, acc) => {
+    onTile('far', k, 'crossings', (_kit, acc) => {
       const white = acc('white');
       for (const cr of list) {
         const left: XZ = [-cr.t[1], cr.t[0]];
@@ -2944,7 +2995,7 @@ export async function buildPasirRisCourse(
       (byTile.get(k) ?? byTile.set(k, []).get(k)!).push(g);
     }
     for (const [k, list] of byTile)
-      onTile('far', k, (_kit, acc) => {
+      onTile('far', k, 'give-way lines', (_kit, acc) => {
         const white = acc('white');
         for (const g of list) for (const [x, z] of g.dashes) quad(white, x, z, g.left, 0.3, 0.15, 0.115);
       });
@@ -2956,7 +3007,7 @@ export async function buildPasirRisCourse(
   const LAMPS = [0, 1].map(() => [lamp(0xff2a1a), lamp(0xffa21a), lamp(0x2aff6a)]);
   const poleMat = new THREE.MeshStandardMaterial({ color: 0x3b3f44, roughness: 0.7 });
   for (const [k, list] of crossByTile)
-    onTile('near', k, (kit) => {
+    onTile('near', k, 'traffic lights', (kit) => {
       const poles: THREE.BufferGeometry[] = [];
       const lamps: THREE.BufferGeometry[][][] = [0, 1].map(() => [[], [], []]);
       for (const cr of list) {
@@ -3157,7 +3208,7 @@ export async function buildPasirRisCourse(
   // Footpaths sit just under cycle paths, so where they overlap the cycle
   // path shows cleanly instead of the two flickering.
   for (const [k, all] of runsOf(paths.map((p) => p.pts)))
-    inChunks('far', k, all, 40, (list, _kit, acc) => {
+    inChunks('far', k, 'paths', all, 40, (list, _kit, acc) => {
       const foot = acc('foot');
       const cyc = acc('cycle');
       const rail = acc('rail');
@@ -3264,7 +3315,7 @@ export async function buildPasirRisCourse(
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   };
   for (const [k, list] of pondsByTile)
-    onTile('horizon', k, (kit) => {
+    onTile('horizon', k, 'ponds', (kit) => {
       const pos: number[] = [];
       for (const ring of list) {
         const tris = THREE.ShapeUtils.triangulateShape(ring.map(([x, z]) => new THREE.Vector2(x, z)), []);
@@ -3282,7 +3333,7 @@ export async function buildPasirRisCourse(
     return s;
   });
   for (const [k, list] of runsOf(canals.map((c) => c.pts)))
-    onTile('horizon', k, (kit) => {
+    onTile('horizon', k, 'canals', (kit) => {
       const acc = new Acc();
       for (const { line, k0, k1 } of list) strip(acc, canals[line].pts, CCUM[line], k0, k1, canals[line].w / 2 + 0.6, -0.02, { y: WL });
       if (!acc.idx.length) return;
@@ -3856,7 +3907,7 @@ export async function buildPasirRisCourse(
   const rc = new THREE.Color();
   for (const [k, ids] of bldTile) {
     // Meshes on the horizon layer (the skyline), in batches so each build step stays short.
-    inChunks('horizon', k, ids, 12, (part, _kit, acc) => {
+    inChunks('horizon', k, 'buildings', ids, 12, (part, _kit, acc) => {
         const { pos: wp, uv: wu, col: wcl } = acc('wall');
         const { pos: rp, col: rcl } = acc('roof');
         for (const id of part) {
@@ -3920,7 +3971,7 @@ export async function buildPasirRisCourse(
         }
       });
     // Walls you can bump into, near the car only: a thick slab inside each wall.
-    inChunks('near', k, ids, 25, (part, kit) => {
+    inChunks('near', k, 'building walls', ids, 25, (part, kit) => {
       const body = kit.body();
       for (const id of part) {
         const b = blds[id];
@@ -3985,7 +4036,7 @@ export async function buildPasirRisCourse(
     return l;
   };
   for (const [k, list] of runsOf(viaducts)) {
-    onTile('horizon', k, (kit) => {
+    onTile('horizon', k, 'viaducts', (kit) => {
       const top = new Acc();
       const parts: THREE.BufferGeometry[] = [];
       for (const { line, k0, k1 } of list) {
@@ -4015,7 +4066,7 @@ export async function buildPasirRisCourse(
         kit.add(pm);
       }
     });
-    onTile('near', k, (kit) => {
+    onTile('near', k, 'viaduct piers', (kit) => {
       const body = kit.body();
       for (const { line, k0, k1 } of list)
         for (const q of railPiers(line)) {
@@ -4032,7 +4083,7 @@ export async function buildPasirRisCourse(
     return c;
   });
   for (const [k, list] of runsOf(ground))
-    onTile('far', k, (_kit, acc) => {
+    onTile('far', k, 'rail ballast', (_kit, acc) => {
       for (const { line, k0, k1 } of list) strip(acc('ballast'), ground[line], GCUM[line], k0, k1, 1.8, 0.04);
     });
 
@@ -4075,7 +4126,9 @@ export async function buildPasirRisCourse(
       return a;
     };
     for (const job of jobs.far.get(k) ?? []) {
+      const t0 = performance.now();
       job(offScene, acc);
+      cost(`${job.what} (again, for the collider)`, `near:${k}`, t0);
       yield;
     }
     keepSurf(k, accs.get('road'));
@@ -4087,14 +4140,20 @@ export async function buildPasirRisCourse(
   };
   const builder = (layer: Layer) =>
     function* (ti: number, tj: number, kit: TileKit) {
+      const at = `${layer}:${ti},${tj}`;
       const t = yield* ensurePatch(ti, tj, layer === 'horizon' ? STEP_FAR : STEP);
+      let t0 = performance.now();
       if (t) {
         if (layer === 'near') terrainCollider(t, kit);
         else groundMesh(t, kit, layer === 'horizon');
       }
+      cost(layer === 'near' ? 'ground collider' : 'ground mesh', at, t0);
       yield;
       if (layer === 'near') {
-        roadCollider(yield* surfaceOf(`${ti},${tj}`), kit);
+        const surf = yield* surfaceOf(`${ti},${tj}`);
+        t0 = performance.now();
+        roadCollider(surf, kit);
+        cost('road collider', at, t0);
         yield* plantTile(ti, tj, kit);
       }
       const accs = new Map<AccKey, Acc>();
@@ -4104,7 +4163,9 @@ export async function buildPasirRisCourse(
         return a;
       };
       for (const job of jobs[layer].get(`${ti},${tj}`) ?? []) {
+        t0 = performance.now();
         job(kit, acc);
+        cost(job.what ?? '?', at, t0);
         yield;
       }
       if (layer === 'far') keepSurf(`${ti},${tj}`, accs.get('road'));
@@ -4266,6 +4327,7 @@ export async function buildPasirRisCourse(
       crossings, CROSS_FROM, CROSS_W,
       // A far tile's road buffers, built off-scene (for the seam checks).
       farTiles: () => [...jobs.far.keys()],
+      sliceCost,
       tileAccs: (k: string) => {
         const accs = new Map<AccKey, Acc>();
         const acc = (key: AccKey) => {
