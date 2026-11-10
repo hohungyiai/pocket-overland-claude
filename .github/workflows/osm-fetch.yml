@@ -17,18 +17,29 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run each query against Overpass
         run: |
-          set -e
+          # An area already fetched is left alone (delete its raw.json.gz to
+          # fetch it again), so data the map checks were run on never shifts
+          # by accident. Each area tries every server, three rounds; one that
+          # still fails is skipped and reported, and the rest are kept.
+          failed=""
           for q in tools/osm/*.overpassql; do
             name=$(basename "$q" .overpassql)
-            mkdir -p "data/osm/$name"
-            for url in https://overpass-api.de/api/interpreter https://overpass.kumi.systems/api/interpreter; do
-              if curl -sS --fail -m 900 -H "User-Agent: pocket-overland-osm-import/1.0 (+https://github.com/hohungyiai/pocket-overland-claude)" --data-urlencode "data@$q" "$url" -o "/tmp/$name.json"; then break; fi
-              echo "retrying with the next server"; sleep 20
+            if [ -s "data/osm/$name/raw.json.gz" ]; then echo "$name: already fetched"; continue; fi
+            ok=""
+            for round in 1 2 3; do
+              for url in https://overpass-api.de/api/interpreter https://overpass.private.coffee/api/interpreter https://overpass.kumi.systems/api/interpreter https://maps.mail.ru/osm/tools/overpass/api/interpreter; do
+                echo "$name: round $round, $url"
+                if curl -sS --fail -m 600 -H "User-Agent: pocket-overland-osm-import/1.0 (+https://github.com/hohungyiai/pocket-overland-claude)" --data-urlencode "data@$q" "$url" -o "/tmp/$name.json" \
+                  && python3 -c "import json; d=json.load(open('/tmp/$name.json')); n=len(d['elements']); print(n, 'elements'); assert n > 0 and not d.get('remark')"; then ok=1; break 2; fi
+                sleep 20
+              done
             done
-            python3 -c "import json,sys; d=json.load(open('/tmp/$name.json')); print(len(d['elements']), 'elements')"
+            if [ -z "$ok" ]; then failed="$failed $name"; continue; fi
+            mkdir -p "data/osm/$name"
             gzip -9 -c "/tmp/$name.json" > "data/osm/$name/raw.json.gz"
             { echo "# $name (OpenStreetMap extract)"; echo; echo "Fetched $(date -u +%Y-%m-%dT%H:%MZ) from Overpass with tools/osm/$name.overpassql."; echo; echo "Map data (c) OpenStreetMap contributors, ODbL 1.0. https://www.openstreetmap.org/copyright"; } > "data/osm/$name/README.md"
           done
+          echo "FAILED=$failed" >> "$GITHUB_ENV"
       - name: Commit the data
         run: |
           git config user.name "github-actions[bot]"
@@ -36,3 +47,8 @@ jobs:
           git add data/osm
           git diff --cached --quiet || git commit -m "Fetch OSM data"
           git push
+      - name: Report areas that could not be fetched
+        if: env.FAILED != ''
+        run: |
+          echo "could not fetch:$FAILED"
+          exit 1
