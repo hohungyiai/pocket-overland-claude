@@ -904,19 +904,70 @@ export async function buildPasirRisCourse(
   // steeply, up to this (a little under the car's limit).
   const MAX_GRADE = 0.9 * LIMITS.grade;
   const jCeil = new Float32Array(M.junctions.length);
+  // (Both sums below spread out from their starting junctions in order,
+  // lowest ceiling first and highest rise first, so each junction is
+  // settled once. Taking them in any other order gives the same answer in
+  // the end, but can visit the same junctions millions of times over:
+  // that was most of the time the game took to start.)
+  /** A heap of junctions by a key: pops the smallest (or with sign -1 the largest) first. */
+  const heapOf = (sign: 1 | -1) => {
+    const keys: number[] = [];
+    const ids: number[] = [];
+    return {
+      get size() {
+        return ids.length;
+      },
+      push(key: number, id: number) {
+        key *= sign;
+        let q = ids.length;
+        while (q > 0) {
+          const up = (q - 1) >> 1;
+          if (keys[up] <= key) break;
+          keys[q] = keys[up];
+          ids[q] = ids[up];
+          q = up;
+        }
+        keys[q] = key;
+        ids[q] = id;
+      },
+      pop(): [number, number] {
+        const top: [number, number] = [keys[0] * sign, ids[0]];
+        const key = keys.pop()!;
+        const id = ids.pop()!;
+        const n = ids.length;
+        if (n > 0) {
+          let q = 0;
+          for (;;) {
+            let c = 2 * q + 1;
+            if (c >= n) break;
+            if (c + 1 < n && keys[c + 1] < keys[c]) c++;
+            if (keys[c] >= key) break;
+            keys[q] = keys[c];
+            ids[q] = ids[c];
+            q = c;
+          }
+          keys[q] = key;
+          ids[q] = id;
+        }
+        return top;
+      },
+    };
+  };
   const ceilings = () => {
     jCeil.set(jCap);
-    const queue: number[] = [];
-    jCap.forEach((c, j) => c < Infinity && queue.push(j));
-    while (queue.length) {
-      const j = queue.pop()!;
+    const heap = heapOf(1);
+    jCap.forEach((c, j) => c < Infinity && heap.push(c, j));
+    while (heap.size) {
+      const [c0, j] = heap.pop();
+      // (Lowered again since it was queued: already dealt with.)
+      if (c0 > jCeil[j]) continue;
       for (const i of jE[j] ?? []) {
         if (elevated[i]) continue;
         const o = edges[i].a === j ? edges[i].b : edges[i].a;
-        const c = jCeil[j] + MAX_GRADE * runLen(i);
-        if (c < jCeil[o] - 0.01) {
+        const c = Math.fround(jCeil[j] + MAX_GRADE * runLen(i));
+        if (c < jCeil[o]) {
           jCeil[o] = c;
-          queue.push(o);
+          heap.push(c, o);
         }
       }
     }
@@ -924,12 +975,13 @@ export async function buildPasirRisCourse(
   const lift = () => {
     jRel.fill(0);
     ceilings();
-    const queue: number[] = [];
+    const heap = heapOf(-1);
     const raise = (j: number, r: number) => {
-      r = Math.min(deckEnd[j] ? jCeil[j] : jCap[j], jCeil[j], r);
-      if (r > jRel[j] + 0.01) {
+      r = Math.fround(Math.min(deckEnd[j] ? jCeil[j] : jCap[j], jCeil[j], r));
+      // (A rise of a centimetre or less is none.)
+      if (r > 0.01 && r > jRel[j]) {
         jRel[j] = r;
-        queue.push(j);
+        heap.push(r, j);
       }
     };
     edges.forEach((e, i) => {
@@ -945,8 +997,9 @@ export async function buildPasirRisCourse(
         raise(edges[i].b, n.rel - RAMP_GRADE * runB(i, n.s));
       }
     });
-    while (queue.length) {
-      const j = queue.pop()!;
+    while (heap.size) {
+      const [r0, j] = heap.pop();
+      if (r0 < jRel[j]) continue;
       for (const i of jE[j] ?? []) {
         if (elevated[i]) continue;
         raise(edges[i].a === j ? edges[i].b : edges[i].a, jRel[j] - RAMP_GRADE * runLen(i));
@@ -2549,15 +2602,15 @@ export async function buildPasirRisCourse(
   };
   const roadRuns = runsOf(EP);
   // A run is drawn a few pieces at a time, each its own build slice: by
-  // ramps and flyovers, where working out the ground takes longest, 6 road
-  // pieces (about 25 m) to a slice; elsewhere 24. (r0 to r1 is the whole
+  // ramps and flyovers, where working out the ground takes longest, 4 road
+  // pieces (about 16 m) to a slice; elsewhere 24. (r0 to r1 is the whole
   // run in the tile, k0 to k1 the part drawn in this slice.)
   const inSlices = (all: { line: number; k0: number; k1: number }[]) => {
     const out: { line: number; r0: number; r1: number; k0: number; k1: number }[] = [];
     for (const { line, k0, k1 } of all) {
       let ramp = false;
       for (let k = k0; k <= k1 && !ramp; k++) ramp = nearRamp(EP[line][k][0], EP[line][k][1]);
-      const n = ramp ? 6 : 24;
+      const n = ramp ? 4 : 24;
       for (let a = k0; a < k1; a += n) out.push({ line, r0: k0, r1: k1, k0: a, k1: Math.min(k1, a + n) });
     }
     return out;
@@ -2761,9 +2814,12 @@ export async function buildPasirRisCourse(
       m.receiveShadow = true;
       kit.add(m);
     });
-    inChunks('near', k, 'deck barriers', list, 1, (part, kit) => {
+    // (A run's parapets a few pieces to a slice; its piers with the first.)
+    const pieces: { line: number; k0: number; k1: number; a: number; b: number }[] = [];
+    for (const { line, k0, k1 } of list) for (let a = k0; a < k1; a += 6) pieces.push({ line, k0, k1, a, b: Math.min(k1, a + 6) });
+    inChunks('near', k, 'deck barriers', pieces, 1, (part, kit) => {
       const body = tileBody(kit);
-      for (const { line, k0, k1 } of part) {
+      for (const { line, k0, k1, a: from, b: to } of part) {
         const pts = EP[line];
         const dy = deckY(line);
         const cum = ECUM[line];
@@ -2773,7 +2829,7 @@ export async function buildPasirRisCourse(
         const hb = jDegree[edges[line].b] === 2 ? (jHalf2[edges[line].b](line) - half) / 2 : 0;
         const halfAt = (kk: number) => half + ha * (1 - smoothstep(0, 16, cum[kk])) + hb * (1 - smoothstep(0, 16, len - cum[kk])) + 0.45;
         // Parapets you can lean on (none where another deck joins).
-        for (let kk = k0; kk < k1; kk++) {
+        for (let kk = from; kk < to; kk++) {
           const a = pts[kk];
           const b = pts[kk + 1];
           const sl = Math.hypot(b[0] - a[0], b[1] - a[1]);
@@ -2797,7 +2853,7 @@ export async function buildPasirRisCourse(
             );
           }
         }
-        pillarsOf(line, k0, k1, (x, z, top, foot, yaw) => {
+        if (from === k0) pillarsOf(line, k0, k1, (x, z, top, foot, yaw) => {
           world.createCollider(
             RAPIER.ColliderDesc.cuboid(0.75, (top - foot) / 2, 0.75)
               .setTranslation(x, (top + foot) / 2, z)
@@ -2900,7 +2956,7 @@ export async function buildPasirRisCourse(
   const dropY = (x: number, z: number) => Math.max(rawHeight(x, z), WL + 0.15);
   const RINGS = [1 / 3, 2 / 3, 1];
   for (const [k, all] of shapesByTile)
-    inChunks('far', k, 'junctions', all, 2, (list, _kit, acc) => {
+    inChunks('far', k, 'junctions', all, 1, (list, _kit, acc) => {
       const road = acc('road');
       const kerb = acc('kerb');
       for (const id of list) {
@@ -3238,8 +3294,10 @@ export async function buildPasirRisCourse(
   };
   // Footpaths sit just under cycle paths, so where they overlap the cycle
   // path shows cleanly instead of the two flickering.
+  // (A long path, like a road, is drawn 12 pieces to a slice.)
+  const pathSlices = (all: { line: number; k0: number; k1: number }[]) => all.flatMap(({ line, k0, k1 }) => Array.from({ length: Math.ceil((k1 - k0) / 12) }, (_, n) => ({ line, k0: k0 + n * 12, k1: Math.min(k1, k0 + n * 12 + 12) })));
   for (const [k, all] of runsOf(paths.map((p) => p.pts)))
-    inChunks('far', k, 'paths', all, 4, (list, _kit, acc) => {
+    inChunks('far', k, 'paths', pathSlices(all), 1, (list, _kit, acc) => {
       const foot = acc('foot');
       const cyc = acc('cycle');
       const rail = acc('rail');
