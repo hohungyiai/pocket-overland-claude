@@ -1922,28 +1922,15 @@ export async function buildPasirRisCourse(
       }
     }
     const P = acc.pos;
-    // Round the inside of a tight bend (or a bend right at a junction's
-    // mouth) a side would double back on itself, folding the piece over so
-    // half of it faces the ground: that side stays where it is instead.
-    // (Only this run's inner cross-sections move: its ends are shared.)
-    const folded = (k: number, s: number) => {
-      const v0 = (base + (k - 1 - k0) * 2 + s) * 3, v1 = v0 + 6;
-      return (P[v1] - P[v0]) * (pts[k][0] - pts[k - 1][0]) + (P[v1 + 2] - P[v0 + 2]) * (pts[k][1] - pts[k - 1][1]) < 0;
-    };
-    const put = (from: number, to: number) => {
-      for (let c = 0; c < 3; c++) P[to * 3 + c] = P[from * 3 + c];
-    };
-    for (const s of [0, 1]) {
-      for (let k = k0 + 1; k < k1; k++) if (folded(k, s)) put(base + (k - 1 - k0) * 2 + s, base + (k - k0) * 2 + s);
-      for (let k = k1; k > k0 + 1 && folded(k, s); k--) put(base + (k - k0) * 2 + s, base + (k - 1 - k0) * 2 + s);
-    }
     const clearAt = o.clearAt;
     const corner = (v: number) => clearAt!(P[v * 3], P[v * 3 + 1] - lift, P[v * 3 + 2]);
     for (let k = k0; k < k1; k++) {
       if (o.keep && !o.keep(k)) continue;
       const a = base + (k - k0) * 2;
       if (clearAt && !(corner(a) && corner(a + 1) && corner(a + 2) && corner(a + 3))) continue;
-      // (Each half faces up, even where a piece of two cross-sections folds.)
+      // (Each half faces up: round the inside of a tight bend, or at a bend
+      // right beside a junction's mouth, a side doubles back and the piece
+      // folds over, half of it facing the ground.)
       faceUp(acc, a, a + 2, a + 1);
       faceUp(acc, a + 1, a + 2, a + 3);
     }
@@ -2074,20 +2061,27 @@ export async function buildPasirRisCourse(
     let hi = n - 1;
     let ylo = NaN;
     let yhi = NaN;
-    // (A cut landing on one of the road's own points starts from that point:
-    // a hair's-length first piece has no direction, and its end of the road
-    // would be drawn twisted round.)
-    const near = (p: XZ, q: XZ) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.05;
+    // (A cut landing on one of the road's own points leaves a first piece
+    // of no length, and so of no direction: that end of the road was drawn
+    // twisted round, or pinched to a point. The cut keeps 5 cm of the piece
+    // it lies on, which is the piece its junction's mouth is square to.)
+    const HAIR = 0.05;
+    const dir = (k: number): XZ => {
+      const l = cum[k + 1] - cum[k] || 1;
+      return [(pts[k + 1][0] - pts[k][0]) / l, (pts[k + 1][1] - pts[k][1]) / l];
+    };
     if (ta) {
       const c = at(ta);
-      lo = c.k + 1 < n - 1 && near(c.p, pts[c.k + 1]) ? c.k + 1 : c.k;
-      P[lo] = c.p;
+      lo = c.k;
+      const [dx, dz] = dir(lo);
+      P[lo] = cum[lo + 1] - ta < HAIR ? [pts[lo + 1][0] - dx * HAIR, pts[lo + 1][1] - dz * HAIR] : c.p;
       ylo = c.y;
     }
     if (tb) {
       const c = at(ELEN[line] - tb);
-      hi = c.k > 0 && near(c.p, pts[c.k]) ? c.k : c.k + 1;
-      P[hi] = c.p;
+      hi = c.k + 1;
+      const [dx, dz] = dir(c.k);
+      P[hi] = ELEN[line] - tb - cum[c.k] < HAIR ? [pts[c.k][0] + dx * HAIR, pts[c.k][1] + dz * HAIR] : c.p;
       yhi = c.y;
     }
     return { pts: P, lo, hi, ylo, yhi };
