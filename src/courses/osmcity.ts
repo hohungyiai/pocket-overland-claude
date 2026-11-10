@@ -2292,6 +2292,13 @@ export async function buildPasirRisCourse(
   const throughPairs: { id: number; a: number; b: number }[] = [];
   /** Road ends (line * 2 + end) that are a winning through road's mouths. */
   const throughEnds = new Set<number>();
+  // Where the through road wins, every other road gives way to it: a
+  // broken white line across its lanes coming in, just short of the
+  // junction (Singapore drives on the left, so the left half of a two-way
+  // road, seen heading in).
+  const GIVE_AT = 0.7; // metres out from the mouth
+  type GiveWay = { id: number; line: number; end: 0 | 1; left: XZ; dashes: XZ[] };
+  const giveWays: GiveWay[] = [];
   {
     const COS30 = Math.cos((30 * Math.PI) / 180);
     const lanesOf = (i: number) => Math.max(1, Math.round((edges[i].w - 0.7) / 3.3));
@@ -2334,6 +2341,30 @@ export async function buildPasirRisCourse(
       if (axes.length > 1 && axes[1].rank >= top.rank) return;
       const onAxis = new Set(top.pairs.flatMap((c) => [c.a, c.b]));
       if (M.some((m, q) => !onAxis.has(q) && rankOf(edges[m.line].cls) > top.rank)) return;
+      M.forEach((m, q) => {
+        if (onAxis.has(q)) return;
+        const e = edges[m.line];
+        const L = ELEN[m.line];
+        // Coming in: one-way roads only where they flow toward the junction.
+        const inbound = e.one ? (m.end === 1 ? 2 : 0) : 1; // 2 = whole width, 1 = left half, 0 = none
+        // (Not service lanes and car park roads, which carry no markings at all.)
+        if (!inbound || rankOf(e.cls) < 1 || hasProfile[m.line] || JX.internal[m.line] || m.half < 2 || L < m.s + GIVE_AT + 2) return;
+        const P = EP[m.line];
+        const cum = ECUM[m.line];
+        const sAt = m.end === 0 ? m.s + GIVE_AT : L - m.s - GIVE_AT;
+        let k = 0;
+        while (k < P.length - 2 && cum[k + 1] <= sAt) k++;
+        const u = (sAt - cum[k]) / (cum[k + 1] - cum[k] || 1);
+        const c: XZ = [lerp(P[k][0], P[k + 1][0], u), lerp(P[k][1], P[k + 1][1], u)];
+        const left: XZ = [-m.t[1], m.t[0]]; // left of a car heading in (along -t)
+        const w = m.half - 0.4;
+        // Dashes 0.6 m long, 0.3 m apart.
+        const dashes: XZ[] = [];
+        for (let o = (inbound === 2 ? -w : 0.15) + 0.3; o + 0.3 <= w; o += 0.9) dashes.push([c[0] + left[0] * o, c[1] + left[1] * o]);
+        // (Only a whole line, on this road's own open surface.)
+        if (dashes.length < 2 || dashes.some(([x, z]) => coveredBy(m.line, x, z, NaN) || onIsland(x, z) || inPaving(x, z, NaN))) return;
+        giveWays.push({ id, line: m.line, end: m.end, left, dashes });
+      });
       const lines: ThroughLine[] = [];
       // (A road on the ground that is no part of this junction, yet lies
       // over it: a slip road merging in alongside.)
@@ -2879,6 +2910,19 @@ export async function buildPasirRisCourse(
         quad(white, sx + left[0] * mid, sz + left[1] * mid, left, (w - from) / 2, 0.2, 0.115);
       }
     });
+  // Give-way lines.
+  {
+    const byTile = new Map<string, GiveWay[]>();
+    for (const g of giveWays) {
+      const k = tileKey(g.dashes[0][0], g.dashes[0][1]);
+      (byTile.get(k) ?? byTile.set(k, []).get(k)!).push(g);
+    }
+    for (const [k, list] of byTile)
+      onTile('far', k, (_kit, acc) => {
+        const white = acc('white');
+        for (const g of list) for (const [x, z] of g.dashes) quad(white, x, z, g.left, 0.3, 0.15, 0.115);
+      });
+  }
   // Traffic lights: a pole on the left kerb, its lamps facing the traffic
   // coming in. The lamps of each direction share three materials, switched
   // in update().
@@ -3972,7 +4016,7 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
-      blds, deckSplits, throughLines, throughPairs, paveY,
+      blds, deckSplits, throughLines, throughPairs, paveY, giveWays,
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),

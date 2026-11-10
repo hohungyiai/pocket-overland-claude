@@ -3,7 +3,8 @@
 // road's own edge lines and kerbs must stop where the other road's surface
 // begins. Drives down the middle of every lane of every road (well clear of
 // its own lines) and looks for any kerb or line drawn there at its level.
-// (Zebra crossings and their stop lines run across lanes on purpose.)
+// (Zebra crossings and their stop lines run across lanes on purpose, and so
+// do the give-way lines of roads joining a through road.)
 window.__checkLanes = (all = false) => {
   const d = globalThis.__osm;
   // Every kerb and line triangle, bucketed on a 4 m grid.
@@ -57,6 +58,8 @@ window.__checkLanes = (all = false) => {
       if (dx * dx + dz * dz > 900) return false;
       return Math.abs(dx * cr.t[0] + dz * cr.t[1]) < d.CROSS_W / 2 + 4 && Math.abs(-dx * cr.t[1] + dz * cr.t[0]) < cr.half + 1;
     });
+  /** On road i's own give-way line? */
+  const onGiveWay = (i, x, z) => (d.giveWays ?? []).some((g) => g.line === i && g.dashes.some((p) => Math.hypot(p[0] - x, p[1] - z) < 0.7));
   const bad = [];
   const seen = new Set();
   let n = 0;
@@ -89,7 +92,7 @@ window.__checkLanes = (all = false) => {
         const y = (Y ? Y[k] + (Y[k + 1] - Y[k]) * u : d.surfaceAt(x, z)) + 0.1;
         n++;
         const kind = lineAt(x, z, y);
-        if (!kind || nearCrossing(x, z)) continue;
+        if (!kind || nearCrossing(x, z) || (kind === 'white' && onGiveWay(i, x, z))) continue;
         const key = `${Math.round(x / 4)},${Math.round(z / 4)}`;
         if (seen.has(key)) continue;
         seen.add(key);

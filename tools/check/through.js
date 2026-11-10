@@ -17,6 +17,10 @@
 // other's), the road's edge carries on smoothly: from the kerb coming in,
 // along the outline, to the kerb going out, it never turns more than 10°
 // at any one point.
+//
+// __checkGiveWays: where the through road wins, each road that joins it has
+// its give-way line: every dash is really painted, lying on the road's
+// surface, within the road's width and outside the junction.
 (() => {
   const marks = () => {
     const d = globalThis.__osm;
@@ -152,6 +156,29 @@
       }
     }
     bad.sort((p, q) => q.over - p.over);
+    return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40) };
+  };
+
+  window.__checkGiveWays = (all = false) => {
+    const d = globalThis.__osm;
+    const bad = [];
+    let n = 0;
+    for (const g of d.giveWays) {
+      const m = d.JX.shapes[g.id].mouths.find((q) => q.line === g.line && q.end === g.end);
+      let why = null;
+      for (const [x, z] of g.dashes) {
+        n++;
+        const top = d.surfaceAt(x, z);
+        const got = near('white', x, z, 0.35);
+        const across = Math.abs((x - m.q[0]) * g.left[0] + (z - m.q[1]) * g.left[1]);
+        const out = (x - m.q[0]) * m.t[0] + (z - m.q[1]) * m.t[1];
+        if (!got.some((p) => p[1] - top > 0.09 && p[1] - top < 0.2)) why = got.length ? 'not on the road surface' : 'not painted';
+        else if (across > m.half - 0.3) why = 'beyond the road edge';
+        else if (out < 0.3 || out > 2) why = 'not just short of the junction';
+        if (why) break;
+      }
+      if (why) bad.push({ junction: g.id, road: d.edges[g.line].name || d.edges[g.line].cls, line: g.line, x: +g.dashes[0][0].toFixed(1), z: +g.dashes[0][1].toFixed(1), why, over: 1 });
+    }
     return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40) };
   };
 })();
