@@ -17,8 +17,12 @@ const CHECKS = [
   ['At least 4.8 m headroom under every footbridge', 'footbridges.js', '__checkFootHeadroom', 0],
   ['No footbridge pier or stair stands on a road', 'footbridges.js', '__checkFootSupports', 0],
   ['At least 4.8 m headroom under every road above', 'headroom.js', '__checkHeadroom', 0],
+  ['A flyover stays up along its whole length', 'dips.js', '__checkDips', 0],
   ['No two roads cross at the same height', 'headroom.js', '__checkCrossings', 0],
   ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0, 1],
+  // (Known: seven real junctions where five or six roads meet at one point
+  // in the map data; the ratchet is there to catch new ones.)
+  ['No junction offers more than four ways to go', 'arms.js', '__checkArms', 0, 7],
   ['No two junctions overlap', 'junctions.js', '__checkJunctionOverlap', 0],
   ['No kerb across a road', 'junctions.js', '__checkKerbAcross', 0],
   ['Junctions stay on their roads', 'junctions.js', '__checkJunctionSpill', 0],
