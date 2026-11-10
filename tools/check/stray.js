@@ -1,8 +1,10 @@
 // In-page check (run with ?debug): no stray kerb or road marking inside a
 // junction. A junction's paving is open asphalt: kerbs run only round its
-// edge, and lane lines, centre lines and crossings stop at its mouths. Any
-// kerb or marking piece whose middle lies well inside a junction (or a paved
-// island) is a fragment left over where pieces of road were cut back.
+// edge, and lane lines, centre lines and crossings stop at its mouths, save
+// the lines of a through road that wins the junction, which carry on across
+// it (see through.js). Any other kerb or marking piece whose middle lies
+// well inside a junction (or a paved island) is a fragment left over where
+// pieces of road were cut back.
 window.__checkStray = (all = false) => {
   const d = globalThis.__osm;
   const polys = [...d.JX.shapes, ...d.JX.fills];
@@ -38,6 +40,7 @@ window.__checkStray = (all = false) => {
       if (inside && Math.abs(y - topOf(id, x, z)) < 1 && dmin > best) {
         best = dmin;
         depth.id = id < ns ? `junction ${id}` : `island ${id - ns}`;
+        depth.n = id;
       }
     }
     return best;
@@ -52,6 +55,19 @@ window.__checkStray = (all = false) => {
       const across = Math.abs(-dx * cr.t[1] + dz * cr.t[0]);
       return along < d.CROSS_W / 2 + 1.5 && across < cr.half + 0.5; // (and its stop line)
     });
+  /** On one of junction id's through lines (of this colour)? */
+  const onThrough = (id, kind, x, z) =>
+    (d.throughLines?.get(id) ?? []).some(
+      (ln) =>
+        ln.kind === kind &&
+        ln.pts.some((p, k) => {
+          if (!k) return false;
+          const [ax, az] = ln.pts[k - 1];
+          const dx = p[0] - ax, dz = p[1] - az;
+          const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+          return Math.hypot(x - ax - dx * t, z - az - dz * t) < 0.3;
+        }),
+    );
   // (A kerb is 0.65 m wide and hugs the edge; a marking may just touch it.)
   const DEEP = 0.8;
   const bad = [];
@@ -71,6 +87,7 @@ window.__checkStray = (all = false) => {
         n++;
         const dd = depth(x, y, z);
         if (dd <= DEEP || (kind === 'white' && onCrossing(x, z))) continue;
+        if (kind !== 'kerb' && depth.n < ns && onThrough(depth.n, kind, x, z)) continue;
         const key = `${kind}:${Math.round(x / 3)},${Math.round(z / 3)}`;
         if (seen.has(key)) continue;
         seen.add(key);
