@@ -35,6 +35,7 @@ const CHECKS = [
   ['A through road\'s lines carry on across its junctions', 'through.js', '__checkThroughLines', 0],
   ['A through road\'s lines meet the road\'s own at the junction\'s edge', 'through.js', '__checkThroughJoins', 0],
   ['A through road\'s edge runs on smoothly where nothing joins it', 'through.js', '__checkThroughEdges', 0],
+  ['Every road joining a through road has its give-way line', 'through.js', '__checkGiveWays', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
   // Drivable from a standstill: 60% of what the car can do (src/limits.ts).
   ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 19],
