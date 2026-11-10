@@ -17,6 +17,8 @@ window.__checkSplitEdges = (all = false) => {
   });
   /** Road i's points running away from its end. */
   const from = (i, end) => (end ? [...d.EP[i]].reverse() : d.EP[i]);
+  /** The same as OSM has them (which roads split is read from these: the game moves the branches). */
+  const osm = (i, end) => (end ? [...d.edges[i].pts].reverse() : d.edges[i].pts);
   const along = (P, s) => {
     let run = 0;
     for (let k = 0; k + 1 < P.length; k++) {
@@ -34,11 +36,14 @@ window.__checkSplitEdges = (all = false) => {
   const trim = (i, end) => (end ? d.JX.trimB[i] : d.JX.trimA[i]) || 0;
   const COS35 = Math.cos((35 * Math.PI) / 180);
   const bad = [];
+  /** Sides whose outline could not be followed from mouth to mouth (not judged). */
+  const skipped = [];
   let n = 0;
   for (const [j, list] of jE) {
     if (list.length !== 3 || new Set(list.map((q) => q[0])).size !== 3) continue;
     const P = list.map(([i, end]) => from(i, end));
-    const dir = P.map((Q) => unit(Q[0], along(Q, 12)));
+    const O = list.map(([i, end]) => osm(i, end));
+    const dir = O.map((Q) => unit(Q[0], along(Q, 12)));
     const dot = (a, b) => dir[a][0] * dir[b][0] + dir[a][1] * dir[b][1];
     for (let c = 0; c < 3; c++) {
       const a = (c + 1) % 3, b = (c + 2) % 3;
@@ -47,7 +52,7 @@ window.__checkSplitEdges = (all = false) => {
       if (list.some(([i]) => !!d.elevated[i] !== !!d.elevated[ic])) break;
       // Left and right, looking from the single road into the branches.
       const u = [-dir[c][0], -dir[c][1]];
-      const qa = along(P[a], 30), qb = along(P[b], 30);
+      const qa = along(O[a], 30), qb = along(O[b], 30);
       const aLeft = (qa[0] - qb[0]) * u[1] - (qa[1] - qb[1]) * u[0] > 0;
       const L = aLeft ? a : b, R = aLeft ? b : a;
       const road = d.edges[ic].name || d.edges[ic].cls;
@@ -81,7 +86,10 @@ window.__checkSplitEdges = (all = false) => {
           if (sg.length > R0.length || M.some((m) => m !== a2 && m !== b2 && sg.some((p) => Math.hypot(p[0] - m.q[0], p[1] - m.q[1]) < m.half + 0.5))) continue;
           if (!seg || sg.length < seg.length) [A, B, seg] = [a2, b2, sg];
         }
-        if (!seg) continue;
+        if (!seg) {
+          skipped.push({ j, side: side > 0 ? 'left' : 'right', x: +P[c][0][0].toFixed(1), z: +P[c][0][1].toFixed(1) });
+          continue;
+        }
         n++;
         const dirs = [[-A.t[0], -A.t[1]]];
         for (let k = 0; k + 1 < seg.length; k++) if (Math.hypot(seg[k + 1][0] - seg[k][0], seg[k + 1][1] - seg[k][1]) > 0.05) dirs.push(unit(seg[k], seg[k + 1]));
@@ -94,5 +102,5 @@ window.__checkSplitEdges = (all = false) => {
     }
   }
   bad.sort((p, q) => q.over - p.over);
-  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40) };
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), skipped };
 };
