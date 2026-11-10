@@ -25,6 +25,8 @@ export interface JunctionIn {
   shapeable: (i: number) => boolean;
   /** Joints left unshaped whatever meets there (a slip road splitting off or merging: the roads just overlap). */
   plain?: (j: number) => boolean;
+  /** Do these two road ends (line, end) meet as a road and one of its branches at a split? (Its edge then curves from one to the other, whatever the angle.) */
+  sideBySide?: (lineA: number, endA: number, lineB: number, endB: number) => boolean;
   roads: SegIndex;
 }
 
@@ -57,8 +59,8 @@ export interface Mouth {
  * would kink it (a jog sideways, a bend or a change of width taken in one
  * straight cut), it eases across instead.
  */
-const eased = (A: Mouth, B: Mouth, curve: XZ[]): XZ[] => {
-  if (A.t[0] * B.t[0] + A.t[1] * B.t[1] >= -FACING) return curve;
+const eased = (A: Mouth, B: Mouth, curve: XZ[], split = false): XZ[] => {
+  if (!split && A.t[0] * B.t[0] + A.t[1] * B.t[1] >= -FACING) return curve;
   const p0 = A.left;
   const p2 = B.right;
   const dirs: XZ[] = [[-A.t[0], -A.t[1]]];
@@ -463,7 +465,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           while (kb > 0 && !clearOf([p2[0] - B.t[0] * kb, p2[1] - B.t[1] * kb], A)) kb = Math.max(0, kb - 0.5);
           curve = [p0, [p0[0] - A.t[0] * ka, p0[1] - A.t[1] * ka], [p2[0] - B.t[0] * kb, p2[1] - B.t[1] * kb], p2];
         }
-        curve = eased(A, B, curve);
+        curve = eased(A, B, curve, I.sideBySide?.(A.line, A.end, B.line, B.end));
         for (let k = 1; k < curve.length - 1; k++) ring.push(curve[k]);
         corners.push(curve);
         if (Math.max(I.rank(A.line), I.rank(B.line)) >= 1) kerbs.push(curve);
@@ -511,7 +513,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         const same = (p: XZ, q: XZ) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 1e-6;
         const A = mouths.find((m) => same(m.left, a));
         const B = mouths.find((m) => same(m.right, b));
-        if (A && B && A !== B) edge = eased(A, B, edge);
+        if (A && B && A !== B) edge = eased(A, B, edge, I.sideBySide?.(A.line, A.end, B.line, B.end));
         ring.push(...edge.slice(0, -1));
         corners.push(edge);
       }

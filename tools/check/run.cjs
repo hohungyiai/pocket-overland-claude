@@ -51,7 +51,7 @@ const CHECKS = [
   ['No road jogs sideways (sharp turn and straight back)', 'kinks.js', '__checkKinks', 0, 79],
   ['No gap where two roads split or join', 'gores.js', '__checkGores', 0],
   // (120: 69 sides of ground splits still drawn from one point, 51 paved junctions whose outline kinks.)
-  ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, 120],
+  ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, 10],
 ];
 
 (async () => {
