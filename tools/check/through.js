@@ -11,6 +11,12 @@
 // __checkThroughJoins: each end of such a line meets the road's own line
 // at the junction's edge: a solid line carries on without a break, and a
 // dashed one picks up in line within a dash's gap.
+//
+// __checkThroughEdges: on a side of the through road where nothing joins
+// (the junction's outline runs from one mouth's corner straight to the
+// other's), the road's edge carries on smoothly: from the kerb coming in,
+// along the outline, to the kerb going out, it never turns more than 10°
+// at any one point.
 (() => {
   const marks = () => {
     const d = globalThis.__osm;
@@ -112,6 +118,40 @@
           if (!got) bad.push({ junction: id, roads: names(d, id), line: li, kind: ln.kind, road: line, end, x: +p[0].toFixed(1), z: +p[1].toFixed(1), over: 1 });
         });
       });
+    return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40) };
+  };
+
+  window.__checkThroughEdges = (all = false) => {
+    const d = globalThis.__osm;
+    const bad = [];
+    let n = 0;
+    for (const pr of d.throughPairs) {
+      const sh = d.JX.shapes[pr.id];
+      const M = sh.mouths;
+      const R = sh.ring;
+      const at = (p) => R.findIndex((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) < 1e-4);
+      for (const [ia, ib] of [[pr.a, pr.b], [pr.b, pr.a]]) {
+        const A = M[ia], B = M[ib];
+        // The outline from A's left corner round (counter-clockwise) to B's right.
+        const i0 = at(A.left), i1 = at(B.right);
+        if (i0 < 0 || i1 < 0) continue;
+        const seg = [R[i0]];
+        for (let k = i0; k !== i1 && seg.length <= R.length; ) seg.push(R[(k = (k + 1) % R.length)]);
+        // (Closed: no other mouth opens onto that stretch.)
+        if (seg.length > R.length || M.some((m, q) => q !== ia && q !== ib && seg.some((p) => Math.hypot(p[0] - m.q[0], p[1] - m.q[1]) < m.half + 0.5))) continue;
+        n++;
+        const dirs = [[-A.t[0], -A.t[1]]];
+        for (let j = 0; j + 1 < seg.length; j++) {
+          const l = Math.hypot(seg[j + 1][0] - seg[j][0], seg[j + 1][1] - seg[j][1]);
+          if (l > 0.05) dirs.push([(seg[j + 1][0] - seg[j][0]) / l, (seg[j + 1][1] - seg[j][1]) / l]);
+        }
+        dirs.push(B.t);
+        let turn = 0;
+        for (let j = 0; j + 1 < dirs.length; j++) turn = Math.max(turn, (Math.acos(Math.max(-1, Math.min(1, dirs[j][0] * dirs[j + 1][0] + dirs[j][1] * dirs[j + 1][1]))) * 180) / Math.PI);
+        if (turn > 10) bad.push({ junction: pr.id, roads: names(d, pr.id), x: +A.left[0].toFixed(1), z: +A.left[1].toFixed(1), turnDeg: +turn.toFixed(1), over: +(turn - 10).toFixed(1) });
+      }
+    }
+    bad.sort((p, q) => q.over - p.over);
     return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40) };
   };
 })();

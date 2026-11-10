@@ -28,6 +28,11 @@ export interface JunctionIn {
   roads: SegIndex;
 }
 
+/** Mouths face each other (one road carrying on) when their directions are within 30° of opposite. */
+const FACING = Math.cos((30 * Math.PI) / 180);
+/** A through road's edge may not turn more sharply than this at any one point (cos of 8°). */
+const KINK = Math.cos((8 * Math.PI) / 180);
+
 export interface Mouth {
   line: number;
   /** Which end of the road: 0 = its first point, 1 = its last. */
@@ -44,6 +49,37 @@ export interface Mouth {
   left: XZ;
   right: XZ;
 }
+
+/**
+ * Two mouths facing each other are one road carrying straight on, with
+ * nothing joining on this side (A's left corner to B's right): its edge must
+ * run on smoothly from kerb to kerb. Where the corner drawn between them
+ * would kink it (a jog sideways, a bend or a change of width taken in one
+ * straight cut), it eases across instead.
+ */
+const eased = (A: Mouth, B: Mouth, curve: XZ[]): XZ[] => {
+  if (A.t[0] * B.t[0] + A.t[1] * B.t[1] >= -FACING) return curve;
+  const p0 = A.left;
+  const p2 = B.right;
+  const dirs: XZ[] = [[-A.t[0], -A.t[1]]];
+  for (let k = 0; k + 1 < curve.length; k++) {
+    const l = Math.hypot(curve[k + 1][0] - curve[k][0], curve[k + 1][1] - curve[k][1]);
+    if (l > 0.05) dirs.push([(curve[k + 1][0] - curve[k][0]) / l, (curve[k + 1][1] - curve[k][1]) / l]);
+  }
+  dirs.push(B.t);
+  let turn = 1;
+  for (let k = 0; k + 1 < dirs.length; k++) turn = Math.min(turn, dirs[k][0] * dirs[k + 1][0] + dirs[k][1] * dirs[k + 1][1]);
+  const L = Math.hypot(p2[0] - p0[0], p2[1] - p0[1]);
+  if (turn >= KINK || L <= 1) return curve;
+  const n = Math.max(8, Math.min(16, Math.ceil(L)));
+  const out: XZ[] = [];
+  for (let k = 0; k <= n; k++) {
+    const u = k / n;
+    const h00 = 2 * u * u * u - 3 * u * u + 1, h10 = u * u * u - 2 * u * u + u, h01 = -2 * u * u * u + 3 * u * u, h11 = u * u * u - u * u;
+    out.push([h00 * p0[0] - h10 * L * A.t[0] + h01 * p2[0] + h11 * L * B.t[0], h00 * p0[1] - h10 * L * A.t[1] + h01 * p2[1] + h11 * L * B.t[1]]);
+  }
+  return out;
+};
 
 export interface JunctionShape {
   id: number;
@@ -427,6 +463,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           while (kb > 0 && !clearOf([p2[0] - B.t[0] * kb, p2[1] - B.t[1] * kb], A)) kb = Math.max(0, kb - 0.5);
           curve = [p0, [p0[0] - A.t[0] * ka, p0[1] - A.t[1] * ka], [p2[0] - B.t[0] * kb, p2[1] - B.t[1] * kb], p2];
         }
+        curve = eased(A, B, curve);
         for (let k = 1; k < curve.length - 1; k++) ring.push(curve[k]);
         corners.push(curve);
         if (Math.max(I.rank(A.line), I.rank(B.line)) >= 1) kerbs.push(curve);
@@ -467,10 +504,15 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         const a = hull[k];
         const b = hull[(k + 1) % hull.length];
         const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
-        const edge: XZ[] = [a];
+        let edge: XZ[] = [a];
         for (let q = 1; q < n; q++) edge.push([a[0] + ((b[0] - a[0]) * q) / n, a[1] + ((b[1] - a[1]) * q) / n]);
-        ring.push(...edge);
         edge.push(b);
+        // (An edge from one mouth's corner straight to a facing mouth's is a through road's side.)
+        const same = (p: XZ, q: XZ) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 1e-6;
+        const A = mouths.find((m) => same(m.left, a));
+        const B = mouths.find((m) => same(m.right, b));
+        if (A && B && A !== B) edge = eased(A, B, edge);
+        ring.push(...edge.slice(0, -1));
         corners.push(edge);
       }
       if (spills(ring)) return 'spill';
