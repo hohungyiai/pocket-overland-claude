@@ -751,7 +751,7 @@ export async function buildPasirRisCourse(
     const endHalf = (i: number, j: number) => halfAtE(i, edges[i].a === j ? 0 : EP[i].length - 1);
     const dirty = new Set<number>();
     for (const [j, [c, L, R]] of deckSplits) {
-      if (isDeck[c] || nearDeck[j]) continue;
+      if (isDeck[c]) continue;
       const hc = endHalf(c, j), hl = endHalf(L, j), hr = endHalf(R, j);
       const capL = Math.min(hl, hc), capR = Math.min(hr, hc);
       const capC = Math.min(hc, capL + capR - 0.1);
@@ -771,7 +771,6 @@ export async function buildPasirRisCourse(
     for (const [j, [c, L, R]] of deckSplits) {
       // (On the ground beside a flyover the roads are on ramps, their
       // heights worked out from where they lie side by side: left as drawn.)
-      if (!isDeck[c] && nearDeck[j]) continue;
       const hc = endHalf(c, j), hl = endHalf(L, j), hr = endHalf(R, j);
       // Each branch out to the single road's edge on its side; never so
       // far that the two would leave a gap between them at the joint.
