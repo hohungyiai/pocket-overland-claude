@@ -2130,6 +2130,143 @@ export async function buildPasirRisCourse(
         }
       });
   }
+  // The through road wins. At a junction, the road that carries straight on
+  // (two mouths of the same road, facing each other, in line) keeps its
+  // lane lines and centre line across the paving, and its edge line on any
+  // side where no other road joins. It wins when no road it meets there
+  // outranks it; where two through roads of equal rank cross, neither does
+  // (an open box, as at a real crossroads), and nor does anyone at traffic
+  // lights.
+  /** A line painted across a junction: its points, and the two road ends (line * 2 + end) it joins. */
+  type ThroughLine = { pts: XZ[]; kind: 'white' | 'yellow'; dashed: boolean; ends: [number, number] };
+  const throughLines = new Map<number, ThroughLine[]>();
+  const throughPairs: { id: number; a: number; b: number }[] = [];
+  /** Road ends (line * 2 + end) that are a winning through road's mouths. */
+  const throughEnds = new Set<number>();
+  {
+    const COS30 = Math.cos((30 * Math.PI) / 180);
+    const lanesOf = (i: number) => Math.max(1, Math.round((edges[i].w - 0.7) / 3.3));
+    JX.shapes.forEach((sh, id) => {
+      const M = sh.mouths;
+      if (M.length < 3) return;
+      // (Where lights and crossings rule, nobody has the right of way.)
+      if (M.some((m) => crossEnd.has(`${m.line}:${m.end}`))) return;
+      const cand: { a: number; b: number; lat: number; dot: number }[] = [];
+      for (let a = 0; a < M.length; a++)
+        for (let b = a + 1; b < M.length; b++) {
+          const A = M[a], B = M[b];
+          const ea = edges[A.line], eb = edges[B.line];
+          if (A.line === B.line || !!ea.one !== !!eb.one) continue;
+          if (!(ea.name ? ea.name === eb.name : !eb.name && ea.cls === eb.cls)) continue;
+          const dot = -(A.t[0] * B.t[0] + A.t[1] * B.t[1]);
+          if (dot < COS30) continue;
+          // (In line: neither mouth off to one side of the other's road.)
+          const dx = B.q[0] - A.q[0], dz = B.q[1] - A.q[1];
+          const lat = Math.max(Math.abs(dx * A.t[1] - dz * A.t[0]), Math.abs(dx * B.t[1] - dz * B.t[0]));
+          if (lat > Math.max(4, Math.min(A.half, B.half))) continue;
+          cand.push({ a, b, lat, dot });
+        }
+      cand.sort((x, y) => x.lat - y.lat || y.dot - x.dot);
+      const used = new Set<number>();
+      const pairs = cand.filter((c) => !used.has(c.a) && !used.has(c.b) && (used.add(c.a), used.add(c.b), true));
+      if (!pairs.length) return;
+      // Pairs running the same way (the carriageways of a divided road) are
+      // one axis; the busiest axis wins unless something matches its rank.
+      const axes: { t: XZ; rank: number; pairs: typeof pairs }[] = [];
+      for (const c of pairs) {
+        const t = M[c.a].t;
+        let ax = axes.find((x) => Math.abs(x.t[0] * t[0] + x.t[1] * t[1]) > COS30);
+        if (!ax) axes.push((ax = { t, rank: 0, pairs: [] }));
+        ax.pairs.push(c);
+        ax.rank = Math.max(ax.rank, rankOf(edges[M[c.a].line].cls));
+      }
+      axes.sort((x, y) => y.rank - x.rank);
+      const top = axes[0];
+      if (axes.length > 1 && axes[1].rank >= top.rank) return;
+      const onAxis = new Set(top.pairs.flatMap((c) => [c.a, c.b]));
+      if (M.some((m, q) => !onAxis.has(q) && rankOf(edges[m.line].cls) > top.rank)) return;
+      const lines: ThroughLine[] = [];
+      for (const c of top.pairs) {
+        const A = M[c.a], B = M[c.b];
+        const ea = edges[A.line], eb = edges[B.line];
+        throughPairs.push({ id, a: c.a, b: c.b });
+        throughEnds.add(A.line * 2 + A.end).add(B.line * 2 + B.end);
+        // The way across: a smooth curve from mouth to mouth, a point a metre.
+        const L = Math.hypot(B.q[0] - A.q[0], B.q[1] - A.q[1]);
+        if (L < 2) continue;
+        const N = Math.max(2, Math.ceil(L));
+        const centre: XZ[] = [];
+        const normal: XZ[] = [];
+        for (let k = 0; k <= N; k++) {
+          const u = k / N;
+          const h00 = 2 * u * u * u - 3 * u * u + 1, h10 = u * u * u - 2 * u * u + u, h01 = -2 * u * u * u + 3 * u * u, h11 = u * u * u - u * u;
+          centre.push([h00 * A.q[0] - h10 * L * A.t[0] + h01 * B.q[0] + h11 * L * B.t[0], h00 * A.q[1] - h10 * L * A.t[1] + h01 * B.q[1] + h11 * L * B.t[1]]);
+        }
+        for (let k = 0; k <= N; k++) {
+          const p = centre[Math.max(0, k - 1)], q = centre[Math.min(N, k + 1)];
+          const [tx, tz] = unit(q[0] - p[0], q[1] - p[1]);
+          normal.push([tz, -tx]); // to the left of the way across
+        }
+        /** A line running from offset oa (at A) to ob (at B), leftward positive. */
+        const line = (oa: number, ob: number, kind: 'white' | 'yellow', dashed: boolean) => {
+          const pts = centre.map((p, k) => [p[0] + normal[k][0] * lerp(oa, ob, k / N), p[1] + normal[k][1] * lerp(oa, ob, k / N)] as XZ);
+          // (Only a line that lies on this junction's paving all the way,
+          // clear of any island: no half lines.)
+          if (pts.every((p, k) => k === 0 || k === N || (inRingXZ(sh.ring, p[0], p[1]) && !onIsland(p[0], p[1])))) lines.push({ kind, dashed, pts, ends: [A.line * 2 + A.end, B.line * 2 + B.end] });
+        };
+        // (Each road's offsets are counted along itself, a to b: turned
+        // round where it runs against the way across.)
+        const sa = A.end === 1 ? 1 : -1, sb = B.end === 0 ? 1 : -1;
+        const rank = Math.min(rankOf(ea.cls), rankOf(eb.cls));
+        if (ea.one) {
+          const offs = (m: typeof A, i: number, sg: number) => {
+            const n = lanesOf(i), w = (2 * EHALF[i]) / n;
+            const cum = ECUM[i];
+            const out: number[] = [];
+            for (let l = 1; l < n; l++) {
+              // (Only a lane line the road itself has there: where it
+              // narrows, its nearside lane's line has already ended.)
+              let ok = 2 * m.half - l * w > 0.6 * w;
+              for (let k = 0; ok && k < cum.length; k++) {
+                const s = m.end === 0 ? cum[k] : ELEN[i] - cum[k];
+                if (s > m.s - 4 && s < m.s + 20 && 2 * halfAtE(i, k) - l * w <= 0.6 * w) ok = false;
+              }
+              if (ok) out.push(sg * (-m.half + l * w));
+            }
+            return out.sort((x, y) => x - y);
+          };
+          let oa = offs(A, A.line, sa), ob = offs(B, B.line, sb);
+          const swap = oa.length > ob.length;
+          if (swap) [oa, ob] = [ob, oa];
+          // (A lane more on one side: the lines that match up best carry on.)
+          let best = 0, cost = Infinity;
+          for (let sh2 = 0; sh2 + oa.length <= ob.length; sh2++) {
+            const t = oa.reduce((sum, o, k) => sum + Math.abs(o - ob[k + sh2]), 0);
+            if (t < cost) (cost = t), (best = sh2);
+          }
+          if (rank >= 1) oa.forEach((o, k) => (swap ? line(ob[k + best], o, 'white', true) : line(o, ob[k + best], 'white', true)));
+        } else if (rank >= 1 && ea.w >= 6 && eb.w >= 6) line(0, 0, 'white', rank < 3);
+        if (rank >= 2) {
+          // Edge lines, on a side no other road joins from.
+          const [dx, dz] = unit(B.q[0] - A.q[0], B.q[1] - A.q[1]);
+          for (const side of [1, -1]) {
+            const open = M.some((m, q) => q !== c.a && q !== c.b && ((m.q[0] - A.q[0]) * dz - (m.q[1] - A.q[1]) * dx) * side > 0);
+            if (!open) line(side * (A.half - 0.35), side * (B.half - 0.35), 'yellow', false);
+          }
+        }
+      }
+      if (lines.length) throughLines.set(id, lines);
+    });
+  }
+  /** How far from each end of a road its markings stop: at a junction's edge (or a crossing's stop line); they run on through a bend. */
+  const markStops = (line: number): [number, number] => {
+    const e = edges[line];
+    const stopAt = (j: number, trim: number) => (trim > 0 ? trim + 1 : jDegree[j] === 2 ? 0.3 : jDegree[j] > 2 ? jRadius[j] + 2 : 2);
+    return [
+      crossEnd.has(`${line}:0`) ? JX.trimA[line] + STOP_AT + 0.5 : stopAt(e.a, JX.trimA[line]),
+      crossEnd.has(`${line}:1`) ? JX.trimB[line] + STOP_AT + 0.5 : stopAt(e.b, JX.trimB[line]),
+    ];
+  };
   const roadRuns = runsOf(EP);
   for (const [k, all] of roadRuns)
     inChunks('far', k, all, 30, (list, _kit, acc) => {
@@ -2186,15 +2323,16 @@ export async function buildPasirRisCourse(
           }
         // Where two roads at one level meet or overlap, a road's own surface is
         // covered by the other: markings and parapets stop there.
-        const clear = (kk: number, off: number) => {
-          const a = pts[kk];
-          const b = pts[kk + 1];
+        const clearOn = (Q: XZ[]) => (kk: number, off: number) => {
+          const a = Q[kk];
+          const b = Q[kk + 1];
           const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
           const x = (a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * off;
           const z = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * off;
           const y = dy ? lerp(dy[kk], dy[kk + 1], 0.5) : NaN;
           return !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y);
         };
+        const clear = clearOn(pts);
         if (dy && !isDeck[line]) {
           // A raised road: where the ground beside it falls away (its bank
           // was cut short by a road below), a retaining wall, and a parapet
@@ -2227,20 +2365,30 @@ export async function buildPasirRisCourse(
           }
           strip(deck, pts, cum, k0, k1, (kk) => halfAt(kk) + 0.45, 0.09 - depth, { yAt });
         }
-        if (rank < 1 || len < 12 || JX.internal[line]) continue;
-        // Markings stop at a junction's edge, and run on through a bend.
-        const stopAt = (j: number, trim: number) => (trim > 0 ? trim + 1 : jDegree[j] === 2 ? 0.3 : jDegree[j] > 2 ? jRadius[j] + 2 : 2);
-        const ca = crossEnd.has(`${line}:0`) ? JX.trimA[line] + STOP_AT + 0.5 : stopAt(e.a, JX.trimA[line]);
-        const cb = crossEnd.has(`${line}:1`) ? JX.trimB[line] + STOP_AT + 0.5 : stopAt(e.b, JX.trimB[line]);
-        const ends = (kk: number) => cum[kk] > ca && cum[kk + 1] < len - cb;
-        const lineClear = (x: number, y: number, z: number) => !inPaving(x, z, dy ? y : NaN) && !coveredBy(line, x, z, dy ? y : NaN);
-        const solid = (off: (kk: number) => number) => (kk: number) => ends(kk) && clear(kk, off(kk));
-        const dashed = (off: (kk: number) => number) => (kk: number) => kk % 3 === 0 && ends(kk) && clear(kk, off(kk));
+        // (The through road's lines run right up to the junction's edge,
+        // where they carry on across it.)
+        const thA = throughEnds.has(line * 2) && JX.trimA[line] > 0;
+        const thB = throughEnds.has(line * 2 + 1) && JX.trimB[line] > 0;
+        if (rank < 1 || (len < 12 && !thA && !thB) || JX.internal[line]) continue;
+        const [ca, cb] = markStops(line);
+        const ends = (kk: number) => (thA ? kk >= cut.lo : cum[kk] > ca) && (thB ? kk < cut.hi : cum[kk + 1] < len - cb);
+        // (A line's corners on the mouth itself touch the paving: let them.)
+        const onMouth = (x: number, z: number, m: number, n: number) => {
+          const dx = P[n][0] - P[m][0], dz = P[n][1] - P[m][1];
+          return Math.hypot(x - P[m][0], z - P[m][1]) < halfAt(m) + 0.5 && Math.abs((x - P[m][0]) * dx + (z - P[m][1]) * dz) < 0.3 * Math.hypot(dx, dz);
+        };
+        const atMouth = (x: number, z: number) => (thA && onMouth(x, z, cut.lo, cut.lo + 1)) || (thB && onMouth(x, z, cut.hi, cut.hi - 1));
+        const lineClear = (x: number, y: number, z: number) => atMouth(x, z) || (!inPaving(x, z, dy ? y : NaN) && !coveredBy(line, x, z, dy ? y : NaN));
+        const mp = thA || thB ? P : pts;
+        const mo = thA || thB ? { lo: cut.lo, hi: cut.hi } : {};
+        const clearM = thA || thB ? clearOn(P) : clear;
+        const solid = (off: (kk: number) => number) => (kk: number) => ends(kk) && clearM(kk, off(kk));
+        const dashed = (off: (kk: number) => number) => (kk: number) => kk % 3 === 0 && ends(kk) && clearM(kk, off(kk));
         if (rank >= 2) {
           const l = (kk: number) => halfAt(kk) - 0.35;
           const r = (kk: number) => -(halfAt(kk) - 0.35);
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: l, keep: solid(l), yAt, tilt, clearAt: lineClear });
-          strip(yellow, pts, cum, k0, k1, 0.07, 0.11, { off: r, keep: solid(r), yAt, tilt, clearAt: lineClear });
+          strip(yellow, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off: l, keep: solid(l), yAt, tilt, clearAt: lineClear });
+          strip(yellow, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off: r, keep: solid(r), yAt, tilt, clearAt: lineClear });
         }
         const lanes = Math.max(1, Math.round((e.w - 0.7) / 3.3));
         if (e.one) {
@@ -2253,11 +2401,11 @@ export async function buildPasirRisCourse(
           for (let l = 1; l < lanes; l++) {
             const off = (kk: number) => -halfAt(kk) + l * laneW;
             const room = (kk: number) => halfAt(kk) - off(kk) > 0.6 * laneW && halfAt(kk + 1) - off(kk + 1) > 0.6 * laneW;
-            strip(white, pts, cum, k0, k1, 0.07, 0.11, { off, keep: (kk) => room(kk) && dashed(off)(kk), yAt, tilt, clearAt: lineClear });
+            strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => room(kk) && dashed(off)(kk), yAt, tilt, clearAt: lineClear });
           }
         } else if (rank >= 1 && e.w >= 6) {
           const off = () => 0;
-          strip(white, pts, cum, k0, k1, 0.07, 0.11, { keep: rank >= 3 ? solid(off) : dashed(off), yAt, tilt, clearAt: lineClear });
+          strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, keep: rank >= 3 ? solid(off) : dashed(off), yAt, tilt, clearAt: lineClear });
         }
       }
     });
@@ -2409,6 +2557,39 @@ export async function buildPasirRisCourse(
         disc(road, x, z, r, 0.09, y);
       }
     });
+  /** The height of junction id's drawn paving at (x, z): its mesh, not the smooth surface it samples. */
+  const paveY = (id: number, x: number, z: number) => {
+    const sh = JPOLY[id];
+    const [cx, cz] = sh.centre;
+    const ring = sh.ring;
+    const n = ring.length;
+    const at = (P: XZ, t: number) => jTop(id, cx + (P[0] - cx) * t, cz + (P[1] - cz) * t);
+    for (let i = 0; i < n; i++) {
+      const P = ring[i], Q = ring[(i + 1) % n];
+      const px = P[0] - cx, pz = P[1] - cz, qx = Q[0] - cx, qz = Q[1] - cz;
+      const det = px * qz - pz * qx;
+      if (Math.abs(det) < 1e-9) continue;
+      const u = ((x - cx) * qz - (z - cz) * qx) / det;
+      const v = (px * (z - cz) - pz * (x - cx)) / det;
+      if (u < -1e-6 || v < -1e-6 || u + v > 1 + 1e-6) continue;
+      const t = u + v;
+      if (t <= 1 / 3) return (1 - 3 * t) * jTop(id, cx, cz) + 3 * u * at(P, 1 / 3) + 3 * v * at(Q, 1 / 3);
+      const ta = t <= 2 / 3 ? 1 / 3 : 2 / 3, tb = ta + 1 / 3;
+      // (The band's quad is cut corner to corner: inner P to outer Q.)
+      // In (u, v): Pa (ta, 0), Qa (0, ta), Pb (tb, 0), Qb (0, tb).
+      const w = (u + v - ta) / (tb - ta); // 0 on the inner edge, 1 on the outer
+      // Triangle Pa, Qa, Qb holds the points with u <= ta * (1 - w).
+      if (u <= ta * (1 - w) + 1e-9) {
+        const a = u / ta, c = w, b = 1 - a - c;
+        return a * at(P, ta) + b * at(Q, ta) + c * at(Q, tb);
+      }
+      // Triangle Pa, Qb, Pb.
+      const cq = v / tb, rest = 1 - cq;
+      const bpb = (u - ta * rest) / (tb - ta), apa = rest - bpb;
+      return apa * at(P, ta) + cq * at(Q, tb) + bpb * at(P, tb);
+    }
+    return jTop(id, x, z);
+  };
   // Shaped junctions: the outline filled from its centre in rings (so it
   // follows the ground), and a kerb along each kerbed corner.
   const shapesByTile = new Map<string, number[]>();
@@ -2425,6 +2606,30 @@ export async function buildPasirRisCourse(
       const road = acc('road');
       const kerb = acc('kerb');
       for (const id of list) {
+        // The through road's lines, on the paving.
+        for (const ln of throughLines.get(id) ?? []) {
+          const into = acc(ln.kind);
+          const ring = JPOLY[id].ring;
+          const base = into.pos.length / 3;
+          const ok: boolean[] = [];
+          let run = 0;
+          ln.pts.forEach((p, k) => {
+            const a = ln.pts[Math.max(0, k - 1)], b = ln.pts[Math.min(ln.pts.length - 1, k + 1)];
+            const [tx, tz] = unit(b[0] - a[0], b[1] - a[1]);
+            if (k) run += Math.hypot(p[0] - ln.pts[k - 1][0], p[1] - ln.pts[k - 1][1]);
+            ok.push((k === 0 || k === ln.pts.length - 1 || inRingXZ(ring, p[0], p[1])) && (!ln.dashed || Math.floor(run / 4) % 3 === 0));
+            for (const o of [-0.07, 0.07]) {
+              const x = p[0] + tz * o, z = p[1] - tx * o;
+              into.pos.push(x, paveY(id, x, z) + 0.11, z);
+              into.uv.push(x / 6, z / 6);
+            }
+          });
+          for (let k = 0; k + 1 < ln.pts.length; k++) {
+            if (!ok[k] || !ok[k + 1]) continue;
+            const q = base + k * 2;
+            into.idx.push(q, q + 2, q + 1, q + 1, q + 2, q + 3);
+          }
+        }
         const sh = JPOLY[id];
         // Islands sit a hair under the roads round them.
         const lift = sh.fill ? 0.085 : 0.09;
@@ -3569,6 +3774,10 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
+      throughLines, throughPairs, paveY,
+      // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
+      lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
+      markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),
       piers: () => {
         const out: { x: number; z: number; top: number; kind: string; self: number }[] = [];
         edges.forEach((_, line) => pillarsOf(line, 0, EP[line].length - 1, (x, z, top) => out.push({ x, z, top, kind: 'flyover', self: line })));
