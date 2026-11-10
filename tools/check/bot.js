@@ -4,10 +4,11 @@
 //   route: [[edge, from s, to s], ...] (s along each edge; from > to drives it backwards)
 //   cruise: 0 = full throttle from a standstill (the hard-spot tests);
 //           else a speed in m/s to hold on the straight, slowing for bends.
+//   smooth: round the route off into the line a driver would take.
 // The car runs ahead of the clock with nothing drawn (game.sim.fast), so a
 // drive takes seconds here: time is counted in physics steps, 60 a second
 // of the car's time.
-window.__driveRoute = async (route, { low = false, timeout = 60, stopAt = 0, cruise = 0, place = true } = {}) => {
+window.__driveRoute = async (route, { low = false, timeout = 60, stopAt = 0, cruise = 0, place = true, smooth = false } = {}) => {
   const d = globalThis.__osm;
   const g = window.game;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -28,6 +29,22 @@ window.__driveRoute = async (route, { low = false, timeout = 60, stopAt = 0, cru
     }
   }
   const total = pts.length - 1;
+  // The line a driver takes, not the plan's: where the road plan jogs
+  // through a junction (a few metres sideways between its short pieces) or
+  // turns a square corner, the line is rounded off over 6 m each way.
+  if (smooth) {
+    const raw = pts.map((p) => [p[0], p[1]]);
+    const W = 6;
+    for (let q = 1; q < total; q++) {
+      const w = Math.min(W, q, total - q);
+      let x = 0, z = 0;
+      for (let o = q - w; o <= q + w; o++) {
+        x += raw[o][0];
+        z += raw[o][1];
+      }
+      pts[q] = [x / (2 * w + 1), z / (2 * w + 1)];
+    }
+  }
   // Time is counted in physics steps, not on the wall clock.
   let steps = 0;
   const cap = g.car.capture;
@@ -50,9 +67,19 @@ window.__driveRoute = async (route, { low = false, timeout = 60, stopAt = 0, cru
       const [x0, z0] = pts[0];
       const [x1, z1] = pts[Math.min(3, total)];
       const yaw = Math.atan2(-(z1 - z0), x1 - x0);
-      // The world round it is built before the car is let go.
+      // The world round it is built before the car is let go. It is set
+      // down on the road it is to drive: its own level, not a flyover's
+      // that passes overhead.
       g.course.prepareAt?.(x0, z0);
-      g.car.placeAt({ x: x0, y: g.course.surfaceY(x0, z0, 999), z: z0 }, yaw);
+      const [i0, s0] = route[0];
+      let own = d.surfaceAt(x0, z0);
+      if (d.hasProfile[i0]) {
+        const cum = d.ECUM[i0], Y = d.deckY(i0);
+        let k = 0;
+        while (k < cum.length - 2 && cum[k + 1] <= s0) k++;
+        own = Y[k] + (Y[k + 1] - Y[k]) * Math.max(0, Math.min(1, (s0 - cum[k]) / (cum[k + 1] - cum[k] || 1)));
+      }
+      g.car.placeAt({ x: x0, y: own + 0.09, z: z0 }, yaw);
       ctl.input.steer = ctl.input.throttle = 0;
       await after(90);
     }
