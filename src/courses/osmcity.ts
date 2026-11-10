@@ -28,7 +28,7 @@ interface OsmMap {
   attribution: string;
   junctions: XZ[];
   edges: OsmEdge[];
-  paths: { k: 'foot' | 'cycle'; pts: XZ[] }[];
+  paths: { k: 'foot' | 'cycle'; b?: number; pts: XZ[] }[];
   areas: { kind: string; name?: string; pts: XZ[] }[];
   waterways: { kind: string; w: number; pts: XZ[] }[];
   coast: XZ[][];
@@ -211,7 +211,7 @@ export async function buildPasirRisCourse(
   });
   const EHALF = edges.map((e) => e.w / 2);
   const roads = new SegIndex(EP, 24);
-  const paths = M.paths.map((p) => ({ k: p.k, pts: resample(p.pts, 4) }));
+  const paths = M.paths.map((p) => ({ k: p.k, b: p.b ? 1 : 0, pts: resample(p.pts, 4) }));
   const PHALF = paths.map((p) => (p.k === 'cycle' ? 1.4 : 1.1));
   const pathIdx = new SegIndex(paths.map((p) => p.pts), 24);
 
@@ -2566,13 +2566,107 @@ export async function buildPasirRisCourse(
     for (let i = 1; i < p.pts.length; i++) c.push(c[i - 1] + Math.hypot(p.pts[i][0] - p.pts[i - 1][0], p.pts[i][1] - p.pts[i - 1][1]));
     return c;
   });
+  // Footbridges over roads. A path OSM marks as a bridge, crossing a road on
+  // the ground, is lifted FOOT_H above the highest road or ground beneath
+  // it (bridge pieces joined end to end share one height), on piers that
+  // stand clear of the roads, with stairs down at each open end. (Left on
+  // the ground where a flyover would be in its way.)
+  const FOOT_H = 5.5;
+  const footTop = new Float32Array(paths.length).fill(NaN);
+  const footPiers: { x: number; z: number; top: number; foot: number; line: number }[] = [];
+  const footStairs: { x0: number; z0: number; x1: number; z1: number; top: number; foot: number; line: number }[] = [];
+  {
+    const ids: number[] = [];
+    paths.forEach((p, i) => p.b && p.pts.length > 1 && ids.push(i));
+    const parent = new Map<number, number>(ids.map((i) => [i, i]));
+    const find = (i: number): number => (parent.get(i) === i ? i : (parent.set(i, find(parent.get(i)!)), parent.get(i)!));
+    const endKey = (p: XZ) => `${Math.round(p[0] * 2)},${Math.round(p[1] * 2)}`;
+    const atEnd = new Map<string, number[]>();
+    for (const i of ids)
+      for (const p of [paths[i].pts[0], paths[i].pts[paths[i].pts.length - 1]]) {
+        const l = atEnd.get(endKey(p)) ?? atEnd.set(endKey(p), []).get(endKey(p))!;
+        for (const o of l) parent.set(find(o), find(i));
+        l.push(i);
+      }
+    const groups = new Map<number, number[]>();
+    for (const i of ids) (groups.get(find(i)) ?? groups.set(find(i), []).get(find(i))!).push(i);
+    /** Is a strip from (x, z), `top` high, clear of every road below it? */
+    const offRoads = (x: number, z: number, top: number, margin: number) => {
+      let ok = true;
+      roads.each(x, z, 24, (i, seg, u, d) => {
+        if (!ok || d > EHALF[i] + margin) return;
+        if ((hasProfile[i] ? deckAtHit(i, seg, u) : heightAt(x, z)) < top + 1) ok = false;
+      });
+      return ok;
+    };
+    for (const list of groups.values()) {
+      let base = -Infinity;
+      let crosses = false;
+      const above: number[] = [];
+      for (const i of list)
+        for (const [x, z] of paths[i].pts) {
+          base = Math.max(base, heightAt(x, z));
+          roads.each(x, z, 24, (r, seg, u, d) => {
+            if (d > EHALF[r] + PHALF[i]) return;
+            if (elevated[r]) return void above.push(deckAtHit(r, seg, u));
+            crosses = true;
+            if (hasProfile[r]) base = Math.max(base, deckAtHit(r, seg, u));
+          });
+        }
+      if (!crosses) continue;
+      const top = base + FOOT_H;
+      // (A flyover across its way: under it with room to walk, or not at all.)
+      if (above.some((y) => y < top + 3.5)) continue;
+      for (const i of list) footTop[i] = top;
+      for (const i of list) {
+        const pts = paths[i].pts;
+        const n = pts.length;
+        // Piers, about 14 m apart, where the ground below is free.
+        let since = Infinity;
+        for (let k = 0; k < n; k++) {
+          since += k ? Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]) : 0;
+          if (since < 14 && k !== n - 1) continue;
+          const [x, z] = pts[k];
+          if (!offRoads(x, z, top, 0.9)) continue;
+          if (footPiers.some((q) => Math.hypot(q.x - x, q.z - z) < 3)) continue;
+          footPiers.push({ x, z, top, foot: heightAt(x, z), line: i });
+          since = 0;
+        }
+        // Stairs at each end no other bridge piece carries on from: along
+        // the roadside one way or the other, or straight on, whichever
+        // comes down clear of the roads.
+        for (const end of [0, 1]) {
+          const p = end ? pts[n - 1] : pts[0];
+          if ((atEnd.get(endKey(p)) ?? []).length > 1) continue;
+          const q = end ? pts[n - 2] : pts[1];
+          const l = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1;
+          const dx = (p[0] - q[0]) / l, dz = (p[1] - q[1]) / l;
+          for (const [sx, sz] of [[dx, dz], [dz, -dx], [-dz, dx]]) {
+            const run = (top - heightAt(p[0], p[1])) * 1.8;
+            let ok = true;
+            for (let t = 0; t <= run + 1 && ok; t += 1.5) ok = offRoads(p[0] + sx * t, p[1] + sz * t, top, 1.4);
+            if (!ok) continue;
+            const x1 = p[0] + sx * run, z1 = p[1] + sz * run;
+            footStairs.push({ x0: p[0], z0: p[1], x1, z1, top, foot: heightAt(x1, z1), line: i });
+            break;
+          }
+        }
+      }
+    }
+  }
   // Footbridges: where a path crosses a canal, pond or the sea, its deck runs
-  // level from bank to bank (NaN = on the ground).
+  // level from bank to bank (NaN = on the ground). One over a road is level at its
+  // lifted height.
   const deckCache = new Map<number, Float32Array>();
   const pathDeck = (line: number) => {
     let d = deckCache.get(line);
     if (d) return d;
     const pts = paths[line].pts;
+    if (footTop[line] === footTop[line]) {
+      d = new Float32Array(pts.length).fill(footTop[line]);
+      deckCache.set(line, d);
+      return d;
+    }
     const cum = PCUM[line];
     const n = pts.length;
     const g = new Float32Array(n);
@@ -2653,6 +2747,35 @@ export async function buildPasirRisCourse(
           band(rail, pa.pts, PCUM[line], k0, k1, side * (PHALF[line] + 0.05), y, 0.35, 0, onBridge);
           band(rail, pa.pts, PCUM[line], k0, k1, side * (PHALF[line] - 0.05), y, 0, 0.9, onBridge);
         }
+        // (Seen from the road below: its underside.)
+        if (footTop[line] === footTop[line]) strip(acc('deck'), pa.pts, PCUM[line], k0, k1, PHALF[line] + 0.05, lift - 0.35, { yAt });
+      }
+      // Footbridge piers and stairs.
+      const mine = new Set(list.filter(({ k0 }) => k0 === 0).map(({ line }) => line));
+      const parts: THREE.BufferGeometry[] = [];
+      for (const q of footPiers) {
+        if (!mine.has(q.line) || q.top - q.foot < 2) continue;
+        const h = q.top - 0.3 - q.foot + 0.5;
+        parts.push(new THREE.BoxGeometry(0.6, h, 0.6).translate(q.x, q.foot - 0.5 + h / 2, q.z));
+      }
+      for (const st of footStairs) {
+        if (!mine.has(st.line)) continue;
+        const run = Math.hypot(st.x1 - st.x0, st.z1 - st.z0);
+        const drop = st.top - st.foot;
+        const len = Math.hypot(run, drop);
+        const yaw = Math.atan2(-(st.z1 - st.z0), st.x1 - st.x0);
+        const place = (g: THREE.BufferGeometry) =>
+          g.rotateZ(-Math.atan2(drop, run)).rotateY(yaw).translate((st.x0 + st.x1) / 2, (st.top + st.foot) / 2, (st.z0 + st.z1) / 2);
+        parts.push(place(new THREE.BoxGeometry(len, 0.3, 2.2).translate(0, -0.1, 0)));
+        for (const sgn of [-1, 1]) parts.push(place(new THREE.BoxGeometry(len, 0.9, 0.1).translate(0, 0.5, sgn * 1.05)));
+        // A landing under the top step, on its own post.
+        parts.push(new THREE.BoxGeometry(2.4, 0.3, 2.4).translate(st.x0, st.top - 0.1, st.z0));
+      }
+      if (parts.length) {
+        const m = new THREE.Mesh(_kit.own(mergeGeometries(parts)), concreteMat);
+        m.castShadow = true;
+        m.receiveShadow = true;
+        _kit.add(m);
       }
     });
 
@@ -3445,6 +3568,7 @@ export async function buildPasirRisCourse(
     (globalThis as any).__osm = {
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
+      footTop, footPiers, footStairs, pathIdx,
       piers: () => {
         const out: { x: number; z: number; top: number; kind: string; self: number }[] = [];
         edges.forEach((_, line) => pillarsOf(line, 0, EP[line].length - 1, (x, z, top) => out.push({ x, z, top, kind: 'flyover', self: line })));

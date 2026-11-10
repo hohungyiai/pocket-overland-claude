@@ -14,6 +14,8 @@ const CHECKS = [
   // a ratchet, lowered as they are fixed, until it reaches 0.
   ['Ground never rises above a road', 'ground.js', '__checkGround', 0],
   ['No pier stands on a road', 'piers.js', '__checkPiers', 0],
+  ['At least 4.8 m headroom under every footbridge', 'footbridges.js', '__checkFootHeadroom', 0],
+  ['No footbridge pier or stair stands on a road', 'footbridges.js', '__checkFootSupports', 0],
   ['At least 4.8 m headroom under every road above', 'headroom.js', '__checkHeadroom', 0],
   ['No two roads cross at the same height', 'headroom.js', '__checkCrossings', 0],
   ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0, 1],
