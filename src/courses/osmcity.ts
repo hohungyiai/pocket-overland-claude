@@ -204,19 +204,17 @@ export async function buildPasirRisCourse(
       }
     }
   }
-  // Splits on a flyover. Where one deck becomes two (or two become one) at
+  // Splits and merges. Where one road becomes two (or two become one) at
   // a narrow angle, OSM draws all three from the one point: drawn that way
-  // the two narrower decks start from the middle of the wide one, whose
-  // outside edges stop dead (a step in the road's width, and parapets
-  // ending in mid-air). Instead the branches start side by side inside the
-  // road they come from: the left branch's left edge carries on the wide
-  // deck's left edge, the right branch's right edge its right edge, and
-  // each eases back onto its own line as the two part.
-  /** Deck joints (junction ids) where three decks meet as a split, with [wide, left, right] edges. */
+  // the two branches start from the middle of the road they come from,
+  // whose outside edges stop dead (a step in the road's width; on a
+  // flyover, parapets ending in mid-air). Instead the branches start side
+  // by side inside the road they come from: the left branch's left edge
+  // carries on that road's left edge, the right branch's right edge its
+  // right edge, and each eases back onto its own line as the two part.
+  /** Joints (junction ids) where three roads on one level meet as a split, with [single road, left branch, right branch]. */
   const deckSplits = new Map<number, [number, number, number]>();
   {
-    const SPLIT_RATE = 20; // metres along for each metre a branch moves sideways
-    const half = (i: number) => edges[i].w / 2;
     const byNode = new Map<number, number[]>();
     edges.forEach((e, i) => {
       for (const j of [e.a, e.b]) (byNode.get(j) ?? byNode.set(j, []).get(j)!).push(i);
@@ -237,7 +235,7 @@ export async function buildPasirRisCourse(
     for (const [j, list] of byNode) {
       if (list.length !== 3 || new Set(list).size !== 3) continue;
       const lv = edges[list[0]].lv ?? 0;
-      if (lv <= 0 || list.some((i) => (edges[i].lv ?? 0) !== lv)) continue;
+      if (list.some((i) => (edges[i].lv ?? 0) !== lv)) continue;
       const P = list.map((i) => from(i, j));
       const dir = P.map((Q) => {
         const q = along(Q, 12);
@@ -246,50 +244,273 @@ export async function buildPasirRisCourse(
       });
       const dot = (a: number, b: number) => dir[a][0] * dir[b][0] + dir[a][1] * dir[b][1];
       for (let c = 0; c < 3; c++) {
-        // (c the wide deck; a and b the branches, leaving within 35° of each other, opposite it.)
+        // (c the single road; a and b the branches, leaving within 35° of each other, opposite it.)
         const a = (c + 1) % 3, b = (c + 2) % 3;
         if (dot(a, b) < COS35 || -dot(c, a) < 0.8 || -dot(c, b) < 0.8) continue;
-        // Which branch is on the left, looking from the wide deck: by where the two are 30 m on.
+        // Which branch is on the left, looking from the single road: by where the two are 30 m on.
         const u: XZ = [-dir[c][0], -dir[c][1]];
         const qa = along(P[a], 30), qb = along(P[b], 30);
         const aLeft = (qa[0] - qb[0]) * u[1] - (qa[1] - qb[1]) * u[0] > 0;
         const [L, R] = aLeft ? [a, b] : [b, a];
-        // Each branch out to the wide deck's edge on its side; never so
-        // far that the two would leave a gap between them at the joint.
-        let sl = Math.max(0, half(list[c]) - half(list[L]));
-        let sr = Math.max(0, half(list[c]) - half(list[R]));
-        const room = half(list[L]) + half(list[R]) - 0.2;
-        if (sl + sr > room) {
-          const f = Math.max(0, room) / (sl + sr);
-          sl *= f;
-          sr *= f;
-        }
-        for (const [q, shift, side] of [[L, sl, 1], [R, sr, -1]] as [number, number, number][]) {
-          if (shift < 0.15) continue;
-          const Q = P[q];
-          let len = 0;
-          const cum = Q.map((p, k) => (k ? (len += Math.hypot(p[0] - Q[k - 1][0], p[1] - Q[k - 1][1])) : 0));
-          const D = Math.min(shift * SPLIT_RATE * 1.5, len * 0.5);
-          const moved = Q.map((p, k) => {
-            const p0 = Q[Math.max(0, k - 1)], p1 = Q[Math.min(Q.length - 1, k + 1)];
-            const l = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) || 1;
-            // (Left of travel: (tz, -tx).)
-            const f = side * shift * (1 - smoothstep(0, D, cum[k]));
-            return [p[0] + ((p1[1] - p0[1]) / l) * f, p[1] - ((p1[0] - p0[0]) / l) * f] as XZ;
-          });
-          EP[list[q]] = edges[list[q]].a === j ? moved : moved.reverse();
-        }
         deckSplits.set(j, [list[c], list[L], list[R]]);
         break;
       }
     }
   }
-  const ECUM = EP.map((pts) => {
+  const cumOf = (pts: XZ[]) => {
     const c = [0];
     for (let i = 1; i < pts.length; i++) c.push(c[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
     return c;
-  });
+  };
+  const ECUM = EP.map(cumOf);
   const EHALF = edges.map((e) => e.w / 2);
+  const isDeck = edges.map((e) => (e.lv ?? 0) > 0);
+  const ELEN = ECUM.map((c) => c[c.length - 1]);
+  const jE = M.junctions.map(() => [] as number[]);
+  edges.forEach((e, i) => {
+    jE[e.a]?.push(i);
+    if (e.b !== e.a) jE[e.b]?.push(i);
+  });
+  // Half width along a road: where two pieces of one road meet with different
+  // widths (OSM lane counts change), both taper to the average.
+  // Widths change gently: where a road meets the next piece of the same road
+  // at a different width (OSM splits a way where a lane is added or dropped),
+  // the wider one tapers to the narrower at no more than 1 m per 20 m
+  // (WIDTH_RATE). (At a junction, the junction's own shape joins roads of
+  // different widths.)
+  const WIDTH_RATE = 1 / 20;
+  const WIDTH_RATE_FAST = 1 / 50;
+  /** The next piece of the same road at a plain joint (two roads), if any. */
+  const throughOf = (j: number, me: number) => {
+    const l = (jE[j] ?? []).filter((o) => edges[o].a !== edges[o].b);
+    if (l.length !== 2 || !l.includes(me)) return undefined;
+    return l[0] === me ? l[1] : l[0];
+  };
+  // A road's pieces, joined end to end where one carries straight on from
+  // the next, are a run; along each run the width changes no faster than
+  // WIDTH_RATE.
+  // Through a junction too: the piece that carries a road straight on
+  // (the same name, or the same class with no name, turning under 30
+  // degrees, each the other's best), so its width tapers through a merge
+  // or a split instead of stepping at the junction.
+  const headOut = (i: number, j: number): XZ => {
+    const P = EP[i];
+    const atA = edges[i].a === j;
+    const p0 = atA ? P[0] : P[P.length - 1];
+    let k = atA ? 1 : P.length - 2;
+    const c = ECUM[i];
+    while (k > 0 && k < P.length - 1 && Math.abs(c[k] - (atA ? 0 : ELEN[i])) < 12) k += atA ? 1 : -1;
+    const q = P[Math.max(0, Math.min(P.length - 1, k))];
+    const l = Math.hypot(q[0] - p0[0], q[1] - p0[1]) || 1;
+    return [(q[0] - p0[0]) / l, (q[1] - p0[1]) / l];
+  };
+  const sameRoad = (i: number, o: number) => (edges[i].name ? edges[i].name === edges[o].name : !edges[o].name && edges[i].cls === edges[o].cls);
+  const COS30 = Math.cos((30 * Math.PI) / 180);
+  const carryOn = (j: number, i: number) => {
+    let best: number | undefined;
+    let bd = COS30;
+    const hi = headOut(i, j);
+    for (const o of jE[j] ?? []) {
+      if (o === i || edges[o].a === edges[o].b || ELEN[o] < 30 || !sameRoad(i, o) || isDeck[o] !== isDeck[i]) continue;
+      // (More than twice the width: a road opening into a junction's approach, not a lane more or less.)
+      if (Math.max(EHALF[i], EHALF[o]) > 2 * Math.min(EHALF[i], EHALF[o])) continue;
+      const ho = headOut(o, j);
+      const d = -(hi[0] * ho[0] + hi[1] * ho[1]); // straight on: opposite headings
+      if (d > bd) (bd = d), (best = o);
+    }
+    return best;
+  };
+  // A split or a merge: three roads at a joint, two of them leaving side by
+  // side (within 35 degrees) and the third opposite. The third carries on
+  // as the wider of the two (whatever their names), the other being its
+  // slip road.
+  const splitAt = new Map<number, [number, number]>();
+  {
+    const COS35 = Math.cos((35 * Math.PI) / 180);
+    jE.forEach((all, j) => {
+      const l = all.filter((i) => edges[i].a !== edges[i].b);
+      if (l.length !== 3 || all.length !== 3 || l.some((i) => isDeck[i] || ELEN[i] < 30)) return;
+      const h = l.map((i) => headOut(i, j));
+      const dot = (x: number, y: number) => h[x][0] * h[y][0] + h[x][1] * h[y][1];
+      for (const [x, y, w] of [[0, 1, 2], [0, 2, 1], [1, 2, 0]]) {
+        if (dot(x, y) < COS35 || dot(w, x) > -COS35 || dot(w, y) > -COS35) continue;
+        const A = l[x], B = l[y], W = l[w];
+        const key = (i: number) => [EHALF[i], edges[i].name && edges[i].name === edges[W].name ? 1 : 0, -i];
+        const ka = key(A), kb = key(B);
+        let first = true;
+        for (let t = 0; t < 3; t++) if (ka[t] !== kb[t]) { first = ka[t] > kb[t]; break; }
+        splitAt.set(j, [W, first ? A : B]);
+      }
+    });
+  }
+  const mate0 = (i: number, j: number) => {
+    // (Not at a split: there the branches are set out from the single road's edges.)
+    if (deckSplits.has(j)) return undefined;
+    const o = throughOf(j, i);
+    if (o !== undefined) return o !== i && throughOf(j, o) === i ? o : undefined;
+    if ((jE[j]?.length ?? 0) < 3) return undefined;
+    // (Not the short pieces inside a big junction: its shape joins those.)
+    // (Nor flyover decks: the roads beside a deck are set out from its full width.)
+    if (ELEN[i] < 30 || isDeck[i]) return undefined;
+    const c = carryOn(j, i);
+    return c !== undefined && carryOn(j, c) === i ? c : undefined;
+  };
+  // (Worked out once, from the roads as OSM has them: the branches of a split move later.)
+  const nextOf = edges.map((e, i) => [mate0(i, e.a), mate0(i, e.b)]);
+  const mate = (i: number, j: number) => nextOf[i][edges[i].a === j ? 0 : 1];
+  /** Each edge's run, where it starts along it, and which way it runs. */
+  const runOf = edges.map(() => ({ run: -1, at: 0, fwd: true }));
+  /** (osm: the widest each metre may be; settle() works out the tapered widths again from it.) */
+  const runs: { len: number; smooth: Float32Array; rate: number; osm: Float32Array; settle: () => void }[] = [];
+  edges.forEach((e0, i0) => {
+    if (runOf[i0].run >= 0) return;
+    // Walk back to the start of the run (or once round a loop).
+    let i = i0;
+    let j = e0.a; // the end we walk out of
+    const seen = new Set([i0]);
+    for (;;) {
+      const o = mate(i, j);
+      if (o === undefined || seen.has(o)) break;
+      seen.add(o);
+      j = edges[o].a === j ? edges[o].b : edges[o].a;
+      i = o;
+    }
+    // Now walk forward from i, entering at j.
+    const list: { i: number; fwd: boolean }[] = [];
+    const inRun = new Set<number>();
+    let at = j;
+    for (let q = i; q !== undefined && !inRun.has(q) && runOf[q].run < 0; ) {
+      const fwd = edges[q].a === at;
+      list.push({ i: q, fwd });
+      inRun.add(q);
+      at = fwd ? edges[q].b : edges[q].a;
+      q = mate(q, at) as number;
+    }
+    const r = runs.length;
+    let len = 0;
+    for (const { i: q, fwd } of list) {
+      runOf[q] = { run: r, at: len, fwd };
+      len += ELEN[q];
+    }
+    // The OSM widths every metre along the run.
+    const n = Math.max(1, Math.ceil(len));
+    const smooth = new Float32Array(n + 1);
+    {
+      let q = 0;
+      let start = 0;
+      for (let m = 0; m <= n; m++) {
+        while (q < list.length - 1 && m > start + ELEN[list[q].i]) start += ELEN[list[q++].i];
+        smooth[m] = EHALF[list[q].i];
+      }
+    }
+    // Where it narrows, the wider piece tapers in to meet the narrower one
+    // (as a lane is dropped), so the road is never drawn wider than OSM
+    // has it: the narrowest width within reach, plus the taper. (Twice over
+    // for a run round a loop.)
+    const last = list[list.length - 1];
+    const loop = list.length > 1 && mate(last.i, last.fwd ? edges[last.i].b : edges[last.i].a) === list[0].i;
+    // (Expressways and their slip roads taper over longer: 1 m per 50 m.)
+    const fast = list.some(({ i: q }) => /^(motorway|trunk)/.test(edges[q].cls));
+    let rate = (fast ? WIDTH_RATE_FAST : WIDTH_RATE) / 2;
+    const osm = smooth.slice();
+    const R = { len: n, smooth, rate: rate * 2, osm, settle: () => {} };
+    const envelope = () => {
+      smooth.set(osm);
+      for (let pass = 0; pass < (loop ? 2 : 1); pass++) {
+        for (let m = 1; m <= n; m++) smooth[m] = Math.min(smooth[m], smooth[m - 1] + rate);
+        if (loop) smooth[0] = Math.min(smooth[0], smooth[n - 1] + rate);
+        for (let m = n - 1; m >= 0; m--) smooth[m] = Math.min(smooth[m], smooth[m + 1] + rate);
+        if (loop) smooth[n] = Math.min(smooth[n], smooth[1] + rate);
+      }
+    };
+    R.settle = () => {
+      envelope();
+      // (A long taper must not swallow a short wide piece: if any piece is
+      // left under three quarters of its width half way along, the run
+      // falls back to the ordinary taper.)
+      if (fast && rate !== WIDTH_RATE / 2) {
+        let start = 0;
+        for (const { i: q } of list) {
+          const mid = Math.min(n, Math.round(start + ELEN[q] / 2));
+          if (smooth[mid] < 0.75 * EHALF[q]) {
+            rate = WIDTH_RATE / 2;
+            envelope();
+            break;
+          }
+          start += ELEN[q];
+        }
+      }
+      R.rate = rate * 2;
+    };
+    R.settle();
+    runs.push(R);
+  });
+  const halfAtE = (i: number, k: number) => {
+    const { run, at, fwd } = runOf[i];
+    const R = runs[run];
+    if (!R) return EHALF[i];
+    const s = Math.max(0, Math.min(R.len, at + (fwd ? ECUM[i][k] : ELEN[i] - ECUM[i][k])));
+    const m = Math.floor(s);
+    const u = s - m;
+    return R.smooth[m] + (R.smooth[Math.min(R.len, m + 1)] - R.smooth[m]) * u;
+  };
+  // At each split the widths meet: on the ground, neither branch starts
+  // wider than the road it comes from, and that road is no wider at the
+  // joint than its two branches side by side (each tapers there, as a lane
+  // is added or dropped). Then the branches move out to its edges.
+  {
+    const SPLIT_RATE = 20; // metres along for each metre a branch moves sideways
+    const endHalf = (i: number, j: number) => halfAtE(i, edges[i].a === j ? 0 : EP[i].length - 1);
+    const dirty = new Set<number>();
+    for (const [j, [c, L, R]] of deckSplits) {
+      if (isDeck[c]) continue;
+      const hc = endHalf(c, j), hl = endHalf(L, j), hr = endHalf(R, j);
+      const capL = Math.min(hl, hc), capR = Math.min(hr, hc);
+      const capC = Math.min(hc, capL + capR - 0.1);
+      for (const [i, cap, h] of [[c, capC, hc], [L, capL, hl], [R, capR, hr]]) {
+        if (cap > h - 0.02) continue;
+        const { run, at, fwd } = runOf[i];
+        const Rn = runs[run];
+        // (Only where the piece is long enough to be back at its own width half way along.)
+        if (!Rn || (EHALF[i] - cap) / (Rn.rate / 2) > ELEN[i] / 2) continue;
+        const s = at + (fwd === (edges[i].a === j) ? 0 : ELEN[i]);
+        const m = s < 0.5 ? 0 : Math.min(Rn.len, Math.ceil(s));
+        Rn.osm[m] = Math.min(Rn.osm[m], cap);
+        dirty.add(run);
+      }
+    }
+    for (const r of dirty) runs[r].settle();
+    for (const [j, [c, L, R]] of deckSplits) {
+      const hc = endHalf(c, j), hl = endHalf(L, j), hr = endHalf(R, j);
+      // Each branch out to the single road's edge on its side; never so
+      // far that the two would leave a gap between them at the joint.
+      let sl = Math.max(0, hc - hl);
+      let sr = Math.max(0, hc - hr);
+      const room = hl + hr - 0.2;
+      if (sl + sr > room) {
+        const f = Math.max(0, room) / (sl + sr);
+        sl *= f;
+        sr *= f;
+      }
+      for (const [q, shift, side] of [[L, sl, 1], [R, sr, -1]]) {
+        if (shift < 0.15) continue;
+        const Q = edges[q].a === j ? EP[q] : [...EP[q]].reverse();
+        let len = 0;
+        const cum = Q.map((p, k) => (k ? (len += Math.hypot(p[0] - Q[k - 1][0], p[1] - Q[k - 1][1])) : 0));
+        const D = Math.min(shift * SPLIT_RATE * 1.5, len * 0.5);
+        const moved = Q.map((p, k) => {
+          const p0 = Q[Math.max(0, k - 1)], p1 = Q[Math.min(Q.length - 1, k + 1)];
+          const l = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) || 1;
+          // (Left of travel: (tz, -tx).)
+          const f = side * shift * (1 - smoothstep(0, D, cum[k]));
+          return [p[0] + ((p1[1] - p0[1]) / l) * f, p[1] - ((p1[0] - p0[0]) / l) * f] as XZ;
+        });
+        EP[q] = edges[q].a === j ? moved : moved.reverse();
+        ECUM[q] = cumOf(EP[q]);
+        ELEN[q] = ECUM[q][ECUM[q].length - 1];
+      }
+    }
+  }
   const roads = new SegIndex(EP, 24);
   const paths = M.paths.map((p) => ({ k: p.k, b: p.b ? 1 : 0, pts: resample(p.pts, 4) }));
   const PHALF = paths.map((p) => (p.k === 'cycle' ? 1.4 : 1.1));
@@ -500,13 +721,6 @@ export async function buildPasirRisCourse(
   // (over canals and drains) are low decks just above the banks.
   const DECK_H = 6.5;
   const RAMP_GRADE = 0.05;
-  const isDeck = edges.map((e) => (e.lv ?? 0) > 0);
-  const ELEN = ECUM.map((c) => c[c.length - 1]);
-  const jE = M.junctions.map(() => [] as number[]);
-  edges.forEach((e, i) => {
-    jE[e.a]?.push(i);
-    if (e.b !== e.a) jE[e.b]?.push(i);
-  });
   const shares = (i: number, o: number) => edges[i].a === edges[o].a || edges[i].a === edges[o].b || edges[i].b === edges[o].a || edges[i].b === edges[o].b;
   const groundRail = M.rail.filter((r) => !r.tunnel && !r.bridge);
   const railIdx = new SegIndex(groundRail.map((r) => r.pts), 32);
@@ -554,178 +768,6 @@ export async function buildPasirRisCourse(
     }
   });
   // ---------- Junction shapes ----------
-  // Half width along a road: where two pieces of one road meet with different
-  // widths (OSM lane counts change), both taper to the average.
-  // Widths change gently: where a road meets the next piece of the same road
-  // at a different width (OSM splits a way where a lane is added or dropped),
-  // the wider one tapers to the narrower at no more than 1 m per 20 m
-  // (WIDTH_RATE). (At a junction, the junction's own shape joins roads of
-  // different widths.)
-  const WIDTH_RATE = 1 / 20;
-  const WIDTH_RATE_FAST = 1 / 50;
-  /** The next piece of the same road at a plain joint (two roads), if any. */
-  const throughOf = (j: number, me: number) => {
-    const l = (jE[j] ?? []).filter((o) => edges[o].a !== edges[o].b);
-    if (l.length !== 2 || !l.includes(me)) return undefined;
-    return l[0] === me ? l[1] : l[0];
-  };
-  // A road's pieces, joined end to end where one carries straight on from
-  // the next, are a run; along each run the width changes no faster than
-  // WIDTH_RATE.
-  // Through a junction too: the piece that carries a road straight on
-  // (the same name, or the same class with no name, turning under 30
-  // degrees, each the other's best), so its width tapers through a merge
-  // or a split instead of stepping at the junction.
-  const headOut = (i: number, j: number): XZ => {
-    const P = EP[i];
-    const atA = edges[i].a === j;
-    const p0 = atA ? P[0] : P[P.length - 1];
-    let k = atA ? 1 : P.length - 2;
-    const c = ECUM[i];
-    while (k > 0 && k < P.length - 1 && Math.abs(c[k] - (atA ? 0 : ELEN[i])) < 12) k += atA ? 1 : -1;
-    const q = P[Math.max(0, Math.min(P.length - 1, k))];
-    const l = Math.hypot(q[0] - p0[0], q[1] - p0[1]) || 1;
-    return [(q[0] - p0[0]) / l, (q[1] - p0[1]) / l];
-  };
-  const sameRoad = (i: number, o: number) => (edges[i].name ? edges[i].name === edges[o].name : !edges[o].name && edges[i].cls === edges[o].cls);
-  const COS30 = Math.cos((30 * Math.PI) / 180);
-  const carryOn = (j: number, i: number) => {
-    let best: number | undefined;
-    let bd = COS30;
-    const hi = headOut(i, j);
-    for (const o of jE[j] ?? []) {
-      if (o === i || edges[o].a === edges[o].b || ELEN[o] < 30 || !sameRoad(i, o) || isDeck[o] !== isDeck[i]) continue;
-      // (More than twice the width: a road opening into a junction's approach, not a lane more or less.)
-      if (Math.max(EHALF[i], EHALF[o]) > 2 * Math.min(EHALF[i], EHALF[o])) continue;
-      const ho = headOut(o, j);
-      const d = -(hi[0] * ho[0] + hi[1] * ho[1]); // straight on: opposite headings
-      if (d > bd) (bd = d), (best = o);
-    }
-    return best;
-  };
-  // A split or a merge: three roads at a joint, two of them leaving side by
-  // side (within 35 degrees) and the third opposite. The third carries on
-  // as the wider of the two (whatever their names), the other being its
-  // slip road.
-  const splitAt = new Map<number, [number, number]>();
-  {
-    const COS35 = Math.cos((35 * Math.PI) / 180);
-    jE.forEach((all, j) => {
-      const l = all.filter((i) => edges[i].a !== edges[i].b);
-      if (l.length !== 3 || all.length !== 3 || l.some((i) => isDeck[i] || ELEN[i] < 30)) return;
-      const h = l.map((i) => headOut(i, j));
-      const dot = (x: number, y: number) => h[x][0] * h[y][0] + h[x][1] * h[y][1];
-      for (const [x, y, w] of [[0, 1, 2], [0, 2, 1], [1, 2, 0]]) {
-        if (dot(x, y) < COS35 || dot(w, x) > -COS35 || dot(w, y) > -COS35) continue;
-        const A = l[x], B = l[y], W = l[w];
-        const key = (i: number) => [EHALF[i], edges[i].name && edges[i].name === edges[W].name ? 1 : 0, -i];
-        const ka = key(A), kb = key(B);
-        let first = true;
-        for (let t = 0; t < 3; t++) if (ka[t] !== kb[t]) { first = ka[t] > kb[t]; break; }
-        splitAt.set(j, [W, first ? A : B]);
-      }
-    });
-  }
-  const mate = (i: number, j: number) => {
-    const o = throughOf(j, i);
-    if (o !== undefined) return o !== i && throughOf(j, o) === i ? o : undefined;
-    if ((jE[j]?.length ?? 0) < 3) return undefined;
-    // (Not the short pieces inside a big junction: its shape joins those.)
-    // (Nor flyover decks: the roads beside a deck are set out from its full width.)
-    if (ELEN[i] < 30 || isDeck[i]) return undefined;
-    const c = carryOn(j, i);
-    return c !== undefined && carryOn(j, c) === i ? c : undefined;
-  };
-  /** Each edge's run, where it starts along it, and which way it runs. */
-  const runOf = edges.map(() => ({ run: -1, at: 0, fwd: true }));
-  const runs: { len: number; smooth: Float32Array; rate: number }[] = [];
-  edges.forEach((e0, i0) => {
-    if (runOf[i0].run >= 0) return;
-    // Walk back to the start of the run (or once round a loop).
-    let i = i0;
-    let j = e0.a; // the end we walk out of
-    const seen = new Set([i0]);
-    for (;;) {
-      const o = mate(i, j);
-      if (o === undefined || seen.has(o)) break;
-      seen.add(o);
-      j = edges[o].a === j ? edges[o].b : edges[o].a;
-      i = o;
-    }
-    // Now walk forward from i, entering at j.
-    const list: { i: number; fwd: boolean }[] = [];
-    const inRun = new Set<number>();
-    let at = j;
-    for (let q = i; q !== undefined && !inRun.has(q) && runOf[q].run < 0; ) {
-      const fwd = edges[q].a === at;
-      list.push({ i: q, fwd });
-      inRun.add(q);
-      at = fwd ? edges[q].b : edges[q].a;
-      q = mate(q, at) as number;
-    }
-    const r = runs.length;
-    let len = 0;
-    for (const { i: q, fwd } of list) {
-      runOf[q] = { run: r, at: len, fwd };
-      len += ELEN[q];
-    }
-    // The OSM widths every metre along the run.
-    const n = Math.max(1, Math.ceil(len));
-    const smooth = new Float32Array(n + 1);
-    {
-      let q = 0;
-      let start = 0;
-      for (let m = 0; m <= n; m++) {
-        while (q < list.length - 1 && m > start + ELEN[list[q].i]) start += ELEN[list[q++].i];
-        smooth[m] = EHALF[list[q].i];
-      }
-    }
-    // Where it narrows, the wider piece tapers in to meet the narrower one
-    // (as a lane is dropped), so the road is never drawn wider than OSM
-    // has it: the narrowest width within reach, plus the taper. (Twice over
-    // for a run round a loop.)
-    const last = list[list.length - 1];
-    const loop = list.length > 1 && mate(last.i, last.fwd ? edges[last.i].b : edges[last.i].a) === list[0].i;
-    // (Expressways and their slip roads taper over longer: 1 m per 50 m.)
-    const fast = list.some(({ i: q }) => /^(motorway|trunk)/.test(edges[q].cls));
-    let rate = (fast ? WIDTH_RATE_FAST : WIDTH_RATE) / 2;
-    const osm = smooth.slice();
-    const envelope = () => {
-      smooth.set(osm);
-      for (let pass = 0; pass < (loop ? 2 : 1); pass++) {
-        for (let m = 1; m <= n; m++) smooth[m] = Math.min(smooth[m], smooth[m - 1] + rate);
-        if (loop) smooth[0] = Math.min(smooth[0], smooth[n - 1] + rate);
-        for (let m = n - 1; m >= 0; m--) smooth[m] = Math.min(smooth[m], smooth[m + 1] + rate);
-        if (loop) smooth[n] = Math.min(smooth[n], smooth[1] + rate);
-      }
-    };
-    envelope();
-    // (A long taper must not swallow a short wide piece: if any piece is
-    // left under three quarters of its width half way along, the run
-    // falls back to the ordinary taper.)
-    if (fast) {
-      let start = 0;
-      for (const { i: q } of list) {
-        const mid = Math.min(n, Math.round(start + ELEN[q] / 2));
-        if (smooth[mid] < 0.75 * EHALF[q]) {
-          rate = WIDTH_RATE / 2;
-          envelope();
-          break;
-        }
-        start += ELEN[q];
-      }
-    }
-    runs.push({ len: n, smooth, rate: rate * 2 });
-  });
-  const halfAtE = (i: number, k: number) => {
-    const { run, at, fwd } = runOf[i];
-    const R = runs[run];
-    if (!R) return EHALF[i];
-    const s = Math.max(0, Math.min(R.len, at + (fwd ? ECUM[i][k] : ELEN[i] - ECUM[i][k])));
-    const m = Math.floor(s);
-    const u = s - m;
-    return R.smooth[m] + (R.smooth[Math.min(R.len, m + 1)] - R.smooth[m]) * u;
-  };
   // Joints within 300 m (along the roads) of a flyover's end.
   const nearDeck = new Uint8Array(M.junctions.length);
   {
