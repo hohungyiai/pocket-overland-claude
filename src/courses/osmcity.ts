@@ -3334,6 +3334,34 @@ export async function buildPasirRisCourse(
     return s - Math.floor(s);
   };
   interface Bld { pts: XZ[]; h: number; wall: number; roof: number; walls: boolean; base: number; ground: number }
+  const UNDER_DECK = 1; // clear space between a roof and the deck above it
+  /**
+   * The highest a roof may stand within this outline: a metre under the
+   * lowest deck that passes over it (-Infinity under a road on a bank;
+   * Infinity where no raised road passes over).
+   */
+  const roomUnderRoads = (pts: XZ[], cx: number, cz: number) => {
+    let room = Infinity;
+    const look = (x: number, z: number) =>
+      roads.each(x, z, 16, (i, seg, u, d) => {
+        if (!hasProfile[i] || d > Math.max(halfAtE(i, seg), halfAtE(i, seg + 1)) + 0.45 + UNDER_DECK) return;
+        room = Math.min(room, isDeck[i] ? deckAtHit(i, seg, u) - (elevated[i] ? 1.2 : 0.6) - UNDER_DECK : -Infinity);
+      });
+    // Along the walls, and over the floor on a 4 m grid.
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    pts.forEach((p, q) => {
+      const n = pts[(q + 1) % pts.length];
+      const steps = Math.max(1, Math.ceil(Math.hypot(n[0] - p[0], n[1] - p[1]) / 3));
+      for (let k = 0; k < steps; k++) look(lerp(p[0], n[0], k / steps), lerp(p[1], n[1], k / steps));
+      x0 = Math.min(x0, p[0]);
+      x1 = Math.max(x1, p[0]);
+      z0 = Math.min(z0, p[1]);
+      z1 = Math.max(z1, p[1]);
+    });
+    look(cx, cz);
+    for (let x = x0 + 2; x < x1; x += 4) for (let z = z0 + 2; z < z1; z += 4) if (inRingXZ(pts, x, z)) look(x, z);
+    return room;
+  };
   const blds: Bld[] = [];
   const bldTile = new Map<string, number[]>();
   for (const b of M.buildings) {
@@ -3404,6 +3432,16 @@ export async function buildPasirRisCourse(
     for (const [px, pz] of pts) low = Math.min(low, baseAt(px, pz));
     const ground = low === Infinity ? LAND : low;
     const base = ground - 0.5;
+    // A road always has right of way over a building. Under a raised road a
+    // building may be no taller than the space beneath the deck (OSM often
+    // gives no height, and a guess can stand straight through a flyover);
+    // if that leaves less than a storey, or the road is on a bank of
+    // earth, the building is left out.
+    const room = roomUnderRoads(pts, cx, cz);
+    if (room !== Infinity) {
+      h = Math.min(h, room - ground);
+      if (h < 3) continue;
+    }
     const i = blds.length;
     blds.push({ pts, h, wall, roof, walls, base, ground });
     const k = tileKey(cx, cz);
@@ -3785,7 +3823,7 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
-      throughLines, throughPairs, paveY,
+      blds, throughLines, throughPairs, paveY,
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),
