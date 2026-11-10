@@ -1928,9 +1928,19 @@ export async function buildPasirRisCourse(
       if (o.keep && !o.keep(k)) continue;
       const a = base + (k - k0) * 2;
       if (clearAt && !(corner(a) && corner(a + 1) && corner(a + 2) && corner(a + 3))) continue;
-      acc.idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+      // (Each half faces up: round the inside of a tight bend, or at a bend
+      // right beside a junction's mouth, a side doubles back and the piece
+      // folds over, half of it facing the ground.)
+      faceUp(acc, a, a + 2, a + 1);
+      faceUp(acc, a + 1, a + 2, a + 3);
     }
   };
+  /** Adds the triangle u, v, w, wound whichever way round faces up. */
+  function faceUp(acc: Acc, u: number, v: number, w: number) {
+    const P = acc.pos;
+    const up = (P[v * 3 + 2] - P[u * 3 + 2]) * (P[w * 3] - P[u * 3]) - (P[v * 3] - P[u * 3]) * (P[w * 3 + 2] - P[u * 3 + 2]) >= 0;
+    acc.idx.push(u, up ? v : w, up ? w : v);
+  }
   const disc = (acc: Acc, x: number, z: number, r: number, lift: number, y?: number) => {
     const base = acc.pos.length / 3;
     const yc = (y ?? Math.max(rawHeight(x, z), WL + 0.15)) + lift;
@@ -2051,16 +2061,27 @@ export async function buildPasirRisCourse(
     let hi = n - 1;
     let ylo = NaN;
     let yhi = NaN;
+    // (A cut landing on one of the road's own points leaves a first piece
+    // of no length, and so of no direction: that end of the road was drawn
+    // twisted round, or pinched to a point. The cut keeps 5 cm of the piece
+    // it lies on, which is the piece its junction's mouth is square to.)
+    const HAIR = 0.05;
+    const dir = (k: number): XZ => {
+      const l = cum[k + 1] - cum[k] || 1;
+      return [(pts[k + 1][0] - pts[k][0]) / l, (pts[k + 1][1] - pts[k][1]) / l];
+    };
     if (ta) {
       const c = at(ta);
       lo = c.k;
-      P[lo] = c.p;
+      const [dx, dz] = dir(lo);
+      P[lo] = cum[lo + 1] - ta < HAIR ? [pts[lo + 1][0] - dx * HAIR, pts[lo + 1][1] - dz * HAIR] : c.p;
       ylo = c.y;
     }
     if (tb) {
       const c = at(ELEN[line] - tb);
       hi = c.k + 1;
-      P[hi] = c.p;
+      const [dx, dz] = dir(c.k);
+      P[hi] = ELEN[line] - tb - cum[c.k] < HAIR ? [pts[c.k][0] + dx * HAIR, pts[c.k][1] + dz * HAIR] : c.p;
       yhi = c.y;
     }
     return { pts: P, lo, hi, ylo, yhi };
@@ -2268,13 +2289,17 @@ export async function buildPasirRisCourse(
             road.pos.push(r.a[0], r.ya + 0.087, r.a[1], r.b[0], r.yb + 0.087, r.b[1]);
             road.uv.push(r.a[0] / 6, r.a[1] / 6, r.b[0] / 6, r.b[1] / 6);
           }
-          // Facing up: which side is which depends on the pair.
-          const r0 = rows[0], r1 = rows[rows.length - 1];
-          const up = (r0.b[0] - r0.a[0]) * (r1.a[1] - r0.a[1]) - (r0.b[1] - r0.a[1]) * (r1.a[0] - r0.a[0]) > 0;
+          // Facing up: which side is which depends on the pair, and may
+          // change along it (the wedge starts where the two still overlap,
+          // its sides crossed over): each half of each piece by its own lie.
           for (let q = 0; q + 1 < rows.length; q++) {
             const a = base + q * 2;
-            if (up) road.idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-            else road.idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+            const V = [rows[q].a, rows[q].b, rows[q + 1].a, rows[q + 1].b];
+            for (const [u, v, w] of [[0, 2, 1], [1, 2, 3]]) {
+              const up = (V[v][1] - V[u][1]) * (V[w][0] - V[u][0]) - (V[v][0] - V[u][0]) * (V[w][1] - V[u][1]) >= 0;
+              if (up) road.idx.push(a + u, a + v, a + w);
+              else road.idx.push(a + u, a + w, a + v);
+            }
           }
         }
       });
@@ -2865,7 +2890,8 @@ export async function buildPasirRisCourse(
             const along = (t: number) => inPaving(lerp(F[q][0], F[q + 1][0], t), lerp(F[q][1], F[q + 1][1], t), NaN, id);
             if (along(0.25) || along(0.5) || along(0.75)) continue;
             const a = kb + q * 2;
-            kerb.idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+            faceUp(kerb, a, a + 2, a + 1);
+            faceUp(kerb, a + 1, a + 2, a + 3);
           }
         }
       }

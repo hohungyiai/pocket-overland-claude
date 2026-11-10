@@ -21,6 +21,7 @@ const CHECKS = [
   ['No two roads cross at the same height', 'headroom.js', '__checkCrossings', 0],
   ['No building stands up through a raised road', 'buildings.js', '__checkBuildingsUnderRoads', 0],
   ['No building wall or column stands on a road', 'buildings.js', '__checkBuildingsOnRoads', 0],
+  ['Every piece of road surface faces up', 'facing.js', '__checkFacing', 0],
   ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0],
   // (Known: seven real junctions where five or six roads meet at one point
   // in the map data; the ratchet is there to catch new ones.)
@@ -46,7 +47,7 @@ const CHECKS = [
   // (5 left, of 838 before kerbs and lines stopped at other roads: three
   // TPE / Halus Link spots where expressway pieces lie side by side, for the
   // merge rebuild, and one on Tampines Road.)
-  ['No kerb or road line across a lane', 'lanes.js', '__checkLanes', 0, 1],
+  ['No kerb or road line across a lane', 'lanes.js', '__checkLanes', 0],
   ['No bite out of a road\'s edge', 'lanes.js', '__checkEdges', 0],
   ['Widths change no faster than 1 m per 20 m (50 m on expressways), through junctions too', 'lanes.js', '__checkWidths', 0],
   // (79: corners OSM itself draws as a jog, nearly all on service lanes.)
