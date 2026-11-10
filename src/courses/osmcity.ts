@@ -204,6 +204,86 @@ export async function buildPasirRisCourse(
       }
     }
   }
+  // Splits on a flyover. Where one deck becomes two (or two become one) at
+  // a narrow angle, OSM draws all three from the one point: drawn that way
+  // the two narrower decks start from the middle of the wide one, whose
+  // outside edges stop dead (a step in the road's width, and parapets
+  // ending in mid-air). Instead the branches start side by side inside the
+  // road they come from: the left branch's left edge carries on the wide
+  // deck's left edge, the right branch's right edge its right edge, and
+  // each eases back onto its own line as the two part.
+  /** Deck joints (junction ids) where three decks meet as a split, with [wide, left, right] edges. */
+  const deckSplits = new Map<number, [number, number, number]>();
+  {
+    const SPLIT_RATE = 20; // metres along for each metre a branch moves sideways
+    const half = (i: number) => edges[i].w / 2;
+    const byNode = new Map<number, number[]>();
+    edges.forEach((e, i) => {
+      for (const j of [e.a, e.b]) (byNode.get(j) ?? byNode.set(j, []).get(j)!).push(i);
+    });
+    /** Road i's points, running away from joint j. */
+    const from = (i: number, j: number) => (edges[i].a === j ? EP[i] : [...EP[i]].reverse());
+    /** The point s metres along P. */
+    const along = (P: XZ[], s: number): XZ => {
+      let run = 0;
+      for (let k = 0; k + 1 < P.length; k++) {
+        const l = Math.hypot(P[k + 1][0] - P[k][0], P[k + 1][1] - P[k][1]);
+        if (run + l >= s) return [lerp(P[k][0], P[k + 1][0], (s - run) / (l || 1)), lerp(P[k][1], P[k + 1][1], (s - run) / (l || 1))];
+        run += l;
+      }
+      return P[P.length - 1];
+    };
+    const COS35 = Math.cos((35 * Math.PI) / 180);
+    for (const [j, list] of byNode) {
+      if (list.length !== 3 || new Set(list).size !== 3) continue;
+      const lv = edges[list[0]].lv ?? 0;
+      if (lv <= 0 || list.some((i) => (edges[i].lv ?? 0) !== lv)) continue;
+      const P = list.map((i) => from(i, j));
+      const dir = P.map((Q) => {
+        const q = along(Q, 12);
+        const l = Math.hypot(q[0] - Q[0][0], q[1] - Q[0][1]) || 1;
+        return [(q[0] - Q[0][0]) / l, (q[1] - Q[0][1]) / l] as XZ;
+      });
+      const dot = (a: number, b: number) => dir[a][0] * dir[b][0] + dir[a][1] * dir[b][1];
+      for (let c = 0; c < 3; c++) {
+        // (c the wide deck; a and b the branches, leaving within 35° of each other, opposite it.)
+        const a = (c + 1) % 3, b = (c + 2) % 3;
+        if (dot(a, b) < COS35 || -dot(c, a) < 0.8 || -dot(c, b) < 0.8) continue;
+        // Which branch is on the left, looking from the wide deck: by where the two are 30 m on.
+        const u: XZ = [-dir[c][0], -dir[c][1]];
+        const qa = along(P[a], 30), qb = along(P[b], 30);
+        const aLeft = (qa[0] - qb[0]) * u[1] - (qa[1] - qb[1]) * u[0] > 0;
+        const [L, R] = aLeft ? [a, b] : [b, a];
+        // Each branch out to the wide deck's edge on its side; never so
+        // far that the two would leave a gap between them at the joint.
+        let sl = Math.max(0, half(list[c]) - half(list[L]));
+        let sr = Math.max(0, half(list[c]) - half(list[R]));
+        const room = half(list[L]) + half(list[R]) - 0.2;
+        if (sl + sr > room) {
+          const f = Math.max(0, room) / (sl + sr);
+          sl *= f;
+          sr *= f;
+        }
+        for (const [q, shift, side] of [[L, sl, 1], [R, sr, -1]] as [number, number, number][]) {
+          if (shift < 0.15) continue;
+          const Q = P[q];
+          let len = 0;
+          const cum = Q.map((p, k) => (k ? (len += Math.hypot(p[0] - Q[k - 1][0], p[1] - Q[k - 1][1])) : 0));
+          const D = Math.min(shift * SPLIT_RATE * 1.5, len * 0.5);
+          const moved = Q.map((p, k) => {
+            const p0 = Q[Math.max(0, k - 1)], p1 = Q[Math.min(Q.length - 1, k + 1)];
+            const l = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) || 1;
+            // (Left of travel: (tz, -tx).)
+            const f = side * shift * (1 - smoothstep(0, D, cum[k]));
+            return [p[0] + ((p1[1] - p0[1]) / l) * f, p[1] - ((p1[0] - p0[0]) / l) * f] as XZ;
+          });
+          EP[list[q]] = edges[list[q]].a === j ? moved : moved.reverse();
+        }
+        deckSplits.set(j, [list[c], list[L], list[R]]);
+        break;
+      }
+    }
+  }
   const ECUM = EP.map((pts) => {
     const c = [0];
     for (let i = 1; i < pts.length; i++) c.push(c[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
@@ -3823,7 +3903,7 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
-      blds, throughLines, throughPairs, paveY,
+      blds, deckSplits, throughLines, throughPairs, paveY,
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),
