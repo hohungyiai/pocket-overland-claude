@@ -56,6 +56,10 @@ const CHECKS = [
   ['No gap where two roads split or join', 'gores.js', '__checkGores', 0],
   // (120: 69 sides of ground splits still drawn from one point, 51 paved junctions whose outline kinks.)
   ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, 10],
+  // The performance budget (perf.js: the figures and where they come from).
+  ['The game starts within 20 s', 'perf.js', '__checkStart', 0],
+  ['No frame draws more than the budget, anywhere on the map', 'perf.js', '__checkDrawn', 0],
+  ['No slice of map building holds a frame up for more than 100 ms', 'perf.js', '__checkSlices', 0],
 ];
 
 (async () => {
@@ -66,8 +70,11 @@ const CHECKS = [
     const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const p = await (await b.newContext({ viewport: { width: 640, height: 360 } })).newPage();
     p.on('pageerror', (e) => console.log('page error:', e.message));
+    const t0 = Date.now();
     await p.goto(`http://localhost:${PORT}/?course=pasirris&debug`);
     await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
+    // (How long the game took to start, for the performance budget.)
+    await p.evaluate((ms) => (window.__startMs = ms), Date.now() - t0);
     const loaded = new Set();
     // (ONLY=regex runs just the matching checks.)
     const only = process.env.ONLY ? new RegExp(process.env.ONLY, 'i') : null;
@@ -83,7 +90,7 @@ const CHECKS = [
       const ok = known > 0 ? r.bad <= known : worst <= limit && (limit > 0 || r.bad === 0);
       if (!ok) failed = true;
       const tail = known > 0 ? `(known: ${known}, may not grow)` : `(limit ${limit})`;
-      console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}: ${r.bad} of ${r.samples} samples off, worst ${worst} m ${tail}`);
+      console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}: ${r.bad} of ${r.samples} samples off, worst ${worst} ${r.unit ?? 'm'} ${tail}${r.note ? ` [${r.note}]` : ''}`);
       if (!ok || known > 0) for (const w of r.worst.slice(0, ok ? 3 : 12)) console.log('      ', JSON.stringify(w));
     }
     await b.close();

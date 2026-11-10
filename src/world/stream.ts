@@ -35,6 +35,8 @@ interface TileLayer {
   geometries: THREE.BufferGeometry[];
   bodies: RAPIER_NS.RigidBody[];
   job: Generator<void, void, void> | null;
+  /** Build slices run so far. */
+  steps: number;
   hidden?: boolean;
   coverable: THREE.Object3D[];
 }
@@ -46,8 +48,11 @@ const LAYERS: LayerName[] = ['near', 'far', 'horizon'];
 export class TileStreamer {
   private loaded = new Map<string, TileLayer>(); // key: "near:i,j" / "far:i,j"
   private queue: { key: string; layer: LayerName; i: number; j: number; d: number }[] = [];
-  /** Built tile counts, for the debug overlay and tests. */
-  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0 };
+  /**
+   * Built tile counts, and the longest single build slice (with which tile
+   * and slice it was), for the debug overlay and tests.
+   */
+  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0, slowest: '' };
 
   constructor(
     private scene: THREE.Scene,
@@ -113,9 +118,12 @@ export class TileStreamer {
       }
     }
     for (const [key, layer] of this.loaded) if (!want.has(key)) this.unload(key, layer);
-    // Nearest first; near (solid ground) before far at equal distance. The
-    // horizon is cheap and fills gaps on the skyline, so it jumps ahead.
-    const rank = (q: { layer: LayerName; d: number }) => (q.layer === 'horizon' ? q.d * 0.35 : q.d) + (q.layer === 'far' ? 1 : 0);
+    // Nearest first; far (the roads you see) before near (the solid ground)
+    // at equal distance: the near layer's road collider is made from the
+    // far layer's road surface, which it would otherwise have to work out
+    // again. The horizon is cheap and fills gaps on the skyline, so it
+    // jumps ahead.
+    const rank = (q: { layer: LayerName; d: number }) => (q.layer === 'horizon' ? q.d * 0.35 : q.d) + (q.layer === 'near' ? 1 : 0);
     this.queue.sort((a, b) => rank(a) - rank(b));
     this.stats.pending = this.queue.length;
   }
@@ -145,7 +153,7 @@ export class TileStreamer {
       const q = this.queue[0];
       let layer = this.loaded.get(q.key);
       if (!layer) {
-        layer = { objects: [], geometries: [], bodies: [], job: null, coverable: [] };
+        layer = { objects: [], geometries: [], bodies: [], job: null, steps: 0, coverable: [] };
         if (q.layer === 'horizon') {
           const f = this.loaded.get('far' + q.key.slice(7));
           layer.hidden = !!f && !f.job;
@@ -160,7 +168,12 @@ export class TileStreamer {
           layer.job = null;
           if (q.layer === 'far') this.cover(q.key, true);
         }
-        if (budgetMs !== Infinity) this.stats.maxStepMs = Math.max(this.stats.maxStepMs, performance.now() - s0);
+        layer.steps++;
+        const ms = performance.now() - s0;
+        if (budgetMs !== Infinity && ms > this.stats.maxStepMs) {
+          this.stats.maxStepMs = ms;
+          this.stats.slowest = `${q.key}#${layer.steps}`;
+        }
         if (performance.now() - t0 > budgetMs) return false;
       }
       this.queue.shift();
@@ -187,7 +200,9 @@ export class TileStreamer {
     this.lastPlan = { x, z };
     this.plan(x, z);
     // The far edge of the skyline can stream in over the first seconds too.
-    const defer = (q: { layer: LayerName; d: number }) => (q.layer === 'far' && q.d > farNow) || (q.layer === 'horizon' && q.d > farNow * 1.6);
+    // (Never a far tile whose near tile is wanted now: see plan().)
+    const farNeed = Math.max(farNow, this.radius.near);
+    const defer = (q: { layer: LayerName; d: number }) => (q.layer === 'far' && q.d > farNeed) || (q.layer === 'horizon' && q.d > farNow * 1.6);
     const later = this.queue.filter(defer);
     this.queue = this.queue.filter((q) => !defer(q));
     this.work(Infinity);
