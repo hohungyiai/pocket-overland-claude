@@ -7,7 +7,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
-const DEPS = { 'drive.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'] };
+const DEPS = { 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
@@ -44,6 +44,7 @@ const CHECKS = [
   ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, 6],
   ['No side tilt that could tip the car', 'drive.js', '__checkTilt', 0],
   ['The drive bot gets through the hard spots', 'routes.js', '__checkRoutes', 0],
+  ['The drive bot gets round the map on random trips, never stuck or tipped over', 'walk.js', '__checkWalk', 0],
   // (5 left, of 838 before kerbs and lines stopped at other roads: three
   // TPE / Halus Link spots where expressway pieces lie side by side, for the
   // merge rebuild, and one on Tampines Road.)
@@ -72,7 +73,7 @@ const CHECKS = [
     const only = process.env.ONLY ? new RegExp(process.env.ONLY, 'i') : null;
     for (const [name, file, fn, limit, known = 0] of CHECKS) {
       if (only && !only.test(name)) continue;
-      // (drive.js uses seams.js's road index; routes.js drives with bot.js.)
+      // (drive.js uses seams.js's road index; routes.js and walk.js drive with bot.js.)
       for (const f of [...(DEPS[file] ?? []), file]) {
         if (!loaded.has(f)) await p.addScriptTag({ path: path.join(__dirname, f) });
         loaded.add(f);

@@ -324,7 +324,11 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       requestAnimationFrame(frame);
       return;
     }
-    const dt = Math.min((now - last) / 1000, 0.1);
+    // (Never negative: the first frame after the world is built can carry a
+    // time stamp from before the build began, a minute stale on a slow
+    // device. That froze the car for as long, and wound the steering and
+    // pedal far past full lock and full reverse.)
+    const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
     last = now;
     acc += dt;
     controls.update(dt);
