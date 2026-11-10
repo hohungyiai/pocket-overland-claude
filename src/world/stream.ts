@@ -118,9 +118,12 @@ export class TileStreamer {
       }
     }
     for (const [key, layer] of this.loaded) if (!want.has(key)) this.unload(key, layer);
-    // Nearest first; near (solid ground) before far at equal distance. The
-    // horizon is cheap and fills gaps on the skyline, so it jumps ahead.
-    const rank = (q: { layer: LayerName; d: number }) => (q.layer === 'horizon' ? q.d * 0.35 : q.d) + (q.layer === 'far' ? 1 : 0);
+    // Nearest first; far (the roads you see) before near (the solid ground)
+    // at equal distance: the near layer's road collider is made from the
+    // far layer's road surface, which it would otherwise have to work out
+    // again. The horizon is cheap and fills gaps on the skyline, so it
+    // jumps ahead.
+    const rank = (q: { layer: LayerName; d: number }) => (q.layer === 'horizon' ? q.d * 0.35 : q.d) + (q.layer === 'near' ? 1 : 0);
     this.queue.sort((a, b) => rank(a) - rank(b));
     this.stats.pending = this.queue.length;
   }
@@ -197,7 +200,9 @@ export class TileStreamer {
     this.lastPlan = { x, z };
     this.plan(x, z);
     // The far edge of the skyline can stream in over the first seconds too.
-    const defer = (q: { layer: LayerName; d: number }) => (q.layer === 'far' && q.d > farNow) || (q.layer === 'horizon' && q.d > farNow * 1.6);
+    // (Never a far tile whose near tile is wanted now: see plan().)
+    const farNeed = Math.max(farNow, this.radius.near);
+    const defer = (q: { layer: LayerName; d: number }) => (q.layer === 'far' && q.d > farNeed) || (q.layer === 'horizon' && q.d > farNow * 1.6);
     const later = this.queue.filter(defer);
     this.queue = this.queue.filter((q) => !defer(q));
     this.work(Infinity);

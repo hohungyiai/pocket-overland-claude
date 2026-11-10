@@ -1219,7 +1219,10 @@ export async function buildPasirRisCourse(
   // Decks and raised roads have their own surface height (not the ground's),
   // level across their width.
   const hasProfile = edges.map((_, i) => isDeck[i] || embank[i]);
-  const levelIdx = new SegIndex(EP, 24, false, (i) => isDeck[i]);
+  // (The roads on the ground at its own level, apart from the raised ones
+  // in rampIdx: a bank beside them is only cut back where there is one.)
+  const flatIdx = new SegIndex(EP, 24, false, (i) => hasProfile[i]);
+  const flatHalfMax = edges.reduce((m, _, i) => (hasProfile[i] ? m : Math.max(m, EHALF[i])), 0);
   // Coarse 16 m grid of where an embankment might be, so heightAt can skip the search.
   const RG = 16;
   const rampNear = new Uint8Array(Math.ceil((WB.maxX - WB.minX) / RG) * Math.ceil((WB.maxZ - WB.minZ) / RG));
@@ -1571,22 +1574,29 @@ export async function buildPasirRisCourse(
       // its own level across its width, and ground can rise from its edge no
       // steeper than 1 in 2. (Where that cuts a bank short, the raised road
       // gets a retaining wall.)
-      levelIdx.each(x, z, 30, (line, seg, u, d) => {
+      // (A raised road first: its own height, measured from its base.)
+      rampIdx.each(x, z, 30, (line, seg, u, d) => {
         const slack = Math.max(0, d - EHALF[line] - 0.6) / 2;
-        let yr = hb;
-        if (hasProfile[line]) {
-          const pts = EP[line];
-          const sl = Math.hypot(pts[seg + 1][0] - pts[seg][0], pts[seg + 1][1] - pts[seg][1]);
-          const sa = ECUM[line][seg] + u * sl;
-          yr = roadBase(line, sa, lerp(pts[seg][0], pts[seg + 1][0], u), lerp(pts[seg][1], pts[seg + 1][1], u));
-          // (A road is never below its base: one whose base alone already
-          // clears this point needn't work out how far above it stands.)
-          if (yr + slack >= h) return;
-          yr += relAlong(line, sa);
-        }
+        const pts = EP[line];
+        const sl = Math.hypot(pts[seg + 1][0] - pts[seg][0], pts[seg + 1][1] - pts[seg][1]);
+        const sa = ECUM[line][seg] + u * sl;
+        let yr = roadBase(line, sa, lerp(pts[seg][0], pts[seg + 1][0], u), lerp(pts[seg][1], pts[seg + 1][1], u));
+        // (A road is never below its base: one whose base alone already
+        // clears this point needn't work out how far above it stands.)
+        if (yr + slack >= h) return;
+        yr += relAlong(line, sa);
         const cap = yr + slack;
         if (cap < h) h = cap;
       });
+      // (Then the roads on the ground, which lie at hb: they only matter
+      // where the ground here still stands above that, and then only those
+      // near enough for their 1 in 2 to come under it.)
+      const over = h - hb;
+      if (over > 0)
+        flatIdx.each(x, z, Math.min(30, flatHalfMax + 0.6 + 2 * over + 1e-6), (line, _seg, _u, d) => {
+          const cap = hb + Math.max(0, d - EHALF[line] - 0.6) / 2;
+          if (cap < h) h = cap;
+        });
     }
     if (s > BEACH) {
       const o = openness(x, z);
@@ -1739,6 +1749,9 @@ export async function buildPasirRisCourse(
       c.at = at;
     }
   };
+  /** One fixed body for all of a tile layer's own colliders, however many jobs add to it. */
+  const tileBodies = new WeakMap<TileKit, ReturnType<TileKit['body']>>();
+  const tileBody = (kit: TileKit) => tileBodies.get(kit) ?? tileBodies.set(kit, kit.body()).get(kit)!;
   /** One job per `size` items, so each build step stays short. */
   const inChunks = <T>(layer: Layer, k: string, what: string, items: T[], size: number, job: (part: T[], kit: TileKit, acc: AccFor) => void) => {
     for (let s = 0; s < items.length; s += size) {
@@ -2330,7 +2343,7 @@ export async function buildPasirRisCourse(
       (byTile.get(k) ?? byTile.set(k, []).get(k)!).push(id);
     });
     for (const [k, all] of byTile)
-      inChunks('far', k, 'gores', all, 30, (list, _kit, acc) => {
+      inChunks('far', k, 'gores', all, 10, (list, _kit, acc) => {
         const road = acc('road');
         for (const id of list) {
           const { rows } = gores[id];
@@ -2535,13 +2548,27 @@ export async function buildPasirRisCourse(
     ];
   };
   const roadRuns = runsOf(EP);
+  // A run is drawn a few pieces at a time, each its own build slice: by
+  // ramps and flyovers, where working out the ground takes longest, 6 road
+  // pieces (about 25 m) to a slice; elsewhere 24. (r0 to r1 is the whole
+  // run in the tile, k0 to k1 the part drawn in this slice.)
+  const inSlices = (all: { line: number; k0: number; k1: number }[]) => {
+    const out: { line: number; r0: number; r1: number; k0: number; k1: number }[] = [];
+    for (const { line, k0, k1 } of all) {
+      let ramp = false;
+      for (let k = k0; k <= k1 && !ramp; k++) ramp = nearRamp(EP[line][k][0], EP[line][k][1]);
+      const n = ramp ? 6 : 24;
+      for (let a = k0; a < k1; a += n) out.push({ line, r0: k0, r1: k1, k0: a, k1: Math.min(k1, a + n) });
+    }
+    return out;
+  };
   for (const [k, all] of roadRuns)
-    inChunks('far', k, 'roads', all, 30, (list, _kit, acc) => {
+    inChunks('far', k, 'roads', inSlices(all), 1, (list, _kit, acc) => {
       const road = acc('road');
       const kerb = acc('kerb');
       const white = acc('white');
       const yellow = acc('yellow');
-      for (const { line, k0, k1 } of list) {
+      for (const { line, r0, r1, k0, k1 } of list) {
         const e = edges[line];
         const pts = EP[line];
         const cum = ECUM[line];
@@ -2608,9 +2635,13 @@ export async function buildPasirRisCourse(
           for (const sgn of [-1, 1]) {
             const off = (kk: number) => sgn * (halfAt(kk) + 0.45);
             const dr = new Float32Array(hi - lo + 1);
+            // (The way the road runs at each point looks along the whole
+            // run in this tile, not just the part drawn in this slice.)
+            const rlo = Math.max(r0, cut.lo);
+            const rhi = Math.min(r1, cut.hi);
             for (let kk = lo; kk <= hi; kk++) {
-              const a = P[Math.max(lo, kk - 1)];
-              const b = P[Math.min(hi, kk + 1)];
+              const a = P[Math.max(rlo, kk - 1)];
+              const b = P[Math.min(rhi, kk + 1)];
               const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
               const o = off(kk) + sgn * 0.6;
               dr[kk - lo] = dy[kk] + 0.09 - heightAt(P[kk][0] + ((b[1] - a[1]) / tl) * o, P[kk][1] - ((b[0] - a[0]) / tl) * o);
@@ -2730,9 +2761,9 @@ export async function buildPasirRisCourse(
       m.receiveShadow = true;
       kit.add(m);
     });
-    onTile('near', k, 'deck barriers', (kit) => {
-      const body = kit.body();
-      for (const { line, k0, k1 } of list) {
+    inChunks('near', k, 'deck barriers', list, 1, (part, kit) => {
+      const body = tileBody(kit);
+      for (const { line, k0, k1 } of part) {
         const pts = EP[line];
         const dy = deckY(line);
         const cum = ECUM[line];
@@ -2813,7 +2844,7 @@ export async function buildPasirRisCourse(
     else padsByTile.set(k, [j]);
   });
   for (const [k, all] of padsByTile)
-    inChunks('far', k, 'pads', all, 40, (list, _kit, acc) => {
+    inChunks('far', k, 'pads', all, 10, (list, _kit, acc) => {
       const road = acc('road');
       for (const j of list) {
         const [x, z] = M.junctions[j];
@@ -2869,7 +2900,7 @@ export async function buildPasirRisCourse(
   const dropY = (x: number, z: number) => Math.max(rawHeight(x, z), WL + 0.15);
   const RINGS = [1 / 3, 2 / 3, 1];
   for (const [k, all] of shapesByTile)
-    inChunks('far', k, 'junctions', all, 20, (list, _kit, acc) => {
+    inChunks('far', k, 'junctions', all, 2, (list, _kit, acc) => {
       const road = acc('road');
       const kerb = acc('kerb');
       for (const id of list) {
@@ -3208,7 +3239,7 @@ export async function buildPasirRisCourse(
   // Footpaths sit just under cycle paths, so where they overlap the cycle
   // path shows cleanly instead of the two flickering.
   for (const [k, all] of runsOf(paths.map((p) => p.pts)))
-    inChunks('far', k, 'paths', all, 40, (list, _kit, acc) => {
+    inChunks('far', k, 'paths', all, 4, (list, _kit, acc) => {
       const foot = acc('foot');
       const cyc = acc('cycle');
       const rail = acc('rail');
