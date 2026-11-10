@@ -47,7 +47,7 @@ const CHECKS = [
   // (5 left, of 838 before kerbs and lines stopped at other roads: three
   // TPE / Halus Link spots where expressway pieces lie side by side, for the
   // merge rebuild, and one on Tampines Road.)
-  ['No kerb or road line across a lane', 'lanes.js', '__checkLanes', 0, 1],
+  ['No kerb or road line across a lane', 'lanes.js', '__checkLanes', 0],
   ['No bite out of a road\'s edge', 'lanes.js', '__checkEdges', 0],
   ['Widths change no faster than 1 m per 20 m (50 m on expressways), through junctions too', 'lanes.js', '__checkWidths', 0],
   // (79: corners OSM itself draws as a jog, nearly all on service lanes.)
