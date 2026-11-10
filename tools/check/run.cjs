@@ -20,6 +20,7 @@ const CHECKS = [
   ['A flyover stays up along its whole length', 'dips.js', '__checkDips', 0],
   ['No two roads cross at the same height', 'headroom.js', '__checkCrossings', 0],
   ['No building stands up through a raised road', 'buildings.js', '__checkBuildingsUnderRoads', 0],
+  ['No building wall or column stands on a road', 'buildings.js', '__checkBuildingsOnRoads', 0],
   ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0],
   // (Known: seven real junctions where five or six roads meet at one point
   // in the map data; the ratchet is there to catch new ones.)

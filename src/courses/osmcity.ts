@@ -3526,8 +3526,14 @@ export async function buildPasirRisCourse(
     const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
     return s - Math.floor(s);
   };
-  interface Bld { pts: XZ[]; h: number; wall: number; roof: number; walls: boolean; base: number; ground: number }
+  /** (open: the clear height of a ground floor left open on columns, 0 where the walls come down to the ground; posts: its columns.) */
+  interface Bld { pts: XZ[]; h: number; wall: number; roof: number; walls: boolean; base: number; ground: number; open: number; posts: XZ[] }
   const UNDER_DECK = 1; // clear space between a roof and the deck above it
+  /** Surely more than a few metres from every road? (From the land-use raster: quick. Beyond the raster, never.) */
+  const farFromRoads = (x: number, z: number) => {
+    const i = Math.floor((x - WB.minX) / G), j = Math.floor((z - WB.minZ) / G);
+    return i >= 0 && j >= 0 && i < RW && j < RH && !(code[j * RW + i] & NEAR_ROAD);
+  };
   /**
    * The highest a roof may stand within this outline: a metre under the
    * lowest deck that passes over it (-Infinity under a road on a bank;
@@ -3536,6 +3542,7 @@ export async function buildPasirRisCourse(
   const roomUnderRoads = (pts: XZ[], cx: number, cz: number) => {
     let room = Infinity;
     const look = (x: number, z: number) =>
+      !farFromRoads(x, z) &&
       roads.each(x, z, 16, (i, seg, u, d) => {
         if (!hasProfile[i] || d > Math.max(halfAtE(i, seg), halfAtE(i, seg + 1)) + 0.45 + UNDER_DECK) return;
         room = Math.min(room, isDeck[i] ? deckAtHit(i, seg, u) - (elevated[i] ? 1.2 : 0.6) - UNDER_DECK : -Infinity);
@@ -3555,11 +3562,166 @@ export async function buildPasirRisCourse(
     for (let x = x0 + 2; x < x1; x += 4) for (let z = z0 + 2; z < z1; z += 4) if (inRingXZ(pts, x, z)) look(x, z);
     return room;
   };
+  // A road on the ground has right of way too. Where one runs through a
+  // building (a drive into a car park, a lane under a block), the
+  // building's ground floor is left open, on columns, like an HDB void
+  // deck: no wall the car can meet. Where a road only clips a building
+  // (the two outlines overlapping by a metre or two), the building is cut
+  // back from the road instead.
+  const VOID_H = 4.5; // clear height of an open ground floor
+  const ROAD_CLEAR = 0.45 + 0.3; // a road's kerb, and a little more
+  /** The ground road whose surface (out to `extra` beyond its edge) reaches (x, z) deepest: how deep, the nearest point of its middle line and its direction there. */
+  const roadOver = (x: number, z: number, extra: number) => {
+    type Over = { dep: number; ax: number; az: number; tx: number; tz: number; end: number };
+    let best: Over | null = null;
+    if (farFromRoads(x, z)) return null;
+    roads.each(x, z, 16, (i, seg, u, d) => {
+      if (hasProfile[i]) return; // (raised roads: see roomUnderRoads)
+      const dep = Math.max(halfAtE(i, seg), halfAtE(i, seg + 1)) + extra - d;
+      if (dep <= 0 || (best && best.dep >= dep)) return;
+      const P = EP[i];
+      const l = Math.hypot(P[seg + 1][0] - P[seg][0], P[seg + 1][1] - P[seg][1]) || 1;
+      // (end: beyond the road's first point (-1) or its last (1).)
+      const end = seg === 0 && u <= 1e-3 ? -1 : seg === P.length - 2 && u >= 1 - 1e-3 ? 1 : 0;
+      best = { dep, ax: lerp(P[seg][0], P[seg + 1][0], u), az: lerp(P[seg][1], P[seg + 1][1], u), tx: (P[seg + 1][0] - P[seg][0]) / l, tz: (P[seg + 1][1] - P[seg][1]) / l, end };
+    });
+    return best as Over | null;
+  };
+  /** Metres of ground road (its middle line) inside each building of the map. */
+  const roadThrough = new Float32Array(M.buildings.length);
+  {
+    const C = 48;
+    const grid = new Map<number, number[]>();
+    const box = M.buildings.map((b, id) => {
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (const p of b.pts) {
+        x0 = Math.min(x0, p[0]);
+        x1 = Math.max(x1, p[0]);
+        z0 = Math.min(z0, p[1]);
+        z1 = Math.max(z1, p[1]);
+      }
+      if (!SKIP.has(b.k) && b.k !== 'roof' && b.pts.length >= 3)
+        for (let i = Math.floor(x0 / C); i <= Math.floor(x1 / C); i++)
+          for (let j = Math.floor(z0 / C); j <= Math.floor(z1 / C); j++) {
+            const k = i * 100003 + j;
+            (grid.get(k) ?? grid.set(k, []).get(k)!).push(id);
+          }
+      return [x0, x1, z0, z1];
+    });
+    edges.forEach((_e, i) => {
+      if (hasProfile[i]) return;
+      const P = EP[i];
+      for (let k = 0; k + 1 < P.length; k++) {
+        const l = Math.hypot(P[k + 1][0] - P[k][0], P[k + 1][1] - P[k][1]);
+        const n = Math.max(1, Math.round(l));
+        for (let q = 0; q < n; q++) {
+          const x = lerp(P[k][0], P[k + 1][0], (q + 0.5) / n), z = lerp(P[k][1], P[k + 1][1], (q + 0.5) / n);
+          const cellIds = grid.get(Math.floor(x / C) * 100003 + Math.floor(z / C));
+          if (!cellIds) continue;
+          for (const id of cellIds) {
+            const bx = box[id];
+            if (x < bx[0] || x > bx[1] || z < bx[2] || z > bx[3] || !inRingXZ(M.buildings[id].pts, x, z)) continue;
+            roadThrough[id] += l / n;
+          }
+        }
+      }
+    });
+  }
+  /**
+   * A building's outline cut back from the ground roads that clip it: the
+   * same outline where none does, null where it cannot be cut clear (a
+   * road still crosses it, or too little would be left).
+   */
+  const cutBack = (pts: XZ[], cx: number, cz: number): XZ[] | null => {
+    // (Walls in pieces of 2 m or less, so a wall alongside a road moves back whole.)
+    let P: XZ[] = [];
+    pts.forEach((p, q) => {
+      const n = pts[(q + 1) % pts.length];
+      const steps = Math.max(1, Math.ceil(Math.hypot(n[0] - p[0], n[1] - p[1]) / 2));
+      for (let k = 0; k < steps; k++) P.push([lerp(p[0], n[0], k / steps), lerp(p[1], n[1], k / steps)]);
+    });
+    if (!P.some((p) => roadOver(p[0], p[1], ROAD_CLEAR))) return pts;
+    /** p moved clear of the road it is on, if any. */
+    const clear = (p: XZ): XZ => {
+      const r = roadOver(p[0], p[1], ROAD_CLEAR);
+      if (!r) return p;
+      const d = Math.hypot(p[0] - r.ax, p[1] - r.az);
+      // Round the end of a road that stops at the building (a drive up
+      // to its door): on past the end, the wall set back in a bay.
+      if (r.end) {
+        const fx = r.tx * r.end, fz = r.tz * r.end;
+        const reach = r.dep + d + 0.02;
+        const lat = (p[0] - r.ax) * -fz + (p[1] - r.az) * fx;
+        const fwd = Math.sqrt(Math.max(0, reach * reach - lat * lat));
+        return [r.ax - fz * lat + fx * fwd, r.az + fx * lat + fz * fwd];
+      }
+      // Out to the road's edge, on the side the building stands.
+      const side = (cx - r.ax) * -r.tz + (cz - r.az) * r.tx >= 0 ? 1 : -1;
+      const nx = -r.tz * side, nz = r.tx * side;
+      const move = r.dep + d - ((p[0] - r.ax) * nx + (p[1] - r.az) * nz) + 0.02;
+      return [p[0] + nx * move, p[1] + nz * move];
+    };
+    for (let pass = 0; pass < 3; pass++) P = P.map(clear);
+    // (Points pushed together are one corner.)
+    let out: XZ[] = [];
+    for (const p of P) {
+      const last = out[out.length - 1];
+      if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 0.3) out.push(p);
+    }
+    while (out.length > 3 && Math.hypot(out[0][0] - out[out.length - 1][0], out[0][1] - out[out.length - 1][1]) <= 0.3) out.pop();
+    if (out.length < 3) return null;
+    // A wall between two corners may still cut across the road's edge:
+    // it gets a corner more there, until none does.
+    for (let round = 0; ; round++) {
+      const next: XZ[] = [];
+      let more = false;
+      for (let q = 0; q < out.length; q++) {
+        const a = out[q], b = out[(q + 1) % out.length];
+        next.push(a);
+        const steps = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1])));
+        for (let k = 0; k < steps; k++) {
+          const m: XZ = [lerp(a[0], b[0], (k + 0.5) / steps), lerp(a[1], b[1], (k + 0.5) / steps)];
+          if (!roadOver(m[0], m[1], 0.4)) continue;
+          next.push(clear(clear(m)));
+          more = true;
+        }
+      }
+      if (!more) break;
+      if (round === 5) return null;
+      out = next;
+    }
+    return ringArea(out) < 0.5 * ringArea(pts) ? null : out;
+  };
+  /** Where the columns of an open ground floor stand: round the outline and in rows inside, clear of every road. */
+  const columnsOf = (pts: XZ[], area: number) => {
+    const posts: XZ[] = [];
+    const add = (x: number, z: number) => {
+      if (!roadOver(x, z, 0.45 + 1.3) && !posts.some((p) => Math.hypot(p[0] - x, p[1] - z) < 2.5)) posts.push([x, z]);
+    };
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    pts.forEach((p, q) => {
+      const n = pts[(q + 1) % pts.length];
+      const steps = Math.max(1, Math.ceil(Math.hypot(n[0] - p[0], n[1] - p[1]) / 7));
+      for (let k = 0; k < steps; k++) add(lerp(p[0], n[0], k / steps), lerp(p[1], n[1], k / steps));
+      x0 = Math.min(x0, p[0]);
+      x1 = Math.max(x1, p[0]);
+      z0 = Math.min(z0, p[1]);
+      z1 = Math.max(z1, p[1]);
+    });
+    // (Rows wider apart in a big building: about sixty columns inside at most.)
+    const g = Math.max(7, Math.sqrt(area / 60));
+    for (let x = x0 + g / 2; x < x1; x += g) for (let z = z0 + g / 2; z < z1; z += g) if (inRingXZ(pts, x, z)) add(x, z);
+    return posts;
+  };
   const blds: Bld[] = [];
+  /** How many buildings met a ground road, and what became of them. */
+  const bldRoads = { through: 0, cut: 0, opened: 0, roofed: 0, left: 0, ms: 0 };
+  const bldT0 = performance.now();
   const bldTile = new Map<string, number[]>();
-  for (const b of M.buildings) {
+  for (let bi = 0; bi < M.buildings.length; bi++) {
+    const b = M.buildings[bi];
     if (SKIP.has(b.k) || b.pts.length < 3) continue;
-    const pts = ringArea(b.pts) < 0 ? [...b.pts].reverse() : b.pts;
+    let pts = ringArea(b.pts) < 0 ? [...b.pts].reverse() : b.pts;
     const area = Math.abs(ringArea(pts));
     let cx = 0;
     let cz = 0;
@@ -3635,12 +3797,35 @@ export async function buildPasirRisCourse(
       h = Math.min(h, room - ground);
       if (h < 3) continue;
     }
+    let open = 0;
+    let posts: XZ[] = [];
+    if (walls) {
+      const cut = roadThrough[bi] >= 3 ? null : cutBack(pts, cx, cz);
+      if (roadThrough[bi] >= 3) bldRoads.through++;
+      if (cut) {
+        if (cut !== pts) bldRoads.cut++;
+        pts = cut;
+      } else if (h >= VOID_H + 3) {
+        open = VOID_H;
+        posts = columnsOf(pts, area);
+        bldRoads.opened++;
+      } else if (area < 150) {
+        bldRoads.left++; // (a hut or a shed in the road's way)
+        continue;
+      } else {
+        // (Too low for a floor above the road: a roof over it.)
+        walls = false;
+        h = Math.max(h, VOID_H);
+        bldRoads.roofed++;
+      }
+    }
     const i = blds.length;
-    blds.push({ pts, h, wall, roof, walls, base, ground });
+    blds.push({ pts, h, wall, roof, walls, base, ground, open, posts });
     const k = tileKey(cx, cz);
     if (!bldTile.has(k)) bldTile.set(k, []);
     bldTile.get(k)!.push(i);
   }
+  bldRoads.ms = performance.now() - bldT0;
   const wc = new THREE.Color();
   const rc = new THREE.Color();
   for (const [k, ids] of bldTile) {
@@ -3663,9 +3848,11 @@ export async function buildPasirRisCourse(
               const u0 = along / 12;
               const u1 = (along + len) / 12;
               along += len;
-              const v0 = 0;
+              // (Over an open ground floor the walls start above it.)
+              const foot = b.open ? b.ground + b.open : b.base;
+              const v0 = (foot - b.base) / 11.6;
               const v1 = (top - b.base) / 11.6;
-              wp.push(ax, b.base, az, bx, b.base, bz, bx, top, bz, ax, b.base, az, bx, top, bz, ax, top, az);
+              wp.push(ax, foot, az, bx, foot, bz, bx, top, bz, ax, foot, az, bx, top, bz, ax, top, az);
               wu.push(u0, v0, u1, v0, u1, v1, u0, v0, u1, v1, u0, v1);
               for (let c = 0; c < 6; c++) wcl.push(wc.r, wc.g, wc.b);
             }
@@ -3685,6 +3872,25 @@ export async function buildPasirRisCourse(
                 rcl.push(rc.r, rc.g, rc.b);
               }
           }
+          if (b.open) {
+            // An open ground floor: the ceiling over it, and its columns.
+            const ceil = b.ground + b.open;
+            for (const t of tris)
+              for (const v of t) {
+                rp.push(b.pts[v][0], ceil, b.pts[v][1]);
+                rcl.push(0.8, 0.8, 0.78);
+              }
+            const w = 0.3;
+            for (const [x, z] of b.posts) {
+              const c: XZ[] = [[x - w, z - w], [x + w, z - w], [x + w, z + w], [x - w, z + w]];
+              for (let q = 0; q < 4; q++) {
+                const [ax, az] = c[q];
+                const [bx, bz] = c[(q + 1) % 4];
+                rp.push(ax, b.base, az, bx, b.base, bz, bx, ceil, bz, ax, b.base, az, bx, ceil, bz, ax, ceil, az);
+                for (let k = 0; k < 6; k++) rcl.push(wc.r * 0.92, wc.g * 0.92, wc.b * 0.92);
+              }
+            }
+          }
         }
       });
     // Walls you can bump into, near the car only: a thick slab inside each wall.
@@ -3693,6 +3899,11 @@ export async function buildPasirRisCourse(
       for (const id of part) {
         const b = blds[id];
         if (!b.walls) continue;
+        if (b.open) {
+          // (An open ground floor: only its columns.)
+          for (const [x, z] of b.posts) world.createCollider(RAPIER.ColliderDesc.cuboid(0.3, b.open / 2 + 0.25, 0.3).setTranslation(x, b.ground + b.open / 2 - 0.25, z), body);
+          continue;
+        }
         const n = b.pts.length;
         for (let q = 0; q < n; q++) {
           const [ax, az] = b.pts[q];
@@ -4016,7 +4227,7 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
-      blds, deckSplits, throughLines, throughPairs, paveY, giveWays,
+      blds, deckSplits, throughLines, throughPairs, paveY, giveWays, bldRoads,
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),
