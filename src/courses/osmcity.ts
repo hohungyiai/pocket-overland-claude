@@ -947,7 +947,10 @@ export async function buildPasirRisCourse(
     };
     const isLink = (o: number) => /_link$/.test(edges[o].cls);
     const capped = new Uint8Array(edges.length);
-    const merges = (h: Hit) => h.dot > 0.8 && !capped[h.o] && !bumped[h.i] && !crossing.has(h.i + ',' + h.o) && (isLink(h.o) || raised(h.o));
+    // (A road held down under one flyover may still merge with another
+    // raised road further on, if it joins it there: through a short link.)
+    const joins = (i: number, o: number) => [edges[o].a, edges[o].b].some((j) => (jE[j] ?? []).some((t) => t !== o && ELEN[t] < 30 && shares(t, i)));
+    const merges = (h: Hit) => h.dot > 0.8 && (!capped[h.o] || joins(h.i, h.o)) && !bumped[h.i] && !crossing.has(h.i + ',' + h.o) && (isLink(h.o) || raised(h.o));
     // Can road o rise to `rel` at s, no steeper than 1 in 10 from a capped end?
     const MAXG = 0.1;
     const canRise = (o: number, s: number, rel: number) =>
