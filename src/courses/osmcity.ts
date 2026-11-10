@@ -2186,6 +2186,16 @@ export async function buildPasirRisCourse(
       const onAxis = new Set(top.pairs.flatMap((c) => [c.a, c.b]));
       if (M.some((m, q) => !onAxis.has(q) && rankOf(edges[m.line].cls) > top.rank)) return;
       const lines: ThroughLine[] = [];
+      // (A road on the ground that is no part of this junction, yet lies
+      // over it: a slip road merging in alongside.)
+      const own = new Set([...M.map((m) => m.line), ...sh.internal]);
+      const foreign = (x: number, z: number) => {
+        let hit = false;
+        roads.each(x, z, 16, (i, seg, _u, d) => {
+          if (!hit && !own.has(i) && !elevated[i] && d <= Math.max(halfAtE(i, seg), halfAtE(i, seg + 1)) + 0.2) hit = true;
+        });
+        return hit;
+      };
       for (const c of top.pairs) {
         const A = M[c.a], B = M[c.b];
         const ea = edges[A.line], eb = edges[B.line];
@@ -2211,8 +2221,9 @@ export async function buildPasirRisCourse(
         const line = (oa: number, ob: number, kind: 'white' | 'yellow', dashed: boolean) => {
           const pts = centre.map((p, k) => [p[0] + normal[k][0] * lerp(oa, ob, k / N), p[1] + normal[k][1] * lerp(oa, ob, k / N)] as XZ);
           // (Only a line that lies on this junction's paving all the way,
-          // clear of any island: no half lines.)
-          if (pts.every((p, k) => k === 0 || k === N || (inRingXZ(sh.ring, p[0], p[1]) && !onIsland(p[0], p[1])))) lines.push({ kind, dashed, pts, ends: [A.line * 2 + A.end, B.line * 2 + B.end] });
+          // clear of any island and of any road merging in alongside: no
+          // half lines, and none across another road's lane.)
+          if (pts.every((p, k) => k === 0 || k === N || (inRingXZ(sh.ring, p[0], p[1]) && !onIsland(p[0], p[1]) && !foreign(p[0], p[1])))) lines.push({ kind, dashed, pts, ends: [A.line * 2 + A.end, B.line * 2 + B.end] });
         };
         // (Each road's offsets are counted along itself, a to b: turned
         // round where it runs against the way across.)
