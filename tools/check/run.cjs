@@ -19,7 +19,7 @@ const CHECKS = [
   ['At least 4.8 m headroom under every road above', 'headroom.js', '__checkHeadroom', 0],
   ['A flyover stays up along its whole length', 'dips.js', '__checkDips', 0],
   ['No two roads cross at the same height', 'headroom.js', '__checkCrossings', 0],
-  ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0, 1],
+  ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0],
   // (Known: seven real junctions where five or six roads meet at one point
   // in the map data; the ratchet is there to catch new ones.)
   ['No junction offers more than four ways to go', 'arms.js', '__checkArms', 0, 7],
@@ -28,11 +28,12 @@ const CHECKS = [
   ['Junctions stay on their roads', 'junctions.js', '__checkJunctionSpill', 0],
   ['Crossings lie on their own road', 'crossings.js', '__checkCrossings', 0],
   ['No traffic light on a road or in a junction', 'crossings.js', '__checkLightPoles', 0],
-  ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 29],
+  ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 23],
   ['No step where road pieces meet', 'seams.js', '__checkSteps', 0],
   ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
   ['A through road\'s lines carry on across its junctions', 'through.js', '__checkThroughLines', 0],
   ['A through road\'s lines meet the road\'s own at the junction\'s edge', 'through.js', '__checkThroughJoins', 0],
+  ['A through road\'s edge runs on smoothly where nothing joins it', 'through.js', '__checkThroughEdges', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
   // Drivable from a standstill: 60% of what the car can do (src/limits.ts).
   ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 19],
