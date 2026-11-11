@@ -1227,13 +1227,28 @@ export async function buildPasirRisCourse(
     if (!stripEnds[i]) stripEnds[i] = thruJoint(i, edges[i].a) === undefined && thruJoint(i, edges[i].b) === undefined ? 1 : 2;
     return stripEnds[i] === 2;
   };
+  // A road is level across a junction, at the junction's own height. On a
+  // redrawn map it can be level for a long way out of a joint (a strip
+  // beside its slip road, out to the slip's mouth), and on a slope the
+  // hills where that level stretch ends are not the hills under the joint.
+  // stepAt: how far the junction's ground stands above the hills there (or
+  // below them, negative).
+  const stepCache = new Float32Array(edges.length * 2).fill(NaN);
+  const stepAt = (i: number, fromA: boolean) => {
+    const key = i * 2 + (fromA ? 0 : 1);
+    let v = stepCache[key];
+    if (v !== v) {
+      const j = fromA ? edges[i].a : edges[i].b;
+      const [x, z] = along(i, fromA, fromA ? trimA(i) : trimB(i));
+      v = stepCache[key] = baseAt(M.junctions[j][0], M.junctions[j][1]) - baseAt(x, z);
+    }
+    return v;
+  };
   /**
    * How far a long piece of a strip takes to come down to the ground from
    * its raised joint j, beyond the stretch it stays level there: half as
-   * long again as the ramp down from the joint's height above the ground.
-   * Beside a slip road that level stretch is long, and on a slope the
-   * ground where it ends is not the ground under the joint: the ramp is
-   * measured down to the ground the road lands on, not the joint's own.
+   * long again as the ramp down from its height above the ground, which is
+   * the ground where the level stretch ends, not the joint's own.
    */
   const landOver = (i: number, j: number) => {
     const fromA = edges[i].a === j;
@@ -1242,12 +1257,11 @@ export async function buildPasirRisCourse(
     if (D !== undefined) return D;
     const rj = jRel[j] ?? 0;
     D = (1.5 * rj) / RAMP_GRADE;
-    const t = fromA ? trimA(i) : trimB(i);
-    if (t > 0) {
+    // (Not a road held down to pass under a flyover: the headroom is worked
+    // out for a road that comes down as fast as it can.)
+    if ((fromA ? trimA(i) : trimB(i)) > 0 && !held(i)) {
       const room = runLen(i) - (1.5 * (jRel[fromA ? edges[i].b : edges[i].a] ?? 0)) / RAMP_GRADE;
-      const [x, z] = along(i, fromA, Math.min(ELEN[i], t + D));
-      const drop = Math.abs(baseAt(M.junctions[j][0], M.junctions[j][1]) + rj - baseAt(x, z));
-      D = Math.max(D, Math.min(room, (1.5 * drop) / RAMP_GRADE));
+      D = Math.max(D, Math.min(room, (1.5 * Math.abs(rj + stepAt(i, fromA))) / RAMP_GRADE));
     }
     landCache.set(key, D);
     return D;
@@ -1300,19 +1314,18 @@ export async function buildPasirRisCourse(
   // (groundUnder: the hills at the point roadBase was last asked about, for
   // a caller that needs both without working the hills out twice.)
   let groundUnder = 0;
-  // How much of the junction's own ground a road still stands on, d m from
-  // its end there (1 across the junction, 0 once it is back on the hills).
-  // On a redrawn map a road can be level for a long way out of a joint (a
-  // strip beside its slip road, out to the slip's mouth), and on a slope
-  // the hills where that ends are well above or below the joint's ground:
-  // going back to them in 12 m made a hump, or a drop too steep to climb.
-  // The junction's ground eases out as the road's own height above it
-  // does, so the road runs in one line from the joint's height:
+  // How much of that step (stepAt) a road still stands on, d m from its
+  // end, beyond its level stretch. Coming back to the hills in 12 m, as on
+  // today's map where the step is small, made a hump on a road falling to
+  // the ground, or a drop too steep to climb. The step eases out as the
+  // road's own height above the ground does, so the two never work against
+  // each other:
   // - a long piece of a strip coming down to the ground: with its curve;
   // - a short piece of a strip: with its one curve to the other end;
-  // - any other road: as far as the difference in the ground needs at
-  //   RAMP_GRADE, never less than the 12 m. (No further than that: two
-  //   roads side by side agree in height because both stand on the hills.)
+  // - any other road: as far as the step needs at RAMP_GRADE, never less
+  //   than the 12 m.
+  // (Only the step is carried: beyond the level stretch every road still
+  // stands on the hills under it, so two roads side by side agree.)
   const baseHold = (i: number, fromA: boolean, d: number, F: number) => {
     const j = fromA ? edges[i].a : edges[i].b;
     const t = fromA ? trimA(i) : trimB(i);
@@ -1325,9 +1338,8 @@ export async function buildPasirRisCourse(
     const key = i * 2 + (fromA ? 0 : 1);
     let L = holdLen[key];
     if (!L) {
-      const [x, z] = along(i, fromA, Math.min(ELEN[i], t + F));
       const room = (fromA ? trimB(i) : trimA(i)) > 0 && (jRel[fromA ? edges[i].b : edges[i].a] ?? 0) > 0.02 ? run / 2 : run;
-      L = holdLen[key] = Math.max(F, Math.min(room, (1.5 * Math.abs(jBase[j] - baseAt(x, z))) / RAMP_GRADE));
+      L = holdLen[key] = Math.max(F, Math.min(room, (1.5 * Math.abs(stepAt(i, fromA))) / RAMP_GRADE));
     }
     return 1 - smoothstep(t, t + L, d);
   };
@@ -1341,13 +1353,15 @@ export async function buildPasirRisCourse(
     const tb = trimB(i);
     // (Gone well before the far end, however short the road.)
     const F = Math.min(12, Math.max(0.5, runLen(i) / 2));
-    if (!oneLine) {
+    // (Today's map; and on a redrawn map a road held down to pass under a
+    // flyover, whose headroom is worked out for the quick way down.)
+    if (!oneLine || held(i)) {
       if (ta > 0) r += (1 - smoothstep(ta, ta + F, s)) * smoothstep(0.02, 0.5, jRel[e.a]) * (jBase[e.a] - b);
       if (tb > 0) r += (1 - smoothstep(tb, tb + F, ELEN[i] - s)) * smoothstep(0.02, 0.5, jRel[e.b]) * (jBase[e.b] - b);
       return r;
     }
-    if (ta > 0 && jRel[e.a] > 0.02) r += baseHold(i, true, s, F) * smoothstep(0.02, 0.5, jRel[e.a]) * (jBase[e.a] - b);
-    if (tb > 0 && jRel[e.b] > 0.02) r += baseHold(i, false, ELEN[i] - s, F) * smoothstep(0.02, 0.5, jRel[e.b]) * (jBase[e.b] - b);
+    if (ta > 0 && jRel[e.a] > 0.02) r += smoothstep(0.02, 0.5, jRel[e.a]) * (s <= ta ? jBase[e.a] - b : baseHold(i, true, s, F) * stepAt(i, true));
+    if (tb > 0 && jRel[e.b] > 0.02) r += smoothstep(0.02, 0.5, jRel[e.b]) * (ELEN[i] - s <= tb ? jBase[e.b] - b : baseHold(i, false, ELEN[i] - s, F) * stepAt(i, false));
     return r;
   };
   // Headroom. Wherever a raised road runs over a lower one:
