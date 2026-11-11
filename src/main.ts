@@ -87,10 +87,26 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   const fwdMap = new THREE.Vector3();
   const carHeading = () => Math.atan2(-fwdMap.set(1, 0, 0).applyQuaternion(car.mesh.quaternion).z, fwdMap.x);
   // The drive pauses while the full map is open, so nothing moves while you look.
-  const fullMap = new FullMap($('app'), course.map, course.name, () => {
-    last = performance.now();
-    acc = 0;
-  });
+  const fullMap = new FullMap(
+    $('app'),
+    course.map,
+    course.name,
+    () => {
+      last = performance.now();
+      acc = 0;
+    },
+    // Drive from a spot picked on the map: the nearest road to it, where
+    // the course knows one (a reload, so the world there is built fresh).
+    (x, z) => {
+      const spot = course.safeSpot?.(x, z) ?? { x, z, yaw: carHeading() };
+      const q = new URLSearchParams({
+        course: courseId,
+        style: detailed ? 'detailed' : 'stylized',
+        at: [spot.x, spot.z, spot.yaw, camMode].map((v) => +v.toFixed(2)).join(','),
+      });
+      location.replace(`${location.pathname}?${q}`);
+    },
+  );
   const openMap = () => {
     controls.reset();
     fullMap.open(car.mesh.position.x, car.mesh.position.z, carHeading());
