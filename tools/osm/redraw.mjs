@@ -858,7 +858,7 @@ if (steps.has('roads')) {
   }
   // A paired road's painted median keeps its place through the joint: where
   // the two pieces have it at different offsets or widths, it eases from one
-  // to the other across the joint (1 m sideways in 20 m), as knots [fraction
+  // to the other across the joint (1 m sideways in 40 m), as knots [fraction
   // along the piece, offset, width] (`ms`).
   const knots = new Map();
   for (const [j, p, q] of pairs) {
@@ -870,7 +870,7 @@ if (steps.has('roads')) {
     if (diff < 0.05) continue;
     const mid = [(vp[0] + vq[0]) / 2, (vp[1] + vq[1]) / 2];
     for (const [e, sgn] of [[p, sp], [q, sq]]) {
-      const T = Math.min(0.45 * e.len, Math.max(8, diff * 10));
+      const T = Math.min(0.45 * e.len, Math.max(12, diff * 20));
       (knots.get(e) ?? knots.set(e, []).get(e)).push({ atA: e.a === j, T, v: [sgn * mid[0], mid[1]] });
     }
   }
