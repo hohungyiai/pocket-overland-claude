@@ -768,7 +768,9 @@ if (steps.has('roads')) {
   const no = (k) => (why[k] = (why[k] ?? 0) + 1);
   // First, at each joint of three or four pieces: the pair that carries
   // straight on, and the roads that meet it.
-  const MINLEN = +(process.env.MINLEN ?? 8);
+  const MINLEN = 8;
+  const ORDER = { service: 0, unclassified: 1, residential: 1, tertiary: 2, secondary: 3, primary: 4, trunk: 5, motorway: 6 };
+  const RANK = (cls) => ORDER[cls.replace(/_link$/, '')] ?? 0;
   const cand = new Map();
   for (const [j, l] of at) {
     if (l.length !== 3 && l.length !== 4) continue;
@@ -794,7 +796,8 @@ if (steps.has('roads')) {
         if (turn > (fast ? 15 : 25) || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
         const wp = widthAt(p, j), wq = widthAt(q, j);
         const narrow = Math.min(wp, wq);
-        if (Math.max(wp, wq) > (fast ? 1.6 : 1.5) * narrow + 0.01 || Math.min(p.len, q.len) < (fast ? 20 : MINLEN)) continue;
+        // (No more than twice as wide one side as the other: turning lanes added at a crossing taper in along the road.)
+        if (Math.max(wp, wq) > (fast ? 1.6 : 2) * narrow + 0.01 || Math.min(p.len, q.len) < (fast ? 20 : MINLEN)) continue;
         let ok = true;
         const short = [];
         for (const sd of sides) {
@@ -823,7 +826,9 @@ if (steps.has('roads')) {
           if (!sg[0] || sg[0] === sg[1]) continue;
         }
         // (Of two slip roads leaving one another, the wider carries on.)
-        const key = turn - (fast ? narrow : 0);
+        // (Where two roads cross, the bigger road carries on: by its class,
+        // then by how straight it runs.)
+        const key = turn - (fast ? narrow : 0) - 100 * Math.min(RANK(p.cls), RANK(q.cls));
         if (!best || key < best.key) best = { p, q, sides, short, key, fast };
       }
     if (!best) {
