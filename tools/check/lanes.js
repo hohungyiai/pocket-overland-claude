@@ -75,7 +75,17 @@ window.__checkLanes = (all = false) => {
     // right-hand side: offsets in metres from the middle, given the half
     // width there.)
     const laneW = (2 * d.EHALF[i]) / lanes;
-    const mids = (half) => (e.one ? Array.from({ length: lanes }, (_, l) => -half + (l + 0.5) * laneW).filter((o) => o < half - 0.8) : lanes > 1 ? [-0.5 * half, 0.5 * half] : [0]);
+    // (A paired road, the two sides of a dual carriageway drawn as one,
+    // has its lanes between its own lines, counted out from its painted
+    // median: the middle of each, the median itself left out.)
+    const own = d.pairedLines?.(i);
+    const between = (half) => {
+      const at = [[-half, true], ...own.filter(([, , need]) => half > need).map(([o, broken]) => [o, broken]), [half, true]];
+      const out = [];
+      for (let q = 0; q + 1 < at.length; q++) if ((at[q][1] || at[q + 1][1]) && at[q + 1][0] - at[q][0] > 1.6) out.push((at[q][0] + at[q + 1][0]) / 2);
+      return out;
+    };
+    const mids = (half) => (own ? between(half) : e.one ? Array.from({ length: lanes }, (_, l) => -half + (l + 0.5) * laneW).filter((o) => o < half - 0.8) : lanes > 1 ? [-0.5 * half, 0.5 * half] : [0]);
     // (Only along the road itself: inside a junction, the junction checks.)
     const s0 = (d.JX.trimA[i] || 0) + 1, s1 = len - (d.JX.trimB[i] || 0) - 1;
     let k = 0;
