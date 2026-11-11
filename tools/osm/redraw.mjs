@@ -808,7 +808,7 @@ if (steps.has('roads')) {
           // few metres across a divider for turning back, not a slip road.)
           const slip = FAST.test(sd.cls) && !(/_link$/.test(sd.cls) && !fast && cut >= 40);
           // (One side of a divided road is half of its road.)
-          if ((fast && !slip && !/_link$/.test(p.cls)) || cut < (slip ? 6 : 40) || sd.w > (p.one && !fast ? 2 : 1) * Math.max(wp, wq) + 0.5) ok = false;
+          if ((fast && !slip && !/_link$/.test(p.cls)) || cut < (slip ? 6 : 40) || widthAt(sd, j) > (fast ? 1 : p.one ? 2 : 1.5) * Math.max(wp, wq) + 0.5) ok = false;
           // (A slip road is narrower than the road it leaves at every point.
           // One as wide that comes away at a narrow angle is not a side road:
           // the road forks there, and neither branch carries on.)
