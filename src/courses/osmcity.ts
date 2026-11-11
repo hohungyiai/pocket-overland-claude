@@ -1262,8 +1262,12 @@ export async function buildPasirRisCourse(
   // at the junction's one height even on a slope. (Only at a raised
   // junction: where it sits on the ground, every road follows the ground.)
   const jBase = Float64Array.from(M.junctions, ([jx, jz]) => baseAt(jx, jz));
+  // (groundUnder: the hills at the point roadBase was last asked about, for
+  // a caller that needs both without working the hills out twice.)
+  let groundUnder = 0;
   const roadBase = (i: number, s: number, x: number, z: number) => {
     const b = baseAt(x, z);
+    groundUnder = b;
     if (elevated[i]) return b;
     const e = edges[i];
     let r = b;
@@ -1916,14 +1920,21 @@ export async function buildPasirRisCourse(
         // (A road is never below its base: one whose base alone already
         // clears this point needn't work out how far above it stands.)
         if (yr + slack >= h) return;
+        const under = groundUnder;
         const rel = relAlong(line, sa);
         yr += rel;
         // (A road still down on the ground lies on it, along and across,
         // as tiltAt has it: there the ground is held to its own shape, not
         // to the height of the road's middle. On a slope that height is a
-        // step down for the road that carries on from its end. Redrawn
-        // maps only: today's map keeps its ground to the centimetre.)
-        if (oneLine && rel < 1) yr = lerp(Math.max(yr, hb), yr, smoothstep(0.1, 1, rel));
+        // step down for the road that carries on from its end. Only the
+        // ground's shape across the road counts, measured from the hills
+        // under its middle: a road held below the hills, as beside a
+        // junction on a slope, keeps the ground down with it. A road that
+        // stays level across its width, tiltAt 0, keeps the ground at its
+        // own height. Redrawn maps only: today's map keeps its ground to
+        // the centimetre.)
+        const tl = oneLine && rel < 1 ? tiltAt(line, sa) : 0;
+        if (tl > 0) yr += tl * Math.max(0, hb - under - rel);
         const cap = yr + slack;
         if (cap < h) h = cap;
       });
