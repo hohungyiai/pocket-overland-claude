@@ -194,6 +194,9 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // with just room for its corners, or is an opening paved between two
       // such roads.)
       if ((teeAt[a] && !thruAt(i, a)) || (teeAt[b] && !thruAt(i, b))) continue;
+      // (Nor are two of them one junction because the road between them is
+      // short: it carries on through both.)
+      if (teeAt[a] && teeAt[b] && thruAt(i, a) && thruAt(i, b)) continue;
       const ra = find(a);
       const rb = find(b);
       stub[i] = 1;

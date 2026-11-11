@@ -768,6 +768,7 @@ if (steps.has('roads')) {
   const no = (k) => (why[k] = (why[k] ?? 0) + 1);
   // First, at each joint of three or four pieces: the pair that carries
   // straight on, and the roads that meet it.
+  const MINLEN = +(process.env.MINLEN ?? 8);
   const cand = new Map();
   for (const [j, l] of at) {
     if (l.length !== 3 && l.length !== 4) continue;
@@ -792,14 +793,16 @@ if (steps.has('roads')) {
         if (turn > (fast ? 15 : 25) || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
         const wp = widthAt(p, j), wq = widthAt(q, j);
         const narrow = Math.min(wp, wq);
-        if (Math.max(wp, wq) > (fast ? 1.6 : 1.5) * narrow + 0.01 || Math.min(p.len, q.len) < 20) continue;
+        if (Math.max(wp, wq) > (fast ? 1.6 : 1.5) * narrow + 0.01 || Math.min(p.len, q.len) < (fast ? 20 : MINLEN)) continue;
         let ok = true;
         const short = [];
         for (const sd of sides) {
           const z = l.indexOf(sd);
-          const slip = FAST.test(sd.cls);
           // The side road comes in across it, and is no wider.
           const cut = Math.min(deg(h[z][0] * h[x][0] + h[z][1] * h[x][1]), deg(h[z][0] * h[y][0] + h[z][1] * h[y][1]));
+          // (A link that comes in square is a side road like any other: the
+          // few metres across a divider for turning back, not a slip road.)
+          const slip = FAST.test(sd.cls) && !(/_link$/.test(sd.cls) && !fast && cut >= 40);
           // (One side of a divided road is half of its road.)
           if ((fast && !slip) || cut < (slip ? 6 : 40) || sd.w > (p.one && !fast ? 2 : 1) * Math.max(wp, wq) + 0.5) ok = false;
           // (A slip road is narrower than the road it leaves at every point.
@@ -839,9 +842,14 @@ if (steps.has('roads')) {
   for (let changed = true; changed; ) {
     changed = false;
     for (const [j, c] of cand) {
-      if (c.short.every(({ sd, room }) => room || cand.get(sd.a === j ? sd.b : sd.a)?.sides.includes(sd))) continue;
+      // (And a piece of the road itself shorter than 20 m carries on at
+      // both its ends, or at neither: a junction shaped the old way at its
+      // far end would cut it back further than it is long.)
+      const far = (e) => cand.get(e.a === j ? e.b : e.a);
+      const chain = [c.p, c.q].every((e) => e.len >= 20 || [far(e)?.p, far(e)?.q].includes(e));
+      if (chain && c.short.every(({ sd, room }) => room || far(sd)?.sides.includes(sd))) continue;
       cand.delete(j);
-      no('short');
+      no(chain ? 'short' : 'chain');
       changed = true;
     }
   }
