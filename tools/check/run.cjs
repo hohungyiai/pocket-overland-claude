@@ -84,7 +84,7 @@ const CHECKS = [
     const p = await (await b.newContext({ viewport: { width: 640, height: 360 } })).newPage();
     p.on('pageerror', (e) => console.log('page error:', e.message));
     const t0 = Date.now();
-    await p.goto(`http://localhost:${PORT}/?course=pasirris&debug`);
+    await p.goto(`http://localhost:${PORT}/?course=${process.env.COURSE || 'pasirris'}&debug`);
     await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
     // (How long the game took to start, for the performance budget.)
     await p.evaluate((ms) => (window.__startMs = ms), Date.now() - t0);

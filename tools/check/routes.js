@@ -8,6 +8,8 @@ window.__checkRoutes = async () => {
   ];
   const d = globalThis.__osm;
   const bad = [];
+  // (These routes are the main map's: another course has no such roads, and the random trips cover it.)
+  if ((new URLSearchParams(location.search).get('course') ?? 'pasirris') !== 'pasirris') return { samples: 0, bad: 0, worst: [] };
   for (const [name, route] of ROUTES) {
     const r = await window.__driveRoute(route.map(([i, a, b]) => [i, a === 'end' ? d.ELEN[i] : a, b === 'end' ? d.ELEN[i] : b]), { timeout: 40 });
     if (!r.done) bad.push({ route: name, stuck: r.stuck ?? 'timeout', at: `${r.at} of ${r.total} m`, over: 1 });

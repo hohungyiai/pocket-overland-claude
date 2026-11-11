@@ -23,7 +23,8 @@ import { LIMITS } from '../limits';
 
 type Rapier = typeof RAPIER_NS;
 
-interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[] }
+/** (ws: the widths along a line the redraw step joined from pieces of different width: [fraction of its length where a width starts, width]; w is then the widest.) */
+interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[]; ws?: [number, number][]; dual?: number; mo?: number; med?: number }
 interface OsmMap {
   attribution: string;
   junctions: XZ[];
@@ -61,6 +62,8 @@ const NEAR_WET = 128; // in or beside a canal or pond
 const TREE_LINED = new Set(['trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'motorway']);
 const RANK: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3, tertiary: 2, unclassified: 1, residential: 1, living_street: 1, service: 0 };
 const rankOf = (cls: string) => RANK[cls] ?? (cls.endsWith('_link') ? 2 : 0);
+/** The two sides of a dual carriageway drawn as one road (two lanes or more each way: a narrower one is marked as any two-way street). */
+const paired = (e: { dual?: number; w: number }) => !!e.dual && e.w >= 12;
 
 export const PASIR_RIS_MAP = 'maps/east-sg.json';
 
@@ -68,9 +71,10 @@ export async function buildPasirRisCourse(
   scene: THREE.Scene,
   world: RAPIER_NS.World,
   RAPIER: Rapier,
-  opts: { style?: D.ArtStyle } = {},
+  opts: { style?: D.ArtStyle; map?: string; name?: string; startAt?: XZ } = {},
 ): Promise<Course> {
-  const res = await fetch(PASIR_RIS_MAP);
+  // (A trial area is the same builder on another map file: see tools/osm/redraw.mjs.)
+  const res = await fetch(opts.map ?? PASIR_RIS_MAP);
   if (!res.ok) throw new Error(`map data missing (${res.status})`);
   const M = (await res.json()) as OsmMap;
   const detailed = opts.style === 'detailed';
@@ -81,7 +85,10 @@ export async function buildPasirRisCourse(
   const ONE_WAY_W: Record<string, number> = { motorway: 11, trunk: 10, primary: 8, secondary: 7.5, tertiary: 7 };
   const edges = M.edges
     .filter((e) => e.lv !== -1)
-    .map((e) => (e.one && ONE_WAY_W[e.cls] ? { ...e, w: Math.min(e.w, ONE_WAY_W[e.cls]) } : e));
+    .map((e) => {
+      const cap = e.one ? ONE_WAY_W[e.cls] : undefined;
+      return cap ? { ...e, w: Math.min(e.w, cap), ...(e.ws ? { ws: e.ws.map(([f, w]) => [f, Math.min(w, cap)] as [number, number]) } : {}) } : e;
+    });
   const EP = edges.map((e) => resample(e.pts, 4));
   // A road leaving a joint alongside a bridge deck (OSM often draws a slip
   // road within a metre or two of the viaduct it joins) is pushed out to
@@ -688,7 +695,16 @@ export async function buildPasirRisCourse(
       let start = 0;
       for (let m = 0; m <= n; m++) {
         while (q < list.length - 1 && m > start + ELEN[list[q].i]) start += ELEN[list[q++].i];
+        const e = edges[list[q].i];
         smooth[m] = EHALF[list[q].i];
+        // (A joined line carries its own widths along it.)
+        if (e.ws) {
+          const f = Math.min(1, Math.max(0, (m - start) / (ELEN[list[q].i] || 1)));
+          const at = list[q].fwd ? f : 1 - f;
+          let w = e.ws[0][1];
+          for (const [from, v] of e.ws) if (at >= from) w = v;
+          smooth[m] = w / 2;
+        }
       }
     }
     // Where it narrows, the wider piece tapers in to meet the narrower one
@@ -720,7 +736,7 @@ export async function buildPasirRisCourse(
         let start = 0;
         for (const { i: q } of list) {
           const mid = Math.min(n, Math.round(start + ELEN[q] / 2));
-          if (smooth[mid] < 0.75 * EHALF[q]) {
+          if (smooth[mid] < 0.75 * osm[mid]) {
             rate = WIDTH_RATE / 2;
             envelope();
             break;
@@ -2654,6 +2670,27 @@ export async function buildPasirRisCourse(
   const GIVE_AT = 0.7; // metres out from the mouth
   type GiveWay = { id: number; line: number; end: 0 | 1; left: XZ; dashes: XZ[] };
   const giveWays: GiveWay[] = [];
+  /**
+   * The lines of a paired road (the two sides of a dual carriageway drawn
+   * as one): a painted median, two solid lines where the sides met, and
+   * each side's lane lines counted out from it, so where the road widens
+   * or narrows it is the kerbside lane that comes or goes. Each as [how
+   * far left of the road's line, dashed?, the half-width the road must
+   * have there for the line to be on it].
+   */
+  const pairedLines = (i: number): [number, boolean, number][] => {
+    const mid = edges[i].mo ?? 0;
+    const gap = Math.max(0.5, Math.min(edges[i].med ?? 0, 4)) / 2;
+    const out: [number, boolean, number][] = [];
+    for (const sgn of [-1, 1]) {
+      out.push([mid + sgn * gap, false, 0]);
+      const room = EHALF[i] - sgn * mid - gap;
+      const n = Math.max(1, Math.round((room - 0.35) / 3.3));
+      const laneW = room / n;
+      for (let l = 1; l < n; l++) out.push([mid + sgn * (gap + l * laneW), true, sgn * mid + gap + (l + 0.6) * laneW]);
+    }
+    return out.sort((x, y) => x[0] - y[0]);
+  };
   {
     const COS30 = Math.cos((30 * Math.PI) / 180);
     const lanesOf = (i: number) => Math.max(1, Math.round((edges[i].w - 0.7) / 3.3));
@@ -2791,6 +2828,16 @@ export async function buildPasirRisCourse(
             if (t < cost) (cost = t), (best = sh2);
           }
           if (rank >= 1) oa.forEach((o, k) => (swap ? line(ob[k + best], o, 'white', true) : line(o, ob[k + best], 'white', true)));
+        } else if (paired(ea) && paired(eb)) {
+          // A paired road's lines carry on across, matched from the median outwards.
+          const offs = (m: typeof A, i: number, sg: number) =>
+            pairedLines(i)
+              .filter(([, , need]) => m.half > need)
+              .map(([o, d]) => [sg * o, d] as [number, boolean])
+              .sort((x, y) => x[0] - y[0]);
+          const oa = offs(A, A.line, sa), ob = offs(B, B.line, sb);
+          const ia = oa.findIndex(([, d]) => !d), ib = ob.findIndex(([, d]) => !d);
+          if (rank >= 1) for (let d = -Math.min(ia, ib); ia + d < oa.length && ib + d < ob.length; d++) line(oa[ia + d][0], ob[ib + d][0], 'white', oa[ia + d][1] && ob[ib + d][1]);
         } else if (rank >= 1 && ea.w >= 6 && eb.w >= 6) line(0, 0, 'white', rank < 3);
         if (rank >= 2) {
           // Edge lines, on a side no other road joins from.
@@ -2966,6 +3013,12 @@ export async function buildPasirRisCourse(
             const off = (kk: number) => -halfAt(kk) + l * laneW;
             const room = (kk: number) => halfAt(kk) - off(kk) > 0.6 * laneW && halfAt(kk + 1) - off(kk + 1) > 0.6 * laneW;
             strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => room(kk) && dashed(off)(kk), yAt, tilt, clearAt: lineClear });
+          }
+        } else if (paired(e)) {
+          for (const [at, broken, need] of pairedLines(line)) {
+            const off = () => at;
+            const fits = (kk: number) => halfAt(kk) > need && halfAt(kk + 1) > need;
+            strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => fits(kk) && (broken ? dashed(off)(kk) : solid(off)(kk)), yAt, tilt, clearAt: lineClear });
           }
         } else if (rank >= 1 && e.w >= 6) {
           const off = () => 0;
@@ -4563,8 +4616,8 @@ export async function buildPasirRisCourse(
     return [x / pts.length, z / pts.length];
   };
   const carparkC = findArea(/^Carpark C Pasir Ris Park/);
-  const [sx, sz] = carparkC ? centroid(carparkC.pts) : [86, -1202];
-  const sr = roads.nearest(sx, sz, 300)!;
+  const [sx, sz] = opts.startAt ?? (carparkC ? centroid(carparkC.pts) : [86, -1202]);
+  const sr = roads.nearest(sx, sz, 300) ?? roads.nearest(sx, sz, 8000)!;
   const spts = EP[sr.line];
   const sa = spts[sr.seg];
   const sb = spts[sr.seg + 1];
@@ -4646,7 +4699,7 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
-      blds, rankOf, deckSplits, nearDeck, WB, GORE, throughLines, throughPairs, paveY, giveWays, bldRoads,
+      blds, rankOf, deckSplits, nearDeck, WB, GORE, throughLines, throughPairs, paveY, giveWays, bldRoads, pairedLines: (i: number) => (paired(edges[i]) ? pairedLines(i) : null),
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),
@@ -4679,7 +4732,7 @@ export async function buildPasirRisCourse(
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
   return {
-    name: 'Pasir Ris & Tampines',
+    name: opts.name ?? 'Pasir Ris & Tampines',
     styles: true,
     camps,
     start: new THREE.Vector3(startX, heightAt(startX, startZ) + 1.4, startZ),
