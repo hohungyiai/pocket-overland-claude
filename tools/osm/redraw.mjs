@@ -720,6 +720,72 @@ if (steps.has('join')) {
   report.join = { joined };
 }
 
+// ---------- roads ----------
+// A road is one line through every place a smaller road meets it. Where a
+// side road meets a road that carries straight on (three pieces at a joint,
+// two of them one road), the two are marked as through ends (`ta`, `tb`):
+// the builder then lays them as one unbroken strip and ends the side road at
+// its edge, instead of cutting all three back to a patch of paving.
+if (steps.has('roads')) {
+  const FAST = /^(motorway|trunk)|_link$/;
+  const at = new Map();
+  for (const e of edges) {
+    if (e.a === e.b) continue;
+    for (const j of [e.a, e.b]) (at.get(j) ?? at.set(j, []).get(j)).push(e);
+  }
+  // Heading out of the joint along a piece, taken 10 m along it.
+  const head = (e, j) => {
+    const pts = e.a === j ? e.pts : [...e.pts].reverse();
+    let run = 0;
+    let k = 0;
+    while (k + 1 < pts.length - 1 && run < 10) {
+      run += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
+      k++;
+    }
+    const q = pts[Math.max(1, k)];
+    const l = Math.hypot(q[0] - pts[0][0], q[1] - pts[0][1]) || 1;
+    return [(q[0] - pts[0][0]) / l, (q[1] - pts[0][1]) / l];
+  };
+  const widthAt = (e, j) => (e.spans ? (e.a === j ? e.spans[0][1] : e.spans[e.spans.length - 1][1]) : e.w);
+  const sameRoad = (p, q) => (p.name ? p.name === q.name : !q.name && p.cls === q.cls);
+  const deg = (c) => (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI;
+  let tees = 0;
+  const why = {};
+  const no = (k) => (why[k] = (why[k] ?? 0) + 1);
+  for (const [j, l] of at) {
+    if (l.length !== 3) continue;
+    if (l.some((e) => (e.lv ?? 0) !== 0)) { no('level'); continue; }
+    if (l.some((e) => FAST.test(e.cls))) { no('fast'); continue; }
+    const h = l.map((e) => head(e, j));
+    let best = null;
+    for (const [x, y, z] of [[0, 1, 2], [0, 2, 1], [1, 2, 0]]) {
+      const p = l[x], q = l[y], sd = l[z];
+      // p and q: one road carrying straight on.
+      const turn = deg(-(h[x][0] * h[y][0] + h[x][1] * h[y][1]));
+      if (turn > 25 || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
+      if (p.one && (p.a === j) === (q.a === j)) continue; // one-way pieces meeting head on are not one road
+      const wp = widthAt(p, j), wq = widthAt(q, j);
+      if (Math.max(wp, wq) > 1.5 * Math.min(wp, wq) || Math.min(p.len, q.len) < 20) continue;
+      // The side road comes in across it, and is no wider.
+      const cut = Math.min(deg(h[z][0] * h[x][0] + h[z][1] * h[x][1]), deg(h[z][0] * h[y][0] + h[z][1] * h[y][1]));
+      if (cut < 40 || sd.w > Math.max(wp, wq) + 0.5 || sd.len < 15) continue;
+      if (!best || turn < best.turn) best = { p, q, turn };
+    }
+    if (!best) {
+      no('shape');
+      if (process.env.ROADS_DEBUG) {
+        const [dx, dz] = process.env.ROADS_DEBUG.split(',').map(Number);
+        if (Math.hypot(pos[j][0] - dx, pos[j][1] - dz) < 400)
+          console.error(pos[j].map(Math.round).join(','), l.map((e, k) => `${e.name ?? e.cls}/${e.one ?? 0}/${e.dual ? 'D' : ''}/w${widthAt(e, j)}/len${Math.round(e.len)}`).join(' | '), [[0, 1], [0, 2], [1, 2]].map(([x, y]) => Math.round(deg(-(h[x][0] * h[y][0] + h[x][1] * h[y][1])))).join(','));
+      }
+      continue;
+    }
+    for (const e of [best.p, best.q]) e.a === j ? (e.ta = 1) : (e.tb = 1);
+    tees++;
+  }
+  report.roads = { tees, why };
+}
+
 // ---------- box ----------
 const inBox = box ? (p) => p[0] >= box[0] && p[0] <= box[1] && p[1] >= box[2] && p[1] <= box[3] : () => true;
 const near = box ? (p) => p[0] >= box[0] - 150 && p[0] <= box[1] + 150 && p[1] >= box[2] - 150 && p[1] <= box[3] + 150 : () => true;

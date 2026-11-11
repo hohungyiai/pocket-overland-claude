@@ -24,7 +24,7 @@ import { LIMITS } from '../limits';
 type Rapier = typeof RAPIER_NS;
 
 /** (ws: the widths along a line the redraw step joined from pieces of different width: [fraction of its length where a width starts, width]; w is then the widest.) */
-interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[]; ws?: [number, number][]; dual?: number; mo?: number; med?: number }
+interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[]; ws?: [number, number][]; dual?: number; mo?: number; med?: number; ta?: number; tb?: number }
 interface OsmMap {
   attribution: string;
   junctions: XZ[];
@@ -283,6 +283,15 @@ export async function buildPasirRisCourse(
     jE[e.a]?.push(i);
     if (e.b !== e.a) jE[e.b]?.push(i);
   });
+  // One road carrying straight on through a joint where a side road meets it
+  // (marked in the map data by the redraw's `roads` step): the two pieces
+  // are built as one strip, and the side road ends at its edge.
+  const thruEnd = (i: number, j: number) => !!(edges[i].a === j ? edges[i].ta : edges[i].tb) && edges[i].a !== edges[i].b;
+  const thruMate = (i: number, j: number) => {
+    if (!thruEnd(i, j)) return undefined;
+    const l = (jE[j] ?? []).filter((o) => o !== i && thruEnd(o, j));
+    return l.length === 1 ? l[0] : undefined;
+  };
   // (Made again once the branches of splits have moved.)
   let roads = new SegIndex(EP, 24);
   const paths = M.paths.map((p) => ({ k: p.k, b: p.b ? 1 : 0, pts: resample(p.pts, 4) }));
@@ -633,6 +642,8 @@ export async function buildPasirRisCourse(
     });
   }
   const mate1 = (i: number, j: number) => {
+    const t = thruMate(i, j);
+    if (t !== undefined) return t;
     const o = throughOf(j, i);
     if (o !== undefined) return o !== i && throughOf(j, o) === i ? o : undefined;
     if ((jE[j]?.length ?? 0) < 3) return undefined;
@@ -840,6 +851,7 @@ export async function buildPasirRisCourse(
     },
     plain: (j) => splitAt.has(j) && !nearDeck[j] && (jE[j] ?? []).every((i) => /^(motorway|trunk)|_link$/.test(edges[i].cls)),
     slip: (j) => (jE[j] ?? []).length === 3 && jE[j].every((i) => /^(motorway|trunk)|_link$/.test(edges[i].cls)),
+    thru: (i, end) => thruMate(i, end ? edges[i].b : edges[i].a) !== undefined,
     roads,
   });
   // Junction heights above the ground: full height at a flyover's ends, then
@@ -2248,8 +2260,8 @@ export async function buildPasirRisCourse(
     return edges[i].a === j ? unit(P[1][0] - P[0][0], P[1][1] - P[0][1]) : unit(P[n - 2][0] - P[n - 1][0], P[n - 2][1] - P[n - 1][1]);
   };
   const mitreAt = (i: number, j: number) => {
-    if (jDegree[j] !== 2) return null;
-    const o = jEdges[j][0] === i ? jEdges[j][1] : jEdges[j][0];
+    // (A road running through a tee meets its next piece the same way.)
+    const o = JX.tee[j] ? thruMate(i, j) : jDegree[j] !== 2 ? undefined : jEdges[j][0] === i ? jEdges[j][1] : jEdges[j][0];
     if (o === undefined || o === i) return null;
     const ti = awayDir(i, j);
     const to = awayDir(o, j);
@@ -2312,6 +2324,14 @@ export async function buildPasirRisCourse(
     let g = NaN;
     roads.each(x, z, 16, (i, seg, u, d) => {
       if (hit || i === line || d > Math.max(halfAtE(i, seg), halfAtE(i, seg + 1)) + 0.2) return;
+      // (At a tee: the next piece of the same through road is no other road,
+      // and the side road is not drawn inside the through road, only from
+      // its mouth.)
+      if (thruMate(line, edges[line].a) === i || thruMate(line, edges[line].b) === i) return;
+      if (JX.tee[edges[i].a] || JX.tee[edges[i].b]) {
+        const at = ECUM[i][seg] + u * (ECUM[i][seg + 1] - ECUM[i][seg]);
+        if ((JX.tee[edges[i].a] && at < JX.trimA[i]) || (JX.tee[edges[i].b] && at > ELEN[i] - JX.trimB[i])) return;
+      }
       if (y !== y) hit = !elevated[i];
       else hit = Math.abs((hasProfile[i] ? deckAtHit(i, seg, u) : g === g ? g : (g = heightAt(x, z))) - y) < 3;
     });
@@ -2854,7 +2874,8 @@ export async function buildPasirRisCourse(
   /** How far from each end of a road its markings stop: at a junction's edge (or a crossing's stop line); they run on through a bend. */
   const markStops = (line: number): [number, number] => {
     const e = edges[line];
-    const stopAt = (j: number, trim: number) => (trim > 0 ? trim + 1 : jDegree[j] === 2 ? 0.3 : jDegree[j] > 2 ? jRadius[j] + 2 : 2);
+    // (A road running through a tee carries its markings straight through.)
+    const stopAt = (j: number, trim: number) => (trim > 0 ? trim + 1 : jDegree[j] === 2 ? 0.3 : JX.tee[j] && thruMate(line, j) !== undefined ? -1 : jDegree[j] > 2 ? jRadius[j] + 2 : 2);
     return [
       crossEnd.has(`${line}:0`) ? JX.trimA[line] + STOP_AT + 0.5 : stopAt(e.a, JX.trimA[line]),
       crossEnd.has(`${line}:1`) ? JX.trimB[line] + STOP_AT + 0.5 : stopAt(e.b, JX.trimB[line]),
@@ -4702,6 +4723,7 @@ export async function buildPasirRisCourse(
       blds, rankOf, deckSplits, nearDeck, WB, GORE, throughLines, throughPairs, paveY, giveWays, bldRoads, pairedLines: (i: number) => (paired(edges[i]) ? pairedLines(i) : null),
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
+      whyClosed: (line: number, x: number, z: number, y: number) => ({ covered: coveredBy(line, x, z, y), island: onIsland(x, z), paving: inPaving(x, z, y), gore: inGore(x, z) }),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),
       piers: () => {
         const out: { x: number; z: number; top: number; kind: string; self: number }[] = [];

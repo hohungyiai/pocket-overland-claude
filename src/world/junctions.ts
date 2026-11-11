@@ -29,6 +29,8 @@ export interface JunctionIn {
   sideBySide?: (lineA: number, endA: number, lineB: number, endB: number) => boolean;
   /** Is this point a slip road's joint (a slip splitting off or merging, nothing else)? */
   slip?: (j: number) => boolean;
+  /** Does this road end carry straight on into another road end at its joint, as one road? (Where a side road meets such a road, the road is not cut back: see `tee`.) */
+  thru?: (line: number, end: 0 | 1) => boolean;
   roads: SegIndex;
 }
 
@@ -117,6 +119,8 @@ export interface JunctionOut {
   hulls: number;
   /** Why each fallback group was not shaped (for checks). */
   why: { nodes: number[]; why: string }[];
+  /** Joints where a side road meets a road that carries straight on: the road runs through uncut, and the shape is only the side road's bell mouth. */
+  tee: Uint8Array;
 }
 
 const MERGE_GAP = 10; // two points this close (kerb to kerb) are one junction
@@ -159,6 +163,11 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
   // A major junction: two big roads (secondary and up) cross or meet there.
   const major = jE.map((l) => l.filter((i) => I.rank(i) >= 3).length >= 2);
 
+  // A tee: a side road meeting a road that carries straight on (see `thru`).
+  const teeAt = jE.map((l, j) => !!I.thru && l.length === 3 && l.filter((i) => I.thru!(i, edges[i].a === j ? 0 : 1)).length === 2);
+  /** Room for a side road's bell mouth beyond the through road's edge, metres. */
+  const TEE_ROOM = 4;
+
   // ---- Merge points joined by a short stub ----
   const order = edges.map((_, i) => i).sort((p, q) => len[p] - len[q]);
   const mergeBy = (bigOk: boolean, bigGap = MAJOR_GAP, bigSpan = MAJOR_SPAN, ok: boolean[] = eligible, either = false) => {
@@ -173,6 +182,9 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // big crossing is open asphalt, with no islands in the middle.
       const big = bigOk && (either ? major[a] || major[b] : major[a] && major[b]);
       if (len[i] > rad[a] + rad[b] + (big ? bigGap : MERGE_GAP)) continue;
+      // (A tee keeps to itself: its through road is not part of any junction,
+      // and its side road needs only room for a bell mouth.)
+      if ((teeAt[a] || teeAt[b]) && len[i] > rad[a] + rad[b] + TEE_ROOM) continue;
       const ra = find(a);
       const rb = find(b);
       stub[i] = 1;
@@ -210,6 +222,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     fills: [],
     hulls: 0,
     why: [],
+    tee: new Uint8Array(NJ),
   };
 
   // (Off only to ask what the outline's corners alone would have allowed.)
@@ -428,6 +441,146 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         }
       return centre;
     };
+    // A side road meeting a road that carries straight on (a tee): the
+    // through road is one strip, not cut back at the joint, so the junction
+    // is only the side road's bell mouth: from its mouth, round a corner
+    // curve either side, to the through road's edge.
+    const teeShape = (j: number): Built | null => {
+      const l = jE[j];
+      const sLine = l.find((i) => !I.thru!(i, edges[i].a === j ? 0 : 1))!;
+      const through = l.filter((i) => i !== sLine);
+      const sEnd: 0 | 1 = edges[sLine].a === j ? 0 : 1;
+      const INSET = 0.1; // the paving tucks this far under the through road's edge
+      const REACH = 40;
+      // Each through piece from the joint outward: its points and half widths.
+      const out = through.map((i) => {
+        const pts = EP[i];
+        const n = pts.length;
+        const fromA = edges[i].a === j;
+        const P: XZ[] = [];
+        const H: number[] = [];
+        let run = 0;
+        for (let step = 0; step < n && run <= REACH; step++) {
+          const k = fromA ? step : n - 1 - step;
+          if (step) run += Math.hypot(pts[k][0] - P[P.length - 1][0], pts[k][1] - P[P.length - 1][1]);
+          P.push(pts[k]);
+          H.push(I.halfAt(i, k));
+        }
+        return { P, H };
+      });
+      if (out.some((o) => o.P.length < 2)) return null;
+      // Distance from a point to the through road's middle, less its half width there (below zero: on the road).
+      const offRoad = (x: number, z: number) => {
+        let best = Infinity;
+        for (const { P, H } of out)
+          for (let k = 0; k + 1 < P.length; k++) {
+            const ax = P[k][0], az = P[k][1];
+            const dx = P[k + 1][0] - ax, dz = P[k + 1][1] - az;
+            const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+            best = Math.min(best, Math.hypot(x - ax - dx * u, z - az - dz * u) - (H[k] + (H[k + 1] - H[k]) * u));
+          }
+        return best;
+      };
+      // The side road, from the joint outward: where each of its edges leaves the through road.
+      const sp = EP[sLine];
+      const sc = I.ECUM[sLine];
+      const sL = len[sLine];
+      const sideAt = (d: number, sgn: number): XZ => {
+        const at = along(sp, sc, sEnd === 0 ? d : sL - d);
+        let tx = sp[at.seg + 1][0] - sp[at.seg][0], tz = sp[at.seg + 1][1] - sp[at.seg][1];
+        if (sEnd === 1) (tx = -tx), (tz = -tz);
+        const tl = Math.hypot(tx, tz) || 1;
+        const h = I.halfAt(sLine, sEnd === 0 ? at.seg : at.seg + 1);
+        return [at.p[0] - (tz / tl) * h * sgn, at.p[1] + (tx / tl) * h * sgn];
+      };
+      const leaves = [1, -1].map((sgn) => {
+        for (let d = 0; d <= Math.min(sL, REACH); d += 0.25) {
+          const p = sideAt(d, sgn);
+          if (offRoad(p[0], p[1]) >= -INSET) return { d, p };
+        }
+        return null;
+      });
+      if (!leaves[0] || !leaves[1]) return null;
+      const hS = I.halfAt(sLine, sEnd === 0 ? 0 : sp.length - 1);
+      const farJ = sEnd === 0 ? edges[sLine].b : edges[sLine].a;
+      const room = sL * (jE[farJ].length >= 3 ? 0.5 : 0.8);
+      const dMax = Math.max(leaves[0].d, leaves[1].d);
+      const R = Math.min(Math.max(2.5, Math.min(6, 1.5 + hS * 0.8)), room - dMax);
+      if (R < 1) return null;
+      const M = makeMouth(sLine, sEnd, dMax + R, true);
+      // The through road's edge on the side road's side, as one line through the joint.
+      const edgeLine = (o: (typeof out)[number], flip: number): XZ[] =>
+        o.P.map((p, k) => {
+          const a = o.P[Math.max(0, k - 1)], b = o.P[Math.min(o.P.length - 1, k + 1)];
+          const dl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+          const h = Math.max(0, o.H[k] - INSET) * flip;
+          return [p[0] - ((b[1] - a[1]) / dl) * h, p[1] + ((b[0] - a[0]) / dl) * h] as XZ;
+        });
+      const sDir: XZ = [M.q[0] - junctions[j][0], M.q[1] - junctions[j][1]];
+      const flipOf = (o: (typeof out)[number]) => (cross([o.P[1][0] - o.P[0][0], o.P[1][1] - o.P[0][1]], sDir) > 0 ? 1 : -1);
+      const e0 = edgeLine(out[0], flipOf(out[0]));
+      const e1 = edgeLine(out[1], flipOf(out[1]));
+      const jp: XZ = [(e0[0][0] + e1[0][0]) / 2, (e0[0][1] + e1[0][1]) / 2];
+      const E: XZ[] = [...e0.slice(1).reverse(), jp, ...e1.slice(1)];
+      const eCum = [0];
+      for (let k = 1; k < E.length; k++) eCum.push(eCum[k - 1] + Math.hypot(E[k][0] - E[k - 1][0], E[k][1] - E[k - 1][1]));
+      const eLen = eCum[eCum.length - 1];
+      const uOf = (p: XZ) => {
+        let best = Infinity, bu = 0;
+        for (let k = 0; k + 1 < E.length; k++) {
+          const dx = E[k + 1][0] - E[k][0], dz = E[k + 1][1] - E[k][1];
+          const u = Math.max(0, Math.min(1, ((p[0] - E[k][0]) * dx + (p[1] - E[k][1]) * dz) / (dx * dx + dz * dz || 1)));
+          const d = Math.hypot(p[0] - E[k][0] - dx * u, p[1] - E[k][1] - dz * u);
+          if (d < best) (best = d), (bu = eCum[k] + u * (eCum[k + 1] - eCum[k]));
+        }
+        return bu;
+      };
+      const eAt = (u: number) => along(E, eCum, Math.max(0, Math.min(eLen, u))).p;
+      // (Left of the side road as it leaves, then right.)
+      const corner = [M.left, M.right];
+      const uX = leaves.map((lv) => uOf(lv!.p));
+      if (Math.abs(uX[0] - uX[1]) < 0.5) return null;
+      const curveOf = (k: number): XZ[] => {
+        const outU = uX[k] + (uX[k] > uX[1 - k] ? R : -R);
+        if (outU < 0.5 || outU > eLen - 0.5) return [];
+        const p0 = corner[k], c1 = eAt(uX[k]), p2 = eAt(outU);
+        const n = 8;
+        const c: XZ[] = [];
+        for (let q = 0; q <= n; q++) {
+          const u = q / n;
+          c.push([(1 - u) * (1 - u) * p0[0] + 2 * u * (1 - u) * c1[0] + u * u * p2[0], (1 - u) * (1 - u) * p0[1] + 2 * u * (1 - u) * c1[1] + u * u * p2[1]]);
+        }
+        return c;
+      };
+      const lo = uX[0] < uX[1] ? 0 : 1;
+      const hi = 1 - lo;
+      let cLo = curveOf(lo); // mouth corner -> the edge
+      let cHi = curveOf(hi);
+      if (!cLo.length || !cHi.length) return null;
+      const uLo = uX[lo] - R, uHi = uX[hi] + R;
+      const between: XZ[] = [];
+      for (let k = E.length - 1; k >= 0; k--) if (eCum[k] > uLo + 0.3 && eCum[k] < uHi - 0.3) between.push(E[k]);
+      // Edge (low end) -> round to the mouth -> across it -> round to the edge (high end) -> back along the edge.
+      let ring: XZ[] = [...[...cLo].reverse(), ...cHi, ...between];
+      let area = 0;
+      for (let k = 0; k < ring.length; k++) area += cross(ring[k], ring[(k + 1) % ring.length]);
+      let corners: XZ[][] = [[...cLo].reverse(), cHi];
+      if (area < 0) {
+        ring = ring.reverse();
+        corners = [[...cHi].reverse(), cLo];
+      }
+      const mid = eAt((uLo + uHi) / 2);
+      let c: XZ = [mid[0] + (M.q[0] - mid[0]) * 0.3, mid[1] + (M.q[1] - mid[1]) * 0.3];
+      if (sees(ring, c) <= 1e-6) c = seesBest(ring, c);
+      if (sees(ring, c) <= 1e-6) return null;
+      const kerbed = Math.max(I.rank(sLine), ...through.map((i) => I.rank(i))) >= 1;
+      const radius = Math.max(...ring.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
+      return { nodes: [j], centre: c, radius, ring, kerbs: kerbed ? corners : [], corners, mouths: [M], internal: [], hull: false, tee: true };
+    };
+    if (nodes.length === 1 && teeAt[nodes[0]]) {
+      const t = teeShape(nodes[0]);
+      if (t) return t;
+    }
     const tryCentre = (c: XZ, byDir: boolean, search = false) => {
       const key = (m: Mouth) => (byDir ? Math.atan2(m.t[1], m.t[0]) : Math.atan2(m.q[1] - c[1], m.q[0] - c[0]));
       const ms = [...mouths].sort((p, q) => key(p) - key(q));
@@ -827,6 +980,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       radius: b.radius,
     });
     for (const j of nodes) out.shapeOf[j] = id;
+    if (b.tee) for (const j of nodes) out.tee[j] = 1;
     for (const i of b.internal) out.internal[i] = 1;
     for (const m of b.mouths) (m.end === 0 ? out.trimA : out.trimB)[m.line] = m.s;
   });
@@ -941,6 +1095,7 @@ interface Built {
   mouths: Mouth[];
   internal: number[];
   hull: boolean;
+  tee?: boolean;
 }
 
 /** Does any point of ring a lie inside ring b, more than 0.3 m in? */
