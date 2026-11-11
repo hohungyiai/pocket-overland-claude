@@ -12,8 +12,11 @@
 //          the way round by those roads. Car park aisles, driveways and
 //          loops off one street go.
 //   join   where the same road simply carries on through a joint (same
-//          class, name, level, direction and width, nothing else joining),
-//          its two pieces become one line, eased through the joint.
+//          class, name, level and direction, nothing else joining), its
+//          two pieces become one line, eased through the joint. Where the
+//          two differ in width (a lane more or less, never more than
+//          double), the line carries its widths along it as `ws`:
+//          [fraction of its length where a width starts, width].
 //
 // --box keeps only the roads (and the buildings, paths and land) that
 // touch a box in game metres: a trial area.
@@ -146,7 +149,10 @@ if (steps.has('join')) {
     return pts;
   };
   const round = (p) => [+p[0].toFixed(1), +p[1].toFixed(1)];
-  const same = (a, b) => a.cls === b.cls && (a.name ?? '') === (b.name ?? '') && (a.lv ?? 0) === (b.lv ?? 0) && (a.one ?? 0) === (b.one ?? 0) && a.w === b.w;
+  const same = (a, b) =>
+    a.cls === b.cls && (a.name ?? '') === (b.name ?? '') && (a.lv ?? 0) === (b.lv ?? 0) && (a.one ?? 0) === (b.one ?? 0) && Math.max(a.w, b.w) <= 2 * Math.min(a.w, b.w);
+  /** The widths along an edge, as [length, width] spans from its start. */
+  const spans = (e) => e.spans ?? [[e.len, e.w]];
   const at = new Map();
   const add = (j, e) => (at.get(j) ?? at.set(j, new Set()).get(j)).add(e);
   for (const e of edges) {
@@ -168,14 +174,12 @@ if (steps.has('join')) {
       if (p.b !== j) [p, q] = [q, p];
       if (p.b !== j || q.a !== j) continue;
     } else {
-      if (p.b !== j) {
-        p.pts.reverse();
-        [p.a, p.b] = [p.b, p.a];
-      }
-      if (q.a !== j) {
-        q.pts.reverse();
-        [q.a, q.b] = [q.b, q.a];
-      }
+      for (const [e, end] of [[p, 'b'], [q, 'a']])
+        if (e[end] !== j) {
+          e.pts.reverse();
+          [e.a, e.b] = [e.b, e.a];
+          if (e.spans) e.spans.reverse();
+        }
     }
     if (p.a === q.b && p.a === j) continue;
     // Eased over the 12 m either side of the joint.
@@ -193,6 +197,13 @@ if (steps.has('join')) {
     const k0 = reach(k, -1);
     const k1 = reach(k, 1);
     p.pts = [...pts.slice(0, k0), ...ease(pts.slice(k0, k1 + 1), 2).map(round), ...pts.slice(k1 + 1)];
+    if (p.w !== q.w || p.spans || q.spans) {
+      const l = [...spans(p), ...spans(q)];
+      // (Spans of one width run together.)
+      p.spans = l.reduce((o, sp) => (o.length && o[o.length - 1][1] === sp[1] ? ((o[o.length - 1][0] += sp[0]), o) : (o.push([...sp]), o)), []);
+      p.w = Math.max(...p.spans.map((sp) => sp[1]));
+      if (p.spans.length === 1) delete p.spans;
+    }
     at.get(q.b).delete(q);
     at.get(q.b).add(p);
     at.delete(j);
@@ -222,7 +233,19 @@ const idFor = (j) => {
   }
   return idOf.get(j);
 };
-const outEdges = edges.map(({ len, ...e }) => ({ ...e, a: idFor(e.a), b: idFor(e.b) }));
+const outEdges = edges.map(({ len, spans, ...e }) => {
+  const o = { ...e, a: idFor(e.a), b: idFor(e.b) };
+  if (spans) {
+    const all = spans.reduce((t, sp) => t + sp[0], 0);
+    let run = 0;
+    o.ws = spans.map(([l, w]) => {
+      const f = +(run / all).toFixed(4);
+      run += l;
+      return [f, w];
+    });
+  }
+  return o;
+});
 const touches = (o) => (o.pts ? o.pts.some(near) : near([o.x, o.z]));
 const out = {
   ...M,

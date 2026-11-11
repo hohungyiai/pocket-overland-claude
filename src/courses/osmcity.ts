@@ -23,7 +23,8 @@ import { LIMITS } from '../limits';
 
 type Rapier = typeof RAPIER_NS;
 
-interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[] }
+/** (ws: the widths along a line the redraw step joined from pieces of different width: [fraction of its length where a width starts, width]; w is then the widest.) */
+interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[]; ws?: [number, number][] }
 interface OsmMap {
   attribution: string;
   junctions: XZ[];
@@ -82,7 +83,10 @@ export async function buildPasirRisCourse(
   const ONE_WAY_W: Record<string, number> = { motorway: 11, trunk: 10, primary: 8, secondary: 7.5, tertiary: 7 };
   const edges = M.edges
     .filter((e) => e.lv !== -1)
-    .map((e) => (e.one && ONE_WAY_W[e.cls] ? { ...e, w: Math.min(e.w, ONE_WAY_W[e.cls]) } : e));
+    .map((e) => {
+      const cap = e.one ? ONE_WAY_W[e.cls] : undefined;
+      return cap ? { ...e, w: Math.min(e.w, cap), ...(e.ws ? { ws: e.ws.map(([f, w]) => [f, Math.min(w, cap)] as [number, number]) } : {}) } : e;
+    });
   const EP = edges.map((e) => resample(e.pts, 4));
   // A road leaving a joint alongside a bridge deck (OSM often draws a slip
   // road within a metre or two of the viaduct it joins) is pushed out to
@@ -689,7 +693,16 @@ export async function buildPasirRisCourse(
       let start = 0;
       for (let m = 0; m <= n; m++) {
         while (q < list.length - 1 && m > start + ELEN[list[q].i]) start += ELEN[list[q++].i];
+        const e = edges[list[q].i];
         smooth[m] = EHALF[list[q].i];
+        // (A joined line carries its own widths along it.)
+        if (e.ws) {
+          const f = Math.min(1, Math.max(0, (m - start) / (ELEN[list[q].i] || 1)));
+          const at = list[q].fwd ? f : 1 - f;
+          let w = e.ws[0][1];
+          for (const [from, v] of e.ws) if (at >= from) w = v;
+          smooth[m] = w / 2;
+        }
       }
     }
     // Where it narrows, the wider piece tapers in to meet the narrower one
@@ -721,7 +734,7 @@ export async function buildPasirRisCourse(
         let start = 0;
         for (const { i: q } of list) {
           const mid = Math.min(n, Math.round(start + ELEN[q] / 2));
-          if (smooth[mid] < 0.75 * EHALF[q]) {
+          if (smooth[mid] < 0.75 * osm[mid]) {
             rate = WIDTH_RATE / 2;
             envelope();
             break;
