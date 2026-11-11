@@ -13,7 +13,7 @@ window.__checkFootHeadroom = () => {
     if (!(top === top)) return;
     for (const [x, z] of p.pts) {
       d.roads.each(x, z, 24, (i, seg, u, dd) => {
-        if (dd > d.EHALF[i] + d.PHALF[line]) return;
+        if (dd > d.halfNear(i, seg, u) + d.PHALF[line]) return;
         const Y = d.hasProfile[i] ? d.deckY(i) : null;
         const y = Y ? Y[seg] + (Y[Math.min(Y.length - 1, seg + 1)] - Y[seg]) * u : d.heightAt(x, z);
         if (y > top) return; // a flyover above the footbridge
@@ -36,7 +36,7 @@ window.__checkFootSupports = () => {
       const Y = d.hasProfile[i] ? d.deckY(i) : null;
       const y = Y ? Y[seg] + (Y[Math.min(Y.length - 1, seg + 1)] - Y[seg]) * u : d.heightAt(x, z);
       if (y >= top - 1) return;
-      const over = d.EHALF[i] + r - dd;
+      const over = d.halfNear(i, seg, u) + r - dd;
       if (over > 0) bad.push({ what, road: d.edges[i].name || d.edges[i].cls, i, x: Math.round(x), z: Math.round(z), over: +over.toFixed(2) });
     });
   };

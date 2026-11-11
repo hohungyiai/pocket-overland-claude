@@ -661,6 +661,7 @@ if (steps.has('join')) {
   }
   const gone = new Set();
   let joined = 0;
+  let turned = 0;
   const todo = [...at.keys()];
   while (todo.length) {
     const j = todo.pop();
@@ -671,6 +672,17 @@ if (steps.has('join')) {
     // p runs into the joint and q out of it. A one-way road keeps its
     // direction, so two that meet head on (or tail to tail) are not one road.
     if (p.one) {
+      // (The map draws some one-way pieces backwards. At a joint of two
+      // pieces of one road, traffic can only pass through: where they meet
+      // head on or tail to tail, the shorter is turned to run the way the
+      // longer does.)
+      if ((p.a === j) === (q.a === j)) {
+        const s = p.len <= q.len ? p : q;
+        s.pts.reverse();
+        [s.a, s.b] = [s.b, s.a];
+        if (s.spans) s.spans.reverse();
+        turned++;
+      }
       if (p.b !== j) [p, q] = [q, p];
       if (p.b !== j || q.a !== j) continue;
     } else {
@@ -717,7 +729,7 @@ if (steps.has('join')) {
     todo.push(p.a, p.b);
   }
   edges = edges.filter((e) => !gone.has(e));
-  report.join = { joined };
+  report.join = { joined, turned };
 }
 
 // ---------- roads ----------
@@ -733,12 +745,12 @@ if (steps.has('roads')) {
     if (e.a === e.b) continue;
     for (const j of [e.a, e.b]) (at.get(j) ?? at.set(j, []).get(j)).push(e);
   }
-  // Heading out of the joint along a piece, taken 10 m along it.
-  const head = (e, j) => {
+  // Heading out of the joint along a piece, taken 10 m along it (20 m on an expressway).
+  const head = (e, j, far = 10) => {
     const pts = e.a === j ? e.pts : [...e.pts].reverse();
     let run = 0;
     let k = 0;
-    while (k + 1 < pts.length - 1 && run < 10) {
+    while (k + 1 < pts.length - 1 && run < far) {
       run += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
       k++;
     }
@@ -750,40 +762,112 @@ if (steps.has('roads')) {
   const sameRoad = (p, q) => (p.name ? p.name === q.name : !q.name && p.cls === q.cls);
   const deg = (c) => (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI;
   let tees = 0;
+  let slips = 0;
   const pairs = [];
   const why = {};
   const no = (k) => (why[k] = (why[k] ?? 0) + 1);
+  // First, at each joint of three or four pieces: the pair that carries
+  // straight on, and the roads that meet it.
+  const cand = new Map();
   for (const [j, l] of at) {
-    if (l.length !== 3) continue;
+    if (l.length !== 3 && l.length !== 4) continue;
     if (l.some((e) => (e.lv ?? 0) !== 0)) { no('level'); continue; }
-    if (l.some((e) => FAST.test(e.cls))) { no('fast'); continue; }
-    const h = l.map((e) => head(e, j));
+    const h10 = l.map((e) => head(e, j, 10)), h20 = l.map((e) => head(e, j, 20));
     let best = null;
-    for (const [x, y, z] of [[0, 1, 2], [0, 2, 1], [1, 2, 0]]) {
-      const p = l[x], q = l[y], sd = l[z];
-      // p and q: one road carrying straight on.
-      const turn = deg(-(h[x][0] * h[y][0] + h[x][1] * h[y][1]));
-      if (turn > 25 || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
-      if (p.one && (p.a === j) === (q.a === j)) continue; // one-way pieces meeting head on are not one road
-      const wp = widthAt(p, j), wq = widthAt(q, j);
-      if (Math.max(wp, wq) > 1.5 * Math.min(wp, wq) || Math.min(p.len, q.len) < 20) continue;
-      // The side road comes in across it, and is no wider.
-      const cut = Math.min(deg(h[z][0] * h[x][0] + h[z][1] * h[x][1]), deg(h[z][0] * h[y][0] + h[z][1] * h[y][1]));
-      if (cut < 40 || sd.w > Math.max(wp, wq) + 0.5 || sd.len < 15) continue;
-      if (!best || turn < best.turn) best = { p, q, turn };
-    }
+    for (let x = 0; x < l.length; x++)
+      for (let y = x + 1; y < l.length; y++) {
+        const p = l[x], q = l[y];
+        const sides = l.filter((_, k) => k !== x && k !== y);
+        // An expressway carries on past the slip road that leaves or joins
+        // it: the same rule, but the slip road comes away at a narrow angle,
+        // and the carriageway may lose or gain its lane there. (Only an
+        // expressway's own carriageway so far: where one slip road leaves
+        // another, the junction is still shaped as before.)
+        const fast = FAST.test(p.cls) || FAST.test(q.cls);
+        if (fast && (l.length !== 3 || !FAST.test(p.cls) || !FAST.test(q.cls) || /_link$/.test(p.cls) || /_link$/.test(q.cls))) continue;
+        const h = fast ? h20 : h10;
+        // p and q: one road carrying straight on. (Whichever way each piece
+        // is drawn: the map draws some one-way pieces backwards.)
+        const turn = deg(-(h[x][0] * h[y][0] + h[x][1] * h[y][1]));
+        if (turn > (fast ? 15 : 25) || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
+        const wp = widthAt(p, j), wq = widthAt(q, j);
+        const narrow = Math.min(wp, wq);
+        if (Math.max(wp, wq) > (fast ? 1.6 : 1.5) * narrow + 0.01 || Math.min(p.len, q.len) < 20) continue;
+        let ok = true;
+        const short = [];
+        for (const sd of sides) {
+          const z = l.indexOf(sd);
+          const slip = FAST.test(sd.cls);
+          // The side road comes in across it, and is no wider.
+          const cut = Math.min(deg(h[z][0] * h[x][0] + h[z][1] * h[x][1]), deg(h[z][0] * h[y][0] + h[z][1] * h[y][1]));
+          // (One side of a divided road is half of its road.)
+          if ((fast && !slip) || cut < (slip ? 6 : 40) || sd.w > (p.one && !fast ? 2 : 1) * Math.max(wp, wq) + 0.5) ok = false;
+          // (A slip road is narrower than the road it leaves at every point.
+          // One as wide that comes away at a narrow angle is not a side road:
+          // the road forks there, and neither branch carries on.)
+          else if (slip && (sd.len < 30 || sd.w > narrow + 0.5 || (sd.w > 0.8 * narrow && cut < 20))) ok = false;
+          // (A few metres of road: an opening in a divider, or a stub with just room for its corners. See below.)
+          else if (!slip && sd.len < 15) sd.len < 4 ? (ok = false) : short.push({ sd, room: sd.len >= Math.max(wp, wq) + 1 });
+          if (!ok) break;
+        }
+        if (!ok) continue;
+        // (Two roads meeting it: one from each side.)
+        if (sides.length === 2) {
+          const sg = sides.map((sd) => Math.sign(h[x][0] * h[l.indexOf(sd)][1] - h[x][1] * h[l.indexOf(sd)][0]));
+          if (!sg[0] || sg[0] === sg[1]) continue;
+        }
+        // (Of two slip roads leaving one another, the wider carries on.)
+        const key = turn - (fast ? narrow : 0);
+        if (!best || key < best.key) best = { p, q, sides, short, key, fast };
+      }
     if (!best) {
-      no('shape');
+      no(l.some((e) => FAST.test(e.cls)) && !l.every((e) => FAST.test(e.cls)) ? 'fast' : 'shape');
       if (process.env.ROADS_DEBUG) {
         const [dx, dz] = process.env.ROADS_DEBUG.split(',').map(Number);
         if (Math.hypot(pos[j][0] - dx, pos[j][1] - dz) < 400)
-          console.error(pos[j].map(Math.round).join(','), l.map((e, k) => `${e.name ?? e.cls}/${e.one ?? 0}/${e.dual ? 'D' : ''}/w${widthAt(e, j)}/len${Math.round(e.len)}`).join(' | '), [[0, 1], [0, 2], [1, 2]].map(([x, y]) => Math.round(deg(-(h[x][0] * h[y][0] + h[x][1] * h[y][1])))).join(','));
+          console.error(pos[j].map(Math.round).join(','), l.map((e) => `${e.name ?? e.cls}/${e.one ?? 0}/${e.dual ? 'D' : ''}/w${widthAt(e, j)}/len${Math.round(e.len)}`).join(' | '));
       }
       continue;
     }
-    for (const e of [best.p, best.q]) e.a === j ? (e.ta = 1) : (e.tb = 1);
-    pairs.push([j, best.p, best.q, l.find((e) => e !== best.p && e !== best.q)]);
+    cand.set(j, best);
+  }
+  // An opening in a divider: a few metres of road between the two sides of
+  // a divided road. Each side carries on past it only if the other does
+  // too (the opening is then paved between the two, with no road of its
+  // own). A short stub to anywhere else needs room for its corners beyond
+  // the road's edge; without it the junction is left as before.
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [j, c] of cand) {
+      if (c.short.every(({ sd, room }) => room || cand.get(sd.a === j ? sd.b : sd.a)?.sides.includes(sd))) continue;
+      cand.delete(j);
+      no('short');
+      changed = true;
+    }
+  }
+  let openings = 0;
+  for (const [j, c] of cand) {
+    for (const e of [c.p, c.q]) e.a === j ? (e.ta = 1) : (e.tb = 1);
+    pairs.push([j, c.p, c.q, c.sides]);
     tees++;
+    if (c.fast) slips++;
+    openings += c.short.filter(({ sd }) => cand.get(sd.a === j ? sd.b : sd.a)?.sides.includes(sd)).length / 2;
+  }
+  // A road onto its bridge and off it: two pieces of one road at a joint
+  // where only the level changes. Marked the same way, so its lines and its
+  // place on the map carry through.
+  let ramps = 0;
+  for (const [j, l] of at) {
+    if (l.length !== 2) continue;
+    const [p, q] = l;
+    if ((p.lv ?? 0) === (q.lv ?? 0) || p.cls !== q.cls || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
+    // (Not a bridge a few metres long over a drain: the road either side of it follows the ground.)
+    if (Math.min(p.len, q.len) < 20) continue;
+    const hp = head(p, j, 20), hq = head(q, j, 20);
+    if (deg(-(hp[0] * hq[0] + hp[1] * hq[1])) > 15) continue;
+    for (const e of [p, q]) e.a === j ? (e.ta = 1) : (e.tb = 1);
+    pairs.push([j, p, q, []]);
+    ramps++;
   }
   // The two pieces are one curve through the joint: eased over the 12 m
   // either side of it (the importer smoothed each piece on its own), with
@@ -792,7 +876,7 @@ if (steps.has('roads')) {
   // 0.1 m alone turns the line a few degrees left and right at every point.)
   const r1 = (p) => [+p[0].toFixed(2), +p[1].toFixed(2)];
   let moved = 0;
-  for (const [j, p, q, sd] of pairs) {
+  for (const [j, p, q, sides] of pairs) {
     const P = p.b === j ? p.pts : [...p.pts].reverse(); // into the joint
     const Q = q.a === j ? q.pts : [...q.pts].reverse(); // out of it
     // (A point 12 m from the joint on each side bounds the eased stretch.)
@@ -852,9 +936,11 @@ if (steps.has('roads')) {
     q.pts = q.a === j ? Q2 : Q2.reverse();
     moved = Math.max(moved, bd);
     pos[j] = [...at];
-    if (sd.a === j) sd.pts[0] = [...at];
-    if (sd.b === j) sd.pts[sd.pts.length - 1] = [...at];
-    for (const e of [p, q, sd]) e.len = lenOf(e.pts);
+    for (const sd of sides) {
+      if (sd.a === j) sd.pts[0] = [...at];
+      if (sd.b === j) sd.pts[sd.pts.length - 1] = [...at];
+    }
+    for (const e of [p, q, ...sides]) e.len = lenOf(e.pts);
   }
   // A paired road's painted median keeps its place through the joint: where
   // the two pieces have it at different offsets or widths, it eases from one
@@ -884,7 +970,7 @@ if (steps.has('roads')) {
     else ms.push([1, ...own]);
     e.ms = ms.map(([f, mo, med]) => [f, +mo.toFixed(2), +med.toFixed(2)]);
   }
-  report.roads = { tees, why, moved: +moved.toFixed(2), medians: knots.size };
+  report.roads = { tees, slips, ramps, openings, why, moved: +moved.toFixed(2), medians: knots.size };
 }
 
 // ---------- box ----------

@@ -33,10 +33,11 @@ window.__checkGround = () => {
       const nx = (bz - az) / tl, nz = -(bx - ax) / tl;
       // The ribbon has vertices only at its two edges: its surface across the
       // width is the straight line between them.
-      const h = d.EHALF[i];
+      // (A joined line is as wide as it is drawn at each point, not its widest.)
+      const hk = (q) => d.halfNear(i, q, 0);
       const edgeY = (q, sgn) => {
         const [px, pz] = P[q];
-        return Y ? Y[q] : (d.surfaceAt ?? d.heightAt)(px + nx * sgn * h, pz + nz * sgn * h);
+        return Y ? Y[q] : (d.surfaceAt ?? d.heightAt)(px + nx * sgn * hk(q), pz + nz * sgn * hk(q));
       };
       const la = edgeY(k, -1), ra = edgeY(k, 1), lb = edgeY(k + 1, -1), rb = edgeY(k + 1, 1);
       // Across the full width and out to the kerbs (|f| > 1 holds the edge
@@ -44,7 +45,7 @@ window.__checkGround = () => {
       for (const a of [0, 0.25, 0.5, 0.75]) {
         for (const f of [-1.08, -0.9, -0.6, -0.3, 0, 0.3, 0.6, 0.9, 1.08]) {
           const t = Math.min(1, Math.max(0, (f + 1) / 2));
-          const o = f * h;
+          const o = f * (hk(k) + (hk(k + 1) - hk(k)) * a);
           const m = [ax + (bx - ax) * a + nx * o, az + (bz - az) * a + nz * o];
           if (Math.abs(m[0]) > 3596 || Math.abs(m[1]) > 3596) continue; // beyond the built ground
           const g = meshAt(...m);

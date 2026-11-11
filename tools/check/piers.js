@@ -10,7 +10,7 @@ window.__checkPiers = () => {
       // Only roads the pier would pass through (on the ground, or a lower deck).
       const y = d.hasProfile[i] ? (() => { const Y = d.deckY(i); return Y[seg] + (Y[Math.min(Y.length - 1, seg + 1)] - Y[seg]) * u; })() : d.heightAt(p.x, p.z);
       if (y >= p.top - 1) return;
-      const over = d.EHALF[i] + R - dd;
+      const over = d.halfNear(i, seg, u) + R - dd;
       if (over > 0) bad.push({ kind: p.kind, road: d.edges[i].name || d.edges[i].cls, x: Math.round(p.x), z: Math.round(p.z), over: +over.toFixed(2) });
     });
   }
