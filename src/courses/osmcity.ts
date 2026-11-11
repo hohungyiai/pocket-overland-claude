@@ -1262,8 +1262,12 @@ export async function buildPasirRisCourse(
   // at the junction's one height even on a slope. (Only at a raised
   // junction: where it sits on the ground, every road follows the ground.)
   const jBase = Float64Array.from(M.junctions, ([jx, jz]) => baseAt(jx, jz));
+  // (groundUnder: the hills at the point roadBase was last asked about, for
+  // a caller that needs both without working the hills out twice.)
+  let groundUnder = 0;
   const roadBase = (i: number, s: number, x: number, z: number) => {
     const b = baseAt(x, z);
+    groundUnder = b;
     if (elevated[i]) return b;
     const e = edges[i];
     let r = b;
@@ -1561,11 +1565,53 @@ export async function buildPasirRisCourse(
   const crossings: Crossing[] = [];
   const crossCand: { cr: Crossing; lightOpts: XZ[] }[] = [];
   const crossEnd = new Map<string, Crossing>();
-  for (const sh of JX.shapes) {
-    const ms = sh.mouths.filter((m) => !hasProfile[m.line] && rankOf(edges[m.line].cls) >= 1 && m.half >= 2.5 && ELEN[m.line] > m.s + STOP_AT + 4);
-    if (sh.mouths.length < 3 || ms.length < 3) continue;
-    if (sh.mouths.some((m) => edges[m.line].cls === 'motorway')) continue;
-    if (new Set(sh.mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).map((m) => edges[m.line].name ?? m.line)).size < 2 && sh.mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).length < 3) continue;
+  type Arm = { line: number; end: 0 | 1; s: number; half: number; t: XZ };
+  const armsOf: Arm[][] = JX.shapes.map((sh) => sh.mouths);
+  // A road that runs through its junction as one strip has no mouth there:
+  // its crossing lies across it just clear of the side roads' mouths, on
+  // each side. (Strips either side of a divider, joined across an opening,
+  // are one junction: the crossings on both line up.)
+  {
+    const seen = new Set<number>();
+    JX.tee.forEach((isTee, j0) => {
+      if (!isTee || seen.has(j0)) return;
+      const group = [j0];
+      seen.add(j0);
+      for (let q = 0; q < group.length; q++)
+        for (const i of jE[group[q]]) {
+          if (!JX.internal[i] || thruEnd(i, group[q])) continue;
+          const o = edges[i].a === group[q] ? edges[i].b : edges[i].a;
+          if (JX.tee[o] && !seen.has(o) && !thruEnd(i, o)) (seen.add(o), group.push(o));
+        }
+      const arms: Arm[] = [];
+      const rings: XZ[][] = [];
+      for (const sh of JX.shapes)
+        if (sh.nodes.length === 1 && group.includes(sh.nodes[0])) {
+          rings.push(sh.ring);
+          arms.push(...sh.mouths);
+        }
+      for (const f of JX.fills) if (f.tee !== undefined && group.includes(f.tee)) rings.push(f.ring);
+      for (const j of group)
+        for (const i of jE[j]) {
+          if (!thruEnd(i, j)) continue;
+          const atA = edges[i].a === j;
+          const P = EP[i];
+          const k = atA ? 0 : P.length - 1;
+          const q = P[atA ? 1 : P.length - 2];
+          const tl = Math.hypot(q[0] - P[k][0], q[1] - P[k][1]) || 1;
+          const t: XZ = [(q[0] - P[k][0]) / tl, (q[1] - P[k][1]) / tl];
+          let far = 0;
+          for (const ring of rings) for (const [x, z] of ring) far = Math.max(far, (x - P[k][0]) * t[0] + (z - P[k][1]) * t[1]);
+          arms.push({ line: i, end: atA ? 0 : 1, s: far, half: halfAtE(i, k), t });
+        }
+      armsOf.push(arms);
+    });
+  }
+  for (const mouths of armsOf) {
+    const ms = mouths.filter((m) => !hasProfile[m.line] && rankOf(edges[m.line].cls) >= 1 && m.half >= 2.5 && ELEN[m.line] > m.s + STOP_AT + 4);
+    if (mouths.length < 3 || ms.length < 3) continue;
+    if (mouths.some((m) => edges[m.line].cls === 'motorway')) continue;
+    if (new Set(mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).map((m) => edges[m.line].name ?? m.line)).size < 2 && mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).length < 3) continue;
     const axis = Math.atan2(ms[0].t[1], ms[0].t[0]);
     for (const m of ms) {
       const e = edges[m.line];
@@ -1874,7 +1920,21 @@ export async function buildPasirRisCourse(
         // (A road is never below its base: one whose base alone already
         // clears this point needn't work out how far above it stands.)
         if (yr + slack >= h) return;
-        yr += relAlong(line, sa);
+        const under = groundUnder;
+        const rel = relAlong(line, sa);
+        yr += rel;
+        // (A road still down on the ground lies on it, along and across,
+        // as tiltAt has it: there the ground is held to its own shape, not
+        // to the height of the road's middle. On a slope that height is a
+        // step down for the road that carries on from its end. Only the
+        // ground's shape across the road counts, measured from the hills
+        // under its middle: a road held below the hills, as beside a
+        // junction on a slope, keeps the ground down with it. A road that
+        // stays level across its width, tiltAt 0, keeps the ground at its
+        // own height. Redrawn maps only: today's map keeps its ground to
+        // the centimetre.)
+        const tl = oneLine && rel < 1 ? tiltAt(line, sa) : 0;
+        if (tl > 0) yr += tl * Math.max(0, hb - under - rel);
         const cap = yr + slack;
         if (cap < h) h = cap;
       });
@@ -3125,8 +3185,9 @@ export async function buildPasirRisCourse(
     // (A road running through a tee carries its markings straight through.)
     const stopAt = (j: number, trim: number) => (trim > 0 ? trim + 1 : thruMate(line, j) !== undefined && (JX.tee[j] || jDegree[j] === 2) ? -1 : jDegree[j] === 2 ? 0.3 : jDegree[j] > 2 ? jRadius[j] + 2 : 2);
     return [
-      crossEnd.has(`${line}:0`) ? JX.trimA[line] + STOP_AT + 0.5 : stopAt(e.a, JX.trimA[line]),
-      crossEnd.has(`${line}:1`) ? JX.trimB[line] + STOP_AT + 0.5 : stopAt(e.b, JX.trimB[line]),
+      // (A strip has no mouth: its crossing lies clear of its side roads' mouths.)
+      crossEnd.has(`${line}:0`) ? (thruEnd(line, e.a) ? crossEnd.get(`${line}:0`)!.s : JX.trimA[line]) + STOP_AT + 0.5 : stopAt(e.a, JX.trimA[line]),
+      crossEnd.has(`${line}:1`) ? (thruEnd(line, e.b) ? crossEnd.get(`${line}:1`)!.s : JX.trimB[line]) + STOP_AT + 0.5 : stopAt(e.b, JX.trimB[line]),
     ];
   };
   const roadRuns = runsOf(EP);
