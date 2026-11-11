@@ -37,6 +37,7 @@ const CHECKS = [
   ['No two junctions overlap', 'junctions.js', '__checkJunctionOverlap', 0],
   ['No kerb across a road', 'junctions.js', '__checkKerbAcross', 0],
   ['Junctions stay on their roads', 'junctions.js', '__checkJunctionSpill', 0],
+  ['No junction is paved more than 5.5 m from its roads, anywhere inside it', 'junctions.js', '__checkJunctionReach', 0, 35],
   ['Crossings lie on their own road', 'crossings.js', '__checkCrossings', 0],
   ['No traffic light on a road or in a junction', 'crossings.js', '__checkLightPoles', 0],
   ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 23],
@@ -48,7 +49,7 @@ const CHECKS = [
   ['Every road joining a through road has its give-way line', 'through.js', '__checkGiveWays', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
   // Drivable from a standstill: 60% of what the car can do (src/limits.ts).
-  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 17],
+  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 13],
   ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, 4],
   ['No side tilt that could tip the car', 'drive.js', '__checkTilt', 0],
   ['The drive bot gets through the hard spots', 'routes.js', '__checkRoutes', 0],
@@ -63,14 +64,14 @@ const CHECKS = [
   ['No road jogs sideways (sharp turn and straight back)', 'kinks.js', '__checkKinks', 0, 79],
   ['No gap where two roads split or join', 'gores.js', '__checkGores', 0],
   // (120: 69 sides of ground splits still drawn from one point, 51 paved junctions whose outline kinks.)
-  ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, 10],
+  ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, 9],
   // The finished road (finish.js): what is drawn, followed along the whole of
   // every road, whatever rule drew it. (Known: counted on the map as it
   // stood when these checks were written.)
-  ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, 149],
+  ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, 148],
   ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 201],
   ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 198],
-  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 39],
+  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 38],
   ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, 54],
 ];
 

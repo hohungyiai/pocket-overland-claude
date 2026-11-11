@@ -27,6 +27,8 @@ export interface JunctionIn {
   plain?: (j: number) => boolean;
   /** Do these two road ends (line, end) meet as a road and one of its branches at a split? (Its edge then curves from one to the other, whatever the angle.) */
   sideBySide?: (lineA: number, endA: number, lineB: number, endB: number) => boolean;
+  /** Is this point a slip road's joint (a slip splitting off or merging, nothing else)? */
+  slip?: (j: number) => boolean;
   roads: SegIndex;
 }
 
@@ -210,9 +212,25 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     why: [],
   };
 
+  // (Off only to ask what the outline's corners alone would have allowed.)
+  let whole = true;
+  const cornersOnly = (nodes: number[], stub: Uint8Array) => {
+    whole = false;
+    const r = shapeGroupRaw(nodes, stub);
+    whole = true;
+    return r;
+  };
+  // (On only for the parts of a junction that has come apart: see below.)
+  let seek = false;
   const memo = new Map<string, Built | string>();
+  // Groups whose shape is settled below: those that keep the shape their
+  // outline's corners allowed, and parts that got their curved corners.
+  const asWas = new Map<string, Built>();
+  const keyOf = (nodes: number[], stub: Uint8Array) => `${stub === wide.stub ? 'w' : 'b'}${[...nodes].sort((p, q) => p - q).join(',')}`;
   const shapeGroup = (nodes: number[], stub: Uint8Array): Built | string => {
-    const key = `${stub === wide.stub ? 'w' : 'b'}${[...nodes].sort((p, q) => p - q).join(',')}`;
+    const key = keyOf(nodes, stub);
+    const w = asWas.get(key);
+    if (w) return w;
     let r = memo.get(key);
     if (r === undefined) memo.set(key, (r = shapeGroupRaw(nodes, stub)));
     return r;
@@ -256,14 +274,38 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     };
     // A junction stays on its roads: no point of its outline is further than
     // a corner's reach from one of them.
-    const spills = (ring: XZ[]) =>
-      ring.some(([x, z]) => {
-        let best = Infinity;
-        each(x, z, 30, (_o, _k, d, sg) => {
-          best = Math.min(best, d - sg.h);
-        });
-        return best > SPILL;
-      });
+    // (Asked of its whole paving, not only the outline's corners: a straight
+    // side between two mouths has no corner in its middle, and the ground
+    // three roads enclose lies inside every side.)
+    const far = (x: number, z: number) => {
+      for (const sg of segs) {
+        const abx = sg.bx - sg.ax;
+        const abz = sg.bz - sg.az;
+        let u = ((x - sg.ax) * abx + (z - sg.az) * abz) / (abx * abx + abz * abz || 1);
+        u = u < 0 ? 0 : u > 1 ? 1 : u;
+        const dx = sg.ax + abx * u - x;
+        const dz = sg.az + abz * u - z;
+        const r = sg.h + SPILL;
+        if (dx * dx + dz * dz <= r * r) return false;
+      }
+      return true;
+    };
+    const spills = (ring: XZ[]) => {
+      if (!whole) return ring.some(([x, z]) => far(x, z));
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (let k = 0; k < ring.length; k++) {
+        const [ax, az] = ring[k];
+        const [bx, bz] = ring[(k + 1) % ring.length];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 1.5));
+        for (let q = 0; q < n; q++) if (far(ax + ((bx - ax) * q) / n, az + ((bz - az) * q) / n)) return true;
+        x0 = Math.min(x0, ax);
+        x1 = Math.max(x1, ax);
+        z0 = Math.min(z0, az);
+        z1 = Math.max(z1, az);
+      }
+      for (let x = Math.floor(x0) + 0.5; x < x1; x++) for (let z = Math.floor(z0) + 0.5; z < z1; z++) if (inRingXZ(ring, x, z) && far(x, z)) return true;
+      return false;
+    };
     // Fillet radius between two roads: wider for bigger roads.
     const R = (p: number, q: number) => 2 + 0.6 * Math.min(4, Math.min(I.rank(p), I.rank(q)));
     const mouths: Mouth[] = [];
@@ -359,7 +401,34 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         }
     if (mouths.length < 2) return 'mouths';
     const mean = (pts: XZ[]): XZ => [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length];
-    const tryCentre = (c: XZ, byDir: boolean) => {
+    // How well a point sees an outline: above zero when every step of the
+    // outline turns the same way round it (the paving is filled as a fan).
+    const sees = (ring: XZ[], c: XZ) => {
+      let least = Infinity;
+      for (let k = 0; k < ring.length; k++) {
+        const p = ring[k];
+        const q = ring[(k + 1) % ring.length];
+        least = Math.min(least, cross([p[0] - c[0], p[1] - c[1]], [q[0] - c[0], q[1] - c[1]]));
+      }
+      return least;
+    };
+    const seesBest = (ring: XZ[], from: XZ): XZ => {
+      let centre = from;
+      let best = sees(ring, centre);
+      const x0 = Math.min(...ring.map((p) => p[0])), x1 = Math.max(...ring.map((p) => p[0]));
+      const z0 = Math.min(...ring.map((p) => p[1])), z1 = Math.max(...ring.map((p) => p[1]));
+      const step = Math.max(0.5, Math.max(x1 - x0, z1 - z0) / 40);
+      for (let z = z0; z <= z1; z += step)
+        for (let x = x0; x <= x1; x += step) {
+          const v = sees(ring, [x, z]);
+          if (v > best) {
+            best = v;
+            centre = [x, z];
+          }
+        }
+      return centre;
+    };
+    const tryCentre = (c: XZ, byDir: boolean, search = false) => {
       const key = (m: Mouth) => (byDir ? Math.atan2(m.t[1], m.t[0]) : Math.atan2(m.q[1] - c[1], m.q[0] - c[0]));
       const ms = [...mouths].sort((p, q) => key(p) - key(q));
       const ring: XZ[] = [];
@@ -471,25 +540,27 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         if (Math.max(I.rank(A.line), I.rank(B.line)) >= 1) kerbs.push(curve);
       }
       // Star-shaped around c: every outline step turns the same way.
-      for (let k = 0; k < ring.length; k++) {
-        const p = ring[k];
-        const q = ring[(k + 1) % ring.length];
-        if (cross([p[0] - c[0], p[1] - c[1]], [q[0] - c[0], q[1] - c[1]]) <= 1e-6) {
-          return null;
-        }
+      // (A curved corner can fold a hair as seen from the middle of the
+      // nodes and still be a clean outline: for a part of a junction that
+      // has come apart, any point that sees the whole of it will do.)
+      if (sees(ring, c) <= 1e-6) {
+        if (!search) return null;
+        c = seesBest(ring, c);
+        if (sees(ring, c) <= 1e-6) return null;
       }
       if (spills(ring)) return null;
-      return { ms, ring, corners, kerbs };
+      return { ms, ring, corners, kerbs, c };
     };
     const c1 = mean(nodes.map((j) => junctions[j]));
     const c2 = mean(mouths.map((m) => m.q));
     let centre = c1;
     let isHull = false;
     let got: ReturnType<typeof tryCentre> = null;
-    for (const [c, byDir] of [[c1, false], [c1, true], [c2, false], [c2, true]] as [XZ, boolean][]) {
-      got = tryCentre(c, byDir);
+    for (const [c, byDir, search] of [[c1, false], [c1, true], [c2, false], [c2, true], [c1, false, true], [c2, false, true]] as [XZ, boolean, boolean?][]) {
+      if (search && !seek) break;
+      got = tryCentre(c, byDir, search);
       if (got) {
-        centre = c;
+        centre = got.c;
         break;
       }
     }
@@ -522,30 +593,8 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // (Eased sides curve inward: where the outline then folds as seen from
       // the middle of the hull, the paving is filled from the point that
       // sees it best instead.)
-      const sees = (c: XZ) => {
-        let least = Infinity;
-        for (let k = 0; k < ring.length; k++) {
-          const p = ring[k];
-          const q = ring[(k + 1) % ring.length];
-          least = Math.min(least, cross([p[0] - c[0], p[1] - c[1]], [q[0] - c[0], q[1] - c[1]]));
-        }
-        return least;
-      };
-      let best = sees(centre);
-      if (best <= 1e-6) {
-        const x0 = Math.min(...ring.map((p) => p[0])), x1 = Math.max(...ring.map((p) => p[0]));
-        const z0 = Math.min(...ring.map((p) => p[1])), z1 = Math.max(...ring.map((p) => p[1]));
-        const step = Math.max(0.5, Math.max(x1 - x0, z1 - z0) / 40);
-        for (let z = z0; z <= z1; z += step)
-          for (let x = x0; x <= x1; x += step) {
-            const v = sees([x, z]);
-            if (v > best) {
-              best = v;
-              centre = [x, z];
-            }
-          }
-      }
-      got = { ms: mouths, ring, corners, kerbs: [] };
+      if (sees(ring, centre) <= 1e-6) centre = seesBest(ring, centre);
+      got = { ms: mouths, ring, corners, kerbs: [], c: centre };
       isHull = true;
     }
     const radius = Math.max(...got.ring.map((p) => Math.hypot(p[0] - centre[0], p[1] - centre[1])));
@@ -555,17 +604,146 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
   // Shape every group; where two shapes still overlap (two junctions on a
   // short road, each wanting room), they become one junction.
   // A big crossing that can't be shaped whole falls back to its parts.
+  // A junction that paves ground its roads only enclose comes apart at the
+  // longest road inside it, as often as it takes: smaller junctions with a
+  // real road (its kerbs, the ground beside it) between them. Only where
+  // that leaves a clean result, though: the road between must be long
+  // enough to be one, every part must take a shape of its own, and no two
+  // of them may overlap. (A slip road's joint may: it needs no shape, its
+  // roads lie over each other as at any slip.) A junction that can't come
+  // apart cleanly keeps the shape its outline's corners allowed.
+  const MIN_CUT = 28;
+  const apart = (nodes: number[], stub: Uint8Array): number[][] => {
+    if (nodes.length < 2 || typeof shapeGroup(nodes, stub) !== 'string') return [nodes];
+    const inG = new Set(nodes);
+    const inner = [...new Set(nodes.flatMap((j) => jE[j]))]
+      .filter((i) => (stub[i] || len[i] < 80) && edges[i].a !== edges[i].b && inG.has(edges[i].a) && inG.has(edges[i].b))
+      .sort((p, q) => len[q] - len[p]);
+    for (let cut = 1; cut <= inner.length && len[inner[cut - 1]] >= MIN_CUT; cut++) {
+      const par = new Map<number, number>(nodes.map((j) => [j, j]));
+      const f = (j: number): number => {
+        const p = par.get(j)!;
+        if (p === j) return j;
+        const r = f(p);
+        par.set(j, r);
+        return r;
+      };
+      for (const i of inner.slice(cut)) par.set(f(edges[i].a), f(edges[i].b));
+      const comps = new Map<number, number[]>();
+      for (const j of nodes) (comps.get(f(j)) ?? comps.set(f(j), []).get(f(j))!).push(j);
+      if (comps.size > 1) return [...comps.values()].flatMap((c) => apart(c, base.stub));
+    }
+    return [nodes];
+  };
+  // (Slip joints left plain.)
+  const loose = new Set<number>();
+  const curved = new Map<string, Built>();
+  /** A group's shape with curved corners, where today it has only the hull of its road ends. */
+  const curvedOf = (nodes: number[], stub: Uint8Array): Built | null => {
+    const b = shapeGroup(nodes, stub);
+    if (typeof b === 'string' || !b.hull) return null;
+    seek = true;
+    const c = shapeGroupRaw(nodes, stub);
+    seek = false;
+    return typeof c === 'string' || c.hull ? null : c;
+  };
+  /** The parts a group comes apart into, or null where that is not clean. */
+  const cleanParts = (nodes: number[], stub: Uint8Array): number[][] | null => {
+    if (typeof shapeGroup(nodes, stub) !== 'string') return [nodes];
+    const parts = apart(nodes, stub);
+    if (parts.length < 2) return null;
+    const slip = (p: number[]) => p.length === 1 && !!I.slip?.(p[0]);
+    // (A part gets its curved corners where it can: without them it would
+    // be the straight-sided hull of its road ends.)
+    const B = parts.map((p) => {
+      const b = shapeGroup(p, base.stub);
+      const c = curvedOf(p, base.stub);
+      if (!c) return b;
+      curved.set(keyOf(p, base.stub), c);
+      return c;
+    });
+    const plain = new Set<number>();
+    for (let a = 0; a < parts.length; a++)
+      if (typeof B[a] === 'string') {
+        if (!slip(parts[a])) return null;
+        plain.add(a);
+      }
+    for (let a = 0; a < parts.length; a++)
+      for (let b = a + 1; b < parts.length; b++) {
+        if (plain.has(a) || plain.has(b)) continue;
+        const A = B[a] as Built;
+        const C = B[b] as Built;
+        if (!overlaps(A.ring, C.ring) && !overlaps(C.ring, A.ring)) continue;
+        if (slip(parts[a])) plain.add(a);
+        else if (slip(parts[b])) plain.add(b);
+        else return null;
+      }
+    for (const a of plain) loose.add(parts[a][0]);
+    return parts;
+  };
+  /** Is every road left between two of the parts long enough to be one? */
+  const fits = (parts: number[][]) => {
+    const of = new Map<number, number>();
+    parts.forEach((q, k) => q.forEach((n) => of.set(n, k)));
+    for (const q of parts)
+      for (const n of q)
+        for (const i of jE[n]) {
+          const a = of.get(edges[i].a);
+          const b = of.get(edges[i].b);
+          if (a !== undefined && b !== undefined && a !== b && len[i] < MIN_CUT) return false;
+        }
+    return true;
+  };
   let list: number[][] = [];
   for (const nodes of wide.groups.values()) {
     const parts = new Map<number, number[]>();
     for (const j of nodes) (parts.get(base.find(j)) ?? parts.set(base.find(j), []).get(base.find(j))!).push(j);
-    if (parts.size === 1 || typeof shapeGroup(nodes, wide.stub) !== 'string') list.push(nodes);
-    else list.push(...parts.values());
+    if (typeof shapeGroup(nodes, wide.stub) !== 'string') {
+      list.push(nodes);
+      continue;
+    }
+    // A big crossing first falls back to its parts (its medians and slip
+    // islands come back), each of which may come apart in turn.
+    let got: number[][] | null;
+    if (parts.size === 1) got = cleanParts(nodes, wide.stub);
+    else {
+      const each = [...parts.values()].map((q) => cleanParts(q, base.stub));
+      got = each.every((q) => q) ? (each as number[][][]).flat() : null;
+    }
+    if (got && got.length > 1 && !fits(got)) {
+      for (const q of got) if (q.length === 1) loose.delete(q[0]);
+      got = null;
+    }
+    if (got) {
+      for (const q of got) {
+        const c = got.length > 1 ? curved.get(keyOf(q, base.stub)) : undefined;
+        if (c) asWas.set(keyOf(q, base.stub), c);
+      }
+      list.push(...got);
+      continue;
+    }
+    // Not cleanly: it keeps the shape its corners allowed...
+    const was = cornersOnly(nodes, wide.stub);
+    if (typeof was !== 'string') {
+      asWas.set(keyOf(nodes, wide.stub), was);
+      list.push(nodes);
+      continue;
+    }
+    // ...or, where they allowed it none, its parts keep theirs.
+    if (parts.size === 1) {
+      list.push(nodes);
+      continue;
+    }
+    for (const q of parts.values()) {
+      const w = typeof shapeGroup(q, base.stub) === 'string' ? cornersOnly(q, base.stub) : null;
+      if (w && typeof w !== 'string') asWas.set(keyOf(q, base.stub), w);
+      list.push(q);
+    }
   }
   const stubOf = (nodes: number[]) => (wide.groups.has(wide.find(nodes[0])) && wide.groups.get(wide.find(nodes[0]))!.length === nodes.length ? wide.stub : base.stub);
   let built: (Built | string)[] = [];
   for (let pass = 0; ; pass++) {
-    built = list.map((nodes) => shapeGroup(nodes, stubOf(nodes)));
+    built = list.map((nodes) => (nodes.length === 1 && loose.has(nodes[0]) ? 'slip' : shapeGroup(nodes, stubOf(nodes))));
     if (pass === 3) break;
     const ok = built.map((b, g) => (typeof b === 'string' ? -1 : g)).filter((g) => g >= 0);
     const grid = new Map<number, number[]>();
@@ -594,12 +772,39 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           }
     }
     if (!merged) break;
-    const next = new Map<number, number[]>();
-    list.forEach((nodes, i) => {
+    const sets = new Map<number, number[]>();
+    list.forEach((_, i) => {
       const r = f(i);
-      (next.get(r) ?? next.set(r, []).get(r)!).push(...nodes);
+      (sets.get(r) ?? sets.set(r, []).get(r)!).push(i);
     });
-    list = [...next.values()];
+    const next: number[][] = [];
+    for (const l of sets.values()) {
+      const all = l.flatMap((i) => list[i]);
+      const st = stubOf(all);
+      if (l.length === 1 || typeof shapeGroup(all, st) !== 'string') {
+        next.push(all);
+        continue;
+      }
+      // Two that would become one, but as one would pave ground between
+      // their roads: a slip road's joint among them is left plain instead
+      // (the rest are asked again without it)...
+      const slips = l.filter((i) => list[i].length === 1 && I.slip?.(list[i][0]));
+      if (slips.length) {
+        for (const i of slips) loose.add(list[i][0]);
+        for (const i of l) {
+          next.push(list[i]);
+          // (What stays a junction of its own gets its curved corners.)
+          const c = slips.includes(i) ? null : curvedOf(list[i], stubOf(list[i]));
+          if (c) asWas.set(keyOf(list[i], stubOf(list[i])), c);
+        }
+        continue;
+      }
+      // ...or else they keep the shape their corners allowed.
+      const w = cornersOnly(all, st);
+      if (typeof w !== 'string') asWas.set(keyOf(all, st), w);
+      next.push(all);
+    }
+    list = next;
   }
   built.forEach((b, g) => {
     const nodes = list[g];
@@ -756,7 +961,7 @@ function overlaps(a: XZ[], b: XZ[]) {
 }
 
 /** Convex hull, counter-clockwise in the same sense as the outlines (cross > 0). Keeps the input points. */
-function convexHull(P: XZ[]): XZ[] {
+export function convexHull(P: XZ[]): XZ[] {
   const p = [...P].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   if (p.length < 3) return p;
   const turn = (o: XZ, a: XZ, b: XZ) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);

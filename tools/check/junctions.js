@@ -140,4 +140,51 @@
     bad.sort((a, b) => b.over - a.over);
     return { samples: n, bad: bad.length, worst: bad.slice(0, 12) };
   };
+
+  /**
+   * A junction is paved where its roads run, and a corner's reach beyond:
+   * nowhere does its paving lie more than 5.5 m from the edge of a road that
+   * meets there (SPILL in src/world/junctions.ts). Asked of the whole
+   * paving on a 1 m grid, not of the outline's corners: a straight side
+   * between two mouths has no corner in its middle, and the ground three
+   * roads enclose (a traffic island) lies inside every side.
+   */
+  window.__checkJunctionReach = (all = false, REACH = 5.5) => {
+    const { JX, roads, EHALF, halfAtE, edges } = d();
+    const bad = [];
+    let n = 0;
+    for (let k = 0; k < JX.shapes.length; k++) {
+      const s = JX.shapes[k];
+      const own = new Set([...s.mouths.map((m) => m.line), ...s.internal]);
+      const reach = 40;
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (const [x, z] of s.ring) {
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+        z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+      }
+      let worst = 0, wx = 0, wz = 0, deep = 0;
+      for (let x = Math.floor(x0) + 0.5; x < x1; x++)
+        for (let z = Math.floor(z0) + 0.5; z < z1; z++) {
+          if (!inside(s.ring, x, z)) continue;
+          n++;
+          // (A road counts at its width where the point is: widths taper.)
+          let best = Infinity;
+          roads.each(x, z, reach, (line, seg, _u, dd) => {
+            if (own.has(line)) best = Math.min(best, dd - Math.max(halfAtE(line, seg), halfAtE(line, seg + 1)));
+          });
+          if (best > REACH) deep++;
+          if (best > worst) {
+            worst = best;
+            wx = x;
+            wz = z;
+          }
+        }
+      if (worst > REACH) {
+        const road = edges[s.mouths.reduce((m, q) => (q.half > m.half ? q : m), s.mouths[0]).line];
+        bad.push({ road: road.name || road.cls, shape: k, x: wx, z: wz, m2: deep, over: +(worst === Infinity ? 99 : worst - REACH).toFixed(2) });
+      }
+    }
+    bad.sort((a, b) => b.over - a.over);
+    return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40) };
+  };
 })();
