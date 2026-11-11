@@ -6,7 +6,7 @@ import { SURFACES, type Course, type MapData, type Surface, type XZ } from './ty
 import * as D from './detail';
 import { TILE, TileStreamer, type Layer, type TileKit } from '../world/stream';
 import { SegIndex, inRing, resample, ringArea } from '../world/segindex';
-import { inRingXZ, shapeJunctions } from '../world/junctions';
+import { convexHull, inRingXZ, shapeJunctions } from '../world/junctions';
 import { LIMITS } from '../limits';
 
 // Pasir Ris and Tampines, built from OpenStreetMap at true scale.
@@ -823,6 +823,7 @@ export async function buildPasirRisCourse(
       return !!sp && ((sp[0] === a && (sp[1] === b || sp[2] === b)) || (sp[0] === b && (sp[1] === a || sp[2] === a)));
     },
     plain: (j) => splitAt.has(j) && !nearDeck[j] && (jE[j] ?? []).every((i) => /^(motorway|trunk)|_link$/.test(edges[i].cls)),
+    slip: (j) => (jE[j] ?? []).length === 3 && jE[j].every((i) => /^(motorway|trunk)|_link$/.test(edges[i].cls)),
     roads,
   });
   // Junction heights above the ground: full height at a flyover's ends, then
@@ -2073,6 +2074,26 @@ export async function buildPasirRisCourse(
       acc.idx.push(base + 1 + i, base + 1 + i1, base + 1 + n + i1, base + 1 + i, base + 1 + n + i1, base + 1 + n + i);
     }
   };
+  /** A flat pad over an outline that (x, z) sees all of: like disc, to the outline instead of a radius. */
+  const padOver = (acc: Acc, x: number, z: number, ring: XZ[], lift: number, y?: number) => {
+    const base = acc.pos.length / 3;
+    const n = ring.length;
+    const at = (px: number, pz: number) => (y ?? Math.max(rawHeight(px, pz), WL + 0.15)) + lift;
+    acc.pos.push(x, at(x, z), z);
+    acc.uv.push(0, 0);
+    for (const f of [0.5, 1])
+      for (const [px, pz] of ring) {
+        const qx = x + (px - x) * f, qz = z + (pz - z) * f;
+        acc.pos.push(qx, at(qx, qz), qz);
+        acc.uv.push(((px - x) * f) / 6, ((pz - z) * f) / 6);
+      }
+    // (The outline runs the way disc's does: the pad faces up.)
+    for (let i = 0; i < n; i++) {
+      const i1 = (i + 1) % n;
+      acc.idx.push(base, base + 1 + i1, base + 1 + i);
+      acc.idx.push(base + 1 + i, base + 1 + i1, base + 1 + n + i1, base + 1 + i, base + 1 + n + i1, base + 1 + n + i);
+    }
+  };
   const accMesh = (acc: Acc, mat: THREE.Material, kit: TileKit, upright = false) => {
     if (!acc.idx.length) return;
     const g = kit.own(new THREE.BufferGeometry());
@@ -3079,6 +3100,7 @@ export async function buildPasirRisCourse(
     return sum / jEdges[j].length;
   };
   // Junction pads.
+  const slipJoint = new Set(JX.why.filter((w) => w.why === 'slip').flatMap((w) => w.nodes));
   const padsByTile = new Map<string, number[]>();
   M.junctions.forEach(([x, z], j) => {
     // Every joint gets a pad (at a bend between two pieces, the narrower
@@ -3100,6 +3122,32 @@ export async function buildPasirRisCourse(
         const y = padY(j);
         // (No kerb round it: the roads' own kerbs run up to the joint, and a
         // ring would only cross the road as a lip.)
+        // A slip road's joint left plain is paved only between its roads'
+        // own ends: a disc as wide as the widest of them would stand out
+        // past the edges of the others.
+        if (slipJoint.has(j)) {
+          const ends: XZ[] = [];
+          for (const i of jEdges[j]) {
+            const atA = edges[i].a === j;
+            const P = EP[i];
+            const k = atA ? 0 : P.length - 1;
+            const q = atA ? 1 : P.length - 2;
+            const l = Math.hypot(P[q][0] - P[k][0], P[q][1] - P[k][1]) || 1;
+            const h = halfAtE(i, k);
+            const nx = (-(P[q][1] - P[k][1]) / l) * h, nz = ((P[q][0] - P[k][0]) / l) * h;
+            ends.push([x + nx, z + nz], [x - nx, z - nz]);
+          }
+          const ring = convexHull(ends);
+          let area = 0;
+          ring.forEach((a, m) => {
+            const b = ring[(m + 1) % ring.length];
+            area += (a[0] - x) * (b[1] - z) - (a[1] - z) * (b[0] - x);
+          });
+          if (ring.length >= 3 && area !== 0) {
+            padOver(road, x, z, area > 0 ? ring : ring.reverse(), 0.09, y);
+            continue;
+          }
+        }
         disc(road, x, z, r, 0.09, y);
       }
     });
