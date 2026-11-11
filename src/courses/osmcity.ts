@@ -1212,9 +1212,14 @@ export async function buildPasirRisCourse(
     return v;
   };
   /** Road height above the ground at distance s along edge i, on its own. */
+  // (Most roads are part of no strip: their straight ramps, as ever. Asked
+  // for every point of every bank, so that answer is kept per road.)
+  const stripEnds = new Int8Array(edges.length); // 0 not yet known, 1 no strip joint at either end, 2 a strip
   const relOwn = (i: number, s: number) => {
     if (elevated[i]) return relRamps(i, s);
     const e = edges[i];
+    if (!stripEnds[i]) stripEnds[i] = thruJoint(i, e.a) === undefined && thruJoint(i, e.b) === undefined ? 1 : 2;
+    if (stripEnds[i] === 1) return relRamps(i, s);
     const sh = stripShape(i);
     if (sh === 1) {
       const run = runLen(i);
@@ -1237,8 +1242,10 @@ export async function buildPasirRisCourse(
     }
     let r = relRamps(i, s);
     const D = Math.min(EASE, ELEN[i]);
-    for (const [j, d] of [[e.a, s], [e.b, ELEN[i] - s]] as const) {
-      if (d >= D || (e.a === e.b && j === e.b)) continue;
+    for (let end = 0; end < 2; end++) {
+      const j = end ? e.b : e.a;
+      const d = end ? ELEN[i] - s : s;
+      if (d >= D || (e.a === e.b && end)) continue;
       const m = awayAt(i, j);
       if (m === undefined) continue;
       // (The eased ramp is at its steepest a third again of the change beyond the ramp's own slope.)
