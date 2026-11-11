@@ -503,7 +503,8 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       if (!leaves[0] || !leaves[1]) return null;
       const hS = I.halfAt(sLine, sEnd === 0 ? 0 : sp.length - 1);
       const farJ = sEnd === 0 ? edges[sLine].b : edges[sLine].a;
-      const room = sL * (jE[farJ].length >= 3 ? 0.5 : 0.8);
+      // (The far end needs room for its own junction, if it has one.)
+      const room = jE[farJ].length >= 3 ? Math.max(sL * 0.5, sL - rad[farJ] - 4) : sL * 0.8;
       const dMax = Math.max(leaves[0].d, leaves[1].d);
       const R = Math.min(Math.max(2.5, Math.min(6, 1.5 + hS * 0.8)), room - dMax);
       if (R < 1) return null;

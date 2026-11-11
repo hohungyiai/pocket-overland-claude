@@ -24,7 +24,7 @@ import { LIMITS } from '../limits';
 type Rapier = typeof RAPIER_NS;
 
 /** (ws: the widths along a line the redraw step joined from pieces of different width: [fraction of its length where a width starts, width]; w is then the widest.) */
-interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[]; ws?: [number, number][]; dual?: number; mo?: number; med?: number; ta?: number; tb?: number }
+interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[]; ws?: [number, number][]; dual?: number; mo?: number; med?: number; ta?: number; tb?: number; ms?: [number, number, number][] }
 interface OsmMap {
   attribution: string;
   junctions: XZ[];
@@ -760,6 +760,22 @@ export async function buildPasirRisCourse(
     R.settle();
     runs.push(R);
   });
+  // A map redrawn as whole roads (its through roads are marked): markings
+  // are then a property of the road, not of each piece, so they do not jog
+  // where two pieces meet. A one-way road's lanes keep one width along its
+  // whole run (the narrowest any piece would give them).
+  const oneLine = edges.some((e) => e.ta || e.tb);
+  const lanesOfW = (w: number) => Math.max(1, Math.round((w - 0.7) / 3.3));
+  const runLane = runs.map(() => Infinity);
+  edges.forEach((e, i) => {
+    const r = runOf[i].run;
+    if (r >= 0 && e.one) runLane[r] = Math.min(runLane[r], (2 * EHALF[i]) / lanesOfW(e.w));
+  });
+  const laneWOf = (i: number) => {
+    const own = (2 * EHALF[i]) / lanesOfW(edges[i].w);
+    const r = runOf[i].run;
+    return oneLine && r >= 0 && runLane[r] < Infinity ? Math.max(2.8, runLane[r]) : own;
+  };
   const halfAtE = (i: number, k: number) => {
     const { run, at, fwd } = runOf[i];
     const R = runs[run];
@@ -2698,24 +2714,74 @@ export async function buildPasirRisCourse(
    * far left of the road's line, dashed?, the half-width the road must
    * have there for the line to be on it].
    */
-  const pairedLines = (i: number): [number, boolean, number][] => {
-    const mid = edges[i].mo ?? 0;
-    const gap = Math.max(0.5, Math.min(edges[i].med ?? 0, 4)) / 2;
+  /** A paired road's painted median at fraction f along it: its offset to the left of the road's line, and its width. (Eased along the road where two pieces differ: `ms`, from the redraw.) */
+  const medianAt = (i: number, f: number): [number, number] => {
+    const e = edges[i];
+    const ms = e.ms;
+    if (!ms || !ms.length) return [e.mo ?? 0, e.med ?? 0];
+    let k = 0;
+    while (k < ms.length - 2 && ms[k + 1][0] <= f) k++;
+    const a = ms[k], b = ms[Math.min(ms.length - 1, k + 1)];
+    const u = b[0] > a[0] ? Math.max(0, Math.min(1, (f - a[0]) / (b[0] - a[0]))) : 0;
+    return [a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
+  };
+  const PAIR_LANE = 3.3;
+  const PAIR_LANES = 5;
+  /**
+   * A paired road's lines at fraction f along it, each [offset left of the
+   * road's line, dashed?, the half width the road needs for it]: the two
+   * solid lines of its median, and lane lines every PAIR_LANE m counted
+   * out from the median on each side (always the same list, in the same
+   * order; a line is drawn only where the road is wide enough for it).
+   * Counted from the median at one lane width, a line keeps its place all
+   * along the road, whatever the pieces it was put together from.
+   */
+  const pairedLines = (i: number, f = 0.5): [number, boolean, number][] => {
+    const [mid, med] = medianAt(i, f);
+    const gap = Math.max(0.5, Math.min(med, 4)) / 2;
     const out: [number, boolean, number][] = [];
     for (const sgn of [-1, 1]) {
       out.push([mid + sgn * gap, false, 0]);
-      const room = EHALF[i] - sgn * mid - gap;
-      const n = Math.max(1, Math.round((room - 0.35) / 3.3));
-      const laneW = room / n;
-      for (let l = 1; l < n; l++) out.push([mid + sgn * (gap + l * laneW), true, sgn * mid + gap + (l + 0.6) * laneW]);
+      for (let l = 1; l <= PAIR_LANES; l++) out.push([mid + sgn * (gap + l * PAIR_LANE), true, sgn * mid + gap + (l + 0.6) * PAIR_LANE]);
     }
     return out.sort((x, y) => x[0] - y[0]);
   };
   {
     const COS30 = Math.cos((30 * Math.PI) / 180);
     const lanesOf = (i: number) => Math.max(1, Math.round((edges[i].w - 0.7) / 3.3));
+    /** A give-way line across a road's mouth at junction id, if it comes in there and carries markings. */
+    const giveWay = (id: number, m: (typeof JX.shapes)[number]['mouths'][number]) => {
+      const e = edges[m.line];
+      const L = ELEN[m.line];
+      // Coming in: one-way roads only where they flow toward the junction.
+      const inbound = e.one ? (m.end === 1 ? 2 : 0) : 1; // 2 = whole width, 1 = left half, 0 = none
+      // (Not service lanes and car park roads, which carry no markings at all.)
+      if (!inbound || rankOf(e.cls) < 1 || hasProfile[m.line] || JX.internal[m.line] || m.half < 2 || L < m.s + GIVE_AT + 2) return;
+      const P = EP[m.line];
+      const cum = ECUM[m.line];
+      const sAt = m.end === 0 ? m.s + GIVE_AT : L - m.s - GIVE_AT;
+      let k = 0;
+      while (k < P.length - 2 && cum[k + 1] <= sAt) k++;
+      const u = (sAt - cum[k]) / (cum[k + 1] - cum[k] || 1);
+      const c: XZ = [lerp(P[k][0], P[k + 1][0], u), lerp(P[k][1], P[k + 1][1], u)];
+      const left: XZ = [-m.t[1], m.t[0]]; // left of a car heading in (along -t)
+      const w = m.half - 0.4;
+      // Dashes 0.6 m long, 0.3 m apart.
+      const dashes: XZ[] = [];
+      for (let o = (inbound === 2 ? -w : 0.15) + 0.3; o + 0.3 <= w; o += 0.9) dashes.push([c[0] + left[0] * o, c[1] + left[1] * o]);
+      // (Only a whole line, on this road's own open surface.)
+      if (dashes.length < 2 || dashes.some(([x, z]) => coveredBy(m.line, x, z, NaN) || onIsland(x, z) || inPaving(x, z, NaN))) return;
+      giveWays.push({ id, line: m.line, end: m.end, left, dashes });
+    };
     JX.shapes.forEach((sh, id) => {
       const M = sh.mouths;
+      // (A tee: the road running through has the right of way, unless the side road is the bigger.)
+      if (sh.nodes.length === 1 && JX.tee[sh.nodes[0]]) {
+        const j = sh.nodes[0];
+        const top = Math.max(...jE[j].filter((i) => thruEnd(i, j)).map((i) => rankOf(edges[i].cls)));
+        if (M.length === 1 && !crossEnd.has(`${M[0].line}:${M[0].end}`) && rankOf(edges[M[0].line].cls) <= top) giveWay(id, M[0]);
+        return;
+      }
       if (M.length < 3) return;
       // (Where lights and crossings rule, nobody has the right of way.)
       if (M.some((m) => crossEnd.has(`${m.line}:${m.end}`))) return;
@@ -2754,28 +2820,7 @@ export async function buildPasirRisCourse(
       const onAxis = new Set(top.pairs.flatMap((c) => [c.a, c.b]));
       if (M.some((m, q) => !onAxis.has(q) && rankOf(edges[m.line].cls) > top.rank)) return;
       M.forEach((m, q) => {
-        if (onAxis.has(q)) return;
-        const e = edges[m.line];
-        const L = ELEN[m.line];
-        // Coming in: one-way roads only where they flow toward the junction.
-        const inbound = e.one ? (m.end === 1 ? 2 : 0) : 1; // 2 = whole width, 1 = left half, 0 = none
-        // (Not service lanes and car park roads, which carry no markings at all.)
-        if (!inbound || rankOf(e.cls) < 1 || hasProfile[m.line] || JX.internal[m.line] || m.half < 2 || L < m.s + GIVE_AT + 2) return;
-        const P = EP[m.line];
-        const cum = ECUM[m.line];
-        const sAt = m.end === 0 ? m.s + GIVE_AT : L - m.s - GIVE_AT;
-        let k = 0;
-        while (k < P.length - 2 && cum[k + 1] <= sAt) k++;
-        const u = (sAt - cum[k]) / (cum[k + 1] - cum[k] || 1);
-        const c: XZ = [lerp(P[k][0], P[k + 1][0], u), lerp(P[k][1], P[k + 1][1], u)];
-        const left: XZ = [-m.t[1], m.t[0]]; // left of a car heading in (along -t)
-        const w = m.half - 0.4;
-        // Dashes 0.6 m long, 0.3 m apart.
-        const dashes: XZ[] = [];
-        for (let o = (inbound === 2 ? -w : 0.15) + 0.3; o + 0.3 <= w; o += 0.9) dashes.push([c[0] + left[0] * o, c[1] + left[1] * o]);
-        // (Only a whole line, on this road's own open surface.)
-        if (dashes.length < 2 || dashes.some(([x, z]) => coveredBy(m.line, x, z, NaN) || onIsland(x, z) || inPaving(x, z, NaN))) return;
-        giveWays.push({ id, line: m.line, end: m.end, left, dashes });
+        if (!onAxis.has(q)) giveWay(id, m);
       });
       const lines: ThroughLine[] = [];
       // (A road on the ground that is no part of this junction, yet lies
@@ -2851,7 +2896,7 @@ export async function buildPasirRisCourse(
         } else if (paired(ea) && paired(eb)) {
           // A paired road's lines carry on across, matched from the median outwards.
           const offs = (m: typeof A, i: number, sg: number) =>
-            pairedLines(i)
+            pairedLines(i, m.end)
               .filter(([, , need]) => m.half > need)
               .map(([o, d]) => [sg * o, d] as [number, boolean])
               .sort((x, y) => x[0] - y[0]);
@@ -3029,16 +3074,19 @@ export async function buildPasirRisCourse(
           // road tapers the lines run on straight and the nearside lane
           // narrows until its line ends (a lane dropped, or one added),
           // rather than every lane squeezing.
-          const laneW = (2 * EHALF[line]) / lanes;
-          for (let l = 1; l < lanes; l++) {
+          const laneW = laneWOf(line);
+          for (let l = 1; l < Math.max(lanes, Math.floor((2 * EHALF[line]) / laneW + 0.01)); l++) {
             const off = (kk: number) => -halfAt(kk) + l * laneW;
             const room = (kk: number) => halfAt(kk) - off(kk) > 0.6 * laneW && halfAt(kk + 1) - off(kk + 1) > 0.6 * laneW;
             strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => room(kk) && dashed(off)(kk), yAt, tilt, clearAt: lineClear });
           }
         } else if (paired(e)) {
-          for (const [at, broken, need] of pairedLines(line)) {
-            const off = () => at;
-            const fits = (kk: number) => halfAt(kk) > need && halfAt(kk + 1) > need;
+          // (Each line's place at every point along the road: the median may ease sideways.)
+          const PL = cum.map((c) => pairedLines(line, len > 0 ? c / len : 0));
+          for (let q = 0; q < PL[0].length; q++) {
+            const broken = PL[0][q][1];
+            const off = (kk: number) => PL[kk][q][0];
+            const fits = (kk: number) => halfAt(kk) > PL[kk][q][2] && halfAt(kk + 1) > PL[kk + 1][q][2];
             strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => fits(kk) && (broken ? dashed(off)(kk) : solid(off)(kk)), yAt, tilt, clearAt: lineClear });
           }
         } else if (rank >= 1 && e.w >= 6) {
@@ -4720,7 +4768,7 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
-      blds, rankOf, deckSplits, nearDeck, WB, GORE, throughLines, throughPairs, paveY, giveWays, bldRoads, pairedLines: (i: number) => (paired(edges[i]) ? pairedLines(i) : null),
+      blds, rankOf, deckSplits, nearDeck, WB, GORE, throughLines, throughPairs, paveY, giveWays, bldRoads, pairedLines: (i: number, f = 0.5) => (paired(edges[i]) ? pairedLines(i, f) : null), laneWOf,
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       whyClosed: (line: number, x: number, z: number, y: number) => ({ covered: coveredBy(line, x, z, y), island: onIsland(x, z), paving: inPaving(x, z, y), gore: inGore(x, z) }),
