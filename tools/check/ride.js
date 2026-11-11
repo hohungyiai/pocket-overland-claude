@@ -31,15 +31,30 @@ window.__checkRide = async (count = 8) => {
     const [x2, z2] = P[k + 1];
     // Set down on the road (from the 1.4 m the car is always placed at),
     // once the world round it is built: given 2.5 s of its own time to
-    // land, then until it is still (all four wheels down, three polls
+    // land, then until it has settled on its springs (all four wheels
+    // down, its height above the road no longer changing, three polls
     // running).
+    // (Not until it stands still: off the pedals the car creeps down a
+    // hill of 1 in 20 at half a metre a second, and at 400 steps a frame a
+    // wait for it to stop rolled it 40 m off the end of a dead-end road,
+    // where there is no road under the wheels to measure. So the clock
+    // runs slowly while it settles, and a creeping car is measured where
+    // it is: still on the road it was put on.)
     g.course.prepareAt?.(x, z);
     g.car.placeAt({ x, y: g.course.surfaceY(x, z, 999), z }, Math.atan2(-(z2 - z), x2 - x));
     for (let s0 = g.sim.steps, t = 0; g.sim.steps < s0 + 150 && t < 3000; t++) await wait(10);
-    for (let t = 0, calm = 0; t < 200 && calm < 3; t++) {
+    g.sim.fast = 10;
+    const above = () => {
+      const p = g.car.body.translation();
+      return p.y - d.surfaceAt(p.x, p.z);
+    };
+    for (let t = 0, calm = 0, h0 = above(); t < 200 && calm < 3; t++) {
       await wait(50);
-      calm = g.car.wheelsOnGround === 4 && Math.abs(g.car.speed) < 0.1 ? calm + 1 : 0;
+      const h = above();
+      calm = g.car.wheelsOnGround === 4 && Math.abs(g.car.speed) < 1 && Math.abs(h - h0) < 0.005 ? calm + 1 : 0;
+      h0 = h;
     }
+    g.sim.fast = 400;
     const V = g.car.wheels[0].position.constructor;
     for (const w of g.car.wheels) {
       const v = w.getWorldPosition(new V());
