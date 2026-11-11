@@ -2396,12 +2396,14 @@ export async function buildPasirRisCourse(
     jEdges[e.a]?.push(i);
     if (e.b !== e.a) jEdges[e.b]?.push(i);
   });
-  const jRadius = jEdges.map((list) => Math.max(0, ...list.map((i) => EHALF[i])));
+  // (A joined line is as wide at a joint as it is drawn there: see halfNear.)
+  const halfEnd = (i: number, j: number) => (edges[i].ws ? halfAtE(i, edges[i].a === j ? 0 : EP[i].length - 1) : EHALF[i]);
+  const jRadius = jEdges.map((list, j) => Math.max(0, ...list.map((i) => halfEnd(i, j))));
   // At a two-way joint, the half width of the other piece.
   const other = (j: number, me: number) => {
     const l = jEdges[j];
     const o = l[0] === me ? l[1] : l[0];
-    return o === undefined ? EHALF[me] : EHALF[o];
+    return o === undefined ? EHALF[me] : halfEnd(o, j);
   };
   const jHalf2 = jEdges.map((_, j) => (me: number) => other(j, me));
   const jDegree = jEdges.map((l) => l.length);
@@ -3446,7 +3448,7 @@ export async function buildPasirRisCourse(
       const road = acc('road');
       for (const j of list) {
         const [x, z] = M.junctions[j];
-        const r = jDegree[j] === 2 ? (EHALF[jEdges[j][0]] + EHALF[jEdges[j][1]]) / 2 : jRadius[j];
+        const r = jDegree[j] === 2 ? (halfEnd(jEdges[j][0], j) + halfEnd(jEdges[j][1], j)) / 2 : jRadius[j];
         const y = padY(j);
         // (No kerb round it: the roads' own kerbs run up to the joint, and a
         // ring would only cross the road as a lip.)
