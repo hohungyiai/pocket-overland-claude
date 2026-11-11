@@ -5,6 +5,8 @@ import { drawMapShapes, paintMap, pxPerM } from './minimap';
 // while it is up. Drag to pan, pinch or scroll to zoom, tap "Back to the
 // drive" to close. Kept separate from the minimap so it can grow into route
 // planning later (a route layer and waypoints would draw in drawOverlay).
+// Tap a spot to drop a pin there, then "Drive from here" to start the drive
+// again from the nearest road to it.
 
 export class FullMap {
   readonly el: HTMLDivElement;
@@ -19,9 +21,14 @@ export class FullMap {
   private car = { x: 0, z: 0, heading: 0 };
   private pointers = new Map<number, { x: number; y: number }>();
   private dirty = true;
+  /** The spot picked by a tap, if any. */
+  private pin: { x: number; z: number } | null = null;
+  /** Where the finger that may be tapping went down. */
+  private tap: { id: number; x: number; y: number; moved: boolean } | null = null;
+  private goBtn: HTMLButtonElement;
   isOpen = false;
 
-  constructor(parent: HTMLElement, private map: MapData, title: string, private onClose: () => void) {
+  constructor(parent: HTMLElement, private map: MapData, title: string, private onClose: () => void, private onGo?: (x: number, z: number) => void) {
     this.el = document.createElement('div');
     this.el.id = 'fullmap';
     this.el.innerHTML = `
@@ -32,17 +39,21 @@ export class FullMap {
         <button class="btn" data-act="fit">Whole map</button>
         <button class="btn on" data-act="close">Back to the drive</button>
       </div>
+      <button class="btn on fullmap-go" data-act="go" hidden>Drive from here</button>
       <div class="fullmap-north">N ↑</div>`;
     parent.append(this.el);
     this.canvas = this.el.querySelector('canvas')!;
     this.ctx = this.canvas.getContext('2d')!;
+    this.goBtn = this.el.querySelector<HTMLButtonElement>('.fullmap-go')!;
 
     this.el.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
       b.addEventListener('pointerdown', (e) => {
         e.stopPropagation();
         const act = b.dataset.act;
         if (act === 'close') this.close();
-        else if (act === 'fit') this.fit();
+        else if (act === 'go') {
+          if (this.pin) this.onGo?.(this.pin.x, this.pin.z);
+        } else if (act === 'fit') this.fit();
         else this.centerOnCar();
       }),
     );
@@ -51,10 +62,13 @@ export class FullMap {
     c.addEventListener('pointerdown', (e) => {
       c.setPointerCapture(e.pointerId);
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      // (A tap is one finger that goes down and up without dragging.)
+      this.tap = this.pointers.size === 1 ? { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false } : null;
     });
     c.addEventListener('pointermove', (e) => {
       const prev = this.pointers.get(e.pointerId);
       if (!prev) return;
+      if (this.tap && Math.hypot(e.clientX - this.tap.x, e.clientY - this.tap.y) > 8) this.tap.moved = true;
       const pts = [...this.pointers.values()];
       if (pts.length === 1) {
         this.cx -= (e.clientX - prev.x) / this.scale;
@@ -70,8 +84,23 @@ export class FullMap {
       this.dirty = true;
     });
     const up = (e: PointerEvent) => this.pointers.delete(e.pointerId);
-    c.addEventListener('pointerup', up);
-    c.addEventListener('pointercancel', up);
+    c.addEventListener('pointerup', (e) => {
+      const t = this.tap;
+      this.tap = null;
+      up(e);
+      if (!this.onGo || !t || t.id !== e.pointerId || t.moved) return;
+      const b = this.map.bounds;
+      const x = this.cx + (e.clientX - window.innerWidth / 2) / this.scale;
+      const z = this.cz + (e.clientY - window.innerHeight / 2) / this.scale;
+      if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) return;
+      this.pin = { x, z };
+      this.goBtn.hidden = false;
+      this.dirty = true;
+    });
+    c.addEventListener('pointercancel', (e) => {
+      this.tap = null;
+      up(e);
+    });
     c.addEventListener(
       'wheel',
       (e) => {
@@ -91,6 +120,9 @@ export class FullMap {
     this.isOpen = true;
     this.el.style.display = 'block';
     this.pointers.clear();
+    this.tap = null;
+    this.pin = null;
+    this.goBtn.hidden = true;
     this.resize();
     // Open framed on the car at a scale that shows the area around it.
     this.scale = Math.max(this.minScale, Math.min(this.maxScale, 1));
@@ -215,6 +247,26 @@ export class FullMap {
       ctx.strokeStyle = 'rgba(255,255,255,0.9)';
       ctx.strokeText(p.label, sx, sy - 7 * dpr);
       ctx.fillText(p.label, sx, sy - 7 * dpr);
+    }
+
+    // The picked spot: a pin standing on it.
+    if (this.pin) {
+      const [px, py] = this.toScreen(this.pin.x, this.pin.z);
+      const r = 9 * dpr;
+      ctx.fillStyle = '#2f6db5';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px - r * 0.75, py - r * 1.7);
+      ctx.arc(px, py - r * 2.2, r, Math.PI * 0.82, Math.PI * 0.18);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(px, py - r * 2.2, r * 0.38, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     // The car: an arrow pointing the way it faces, with a soft halo.

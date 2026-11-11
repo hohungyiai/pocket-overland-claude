@@ -129,6 +129,10 @@ canvas { display: block; }
   background: linear-gradient(rgba(255,255,255,0.75), rgba(255,255,255,0));
 }
 .fullmap-title { flex: 1; font-weight: 700; font-size: 17px; color: var(--ink); }
+.btn.fullmap-go {
+  position: absolute; left: 50%; bottom: max(36px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+  min-width: 170px; font-size: 15px;
+}
 .fullmap-north {
   position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom));
   font-weight: 700; font-size: 13px; color: var(--ink); background: var(--glass); border-radius: 10px; padding: 4px 8px;

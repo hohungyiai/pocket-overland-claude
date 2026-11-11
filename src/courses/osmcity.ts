@@ -4757,7 +4757,10 @@ export async function buildPasirRisCourse(
         const b = pts[r.seg + 1];
         const px = a[0] + (b[0] - a[0]) * r.u;
         const pz = a[1] + (b[1] - a[1]) * r.u;
-        if (heightAt(px, pz) < baseAt(px, pz) - 0.1) continue;
+        // (Asked the way the car asks whether it is in the water. A road's
+        // bed lies a little below the land around it, so "lower than the
+        // land" ruled out every road, and no spot was ever found.)
+        if (/water/i.test(surfaceAt(px, pz, heightAt(px, pz)).name)) continue;
         return { x: px, z: pz, yaw: Math.atan2(-(b[1] - a[1]), b[0] - a[0]) };
       }
       return null;
