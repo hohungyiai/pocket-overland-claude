@@ -24,7 +24,7 @@ import { LIMITS } from '../limits';
 type Rapier = typeof RAPIER_NS;
 
 /** (ws: the widths along a line the redraw step joined from pieces of different width: [fraction of its length where a width starts, width]; w is then the widest.) */
-interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[]; ws?: [number, number][] }
+interface OsmEdge { a: number; b: number; cls: string; w: number; one: number; lv?: number; vd?: number; name?: string; pts: XZ[]; ws?: [number, number][]; dual?: number; mo?: number; med?: number }
 interface OsmMap {
   attribution: string;
   junctions: XZ[];
@@ -62,6 +62,8 @@ const NEAR_WET = 128; // in or beside a canal or pond
 const TREE_LINED = new Set(['trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'motorway']);
 const RANK: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3, tertiary: 2, unclassified: 1, residential: 1, living_street: 1, service: 0 };
 const rankOf = (cls: string) => RANK[cls] ?? (cls.endsWith('_link') ? 2 : 0);
+/** The two sides of a dual carriageway drawn as one road (two lanes or more each way: a narrower one is marked as any two-way street). */
+const paired = (e: { dual?: number; w: number }) => !!e.dual && e.w >= 12;
 
 export const PASIR_RIS_MAP = 'maps/east-sg.json';
 
@@ -2668,6 +2670,27 @@ export async function buildPasirRisCourse(
   const GIVE_AT = 0.7; // metres out from the mouth
   type GiveWay = { id: number; line: number; end: 0 | 1; left: XZ; dashes: XZ[] };
   const giveWays: GiveWay[] = [];
+  /**
+   * The lines of a paired road (the two sides of a dual carriageway drawn
+   * as one): a painted median, two solid lines where the sides met, and
+   * each side's lane lines counted out from it, so where the road widens
+   * or narrows it is the kerbside lane that comes or goes. Each as [how
+   * far left of the road's line, dashed?, the half-width the road must
+   * have there for the line to be on it].
+   */
+  const pairedLines = (i: number): [number, boolean, number][] => {
+    const mid = edges[i].mo ?? 0;
+    const gap = Math.max(0.5, Math.min(edges[i].med ?? 0, 4)) / 2;
+    const out: [number, boolean, number][] = [];
+    for (const sgn of [-1, 1]) {
+      out.push([mid + sgn * gap, false, 0]);
+      const room = EHALF[i] - sgn * mid - gap;
+      const n = Math.max(1, Math.round((room - 0.35) / 3.3));
+      const laneW = room / n;
+      for (let l = 1; l < n; l++) out.push([mid + sgn * (gap + l * laneW), true, sgn * mid + gap + (l + 0.6) * laneW]);
+    }
+    return out.sort((x, y) => x[0] - y[0]);
+  };
   {
     const COS30 = Math.cos((30 * Math.PI) / 180);
     const lanesOf = (i: number) => Math.max(1, Math.round((edges[i].w - 0.7) / 3.3));
@@ -2805,6 +2828,16 @@ export async function buildPasirRisCourse(
             if (t < cost) (cost = t), (best = sh2);
           }
           if (rank >= 1) oa.forEach((o, k) => (swap ? line(ob[k + best], o, 'white', true) : line(o, ob[k + best], 'white', true)));
+        } else if (paired(ea) && paired(eb)) {
+          // A paired road's lines carry on across, matched from the median outwards.
+          const offs = (m: typeof A, i: number, sg: number) =>
+            pairedLines(i)
+              .filter(([, , need]) => m.half > need)
+              .map(([o, d]) => [sg * o, d] as [number, boolean])
+              .sort((x, y) => x[0] - y[0]);
+          const oa = offs(A, A.line, sa), ob = offs(B, B.line, sb);
+          const ia = oa.findIndex(([, d]) => !d), ib = ob.findIndex(([, d]) => !d);
+          if (rank >= 1) for (let d = -Math.min(ia, ib); ia + d < oa.length && ib + d < ob.length; d++) line(oa[ia + d][0], ob[ib + d][0], 'white', oa[ia + d][1] && ob[ib + d][1]);
         } else if (rank >= 1 && ea.w >= 6 && eb.w >= 6) line(0, 0, 'white', rank < 3);
         if (rank >= 2) {
           // Edge lines, on a side no other road joins from.
@@ -2980,6 +3013,12 @@ export async function buildPasirRisCourse(
             const off = (kk: number) => -halfAt(kk) + l * laneW;
             const room = (kk: number) => halfAt(kk) - off(kk) > 0.6 * laneW && halfAt(kk + 1) - off(kk + 1) > 0.6 * laneW;
             strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => room(kk) && dashed(off)(kk), yAt, tilt, clearAt: lineClear });
+          }
+        } else if (paired(e)) {
+          for (const [at, broken, need] of pairedLines(line)) {
+            const off = () => at;
+            const fits = (kk: number) => halfAt(kk) > need && halfAt(kk + 1) > need;
+            strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => fits(kk) && (broken ? dashed(off)(kk) : solid(off)(kk)), yAt, tilt, clearAt: lineClear });
           }
         } else if (rank >= 1 && e.w >= 6) {
           const off = () => 0;
