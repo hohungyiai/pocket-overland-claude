@@ -33,7 +33,7 @@
           let over = 0;
           D.roads.each(x, z, 16, (i, seg, u, dd) => {
             if (i === cr.line || D.isDeck[i] || !drawn(i, seg, u)) return;
-            over = Math.max(over, D.EHALF[i] - 0.3 - dd);
+            over = Math.max(over, D.halfNear(i, seg, u) - 0.3 - dd);
           });
           for (const s of D.JX.shapes) if (Math.hypot(x - s.centre[0], z - s.centre[1]) < s.radius && inside(s.ring, x, z)) over = Math.max(over, 0.01);
           if (over > 0) bad.push({ road: D.edges[cr.line].name || D.edges[cr.line].cls, x: Math.round(x), z: Math.round(z), over: +over.toFixed(2) });
@@ -55,7 +55,7 @@
       let over = 0;
       D.roads.each(x, z, 16, (i, seg, u, dd) => {
         if (D.elevated[i] || !drawn(i, seg, u)) return;
-        over = Math.max(over, D.EHALF[i] + 0.2 - dd);
+        over = Math.max(over, D.halfNear(i, seg, u) + 0.2 - dd);
       });
       for (const s of [...D.JX.shapes, ...D.JX.fills]) if (Math.hypot(x - s.centre[0], z - s.centre[1]) < s.radius && inside(s.ring, x, z)) over = Math.max(over, 0.01);
       if (over > 0) bad.push({ road: D.edges[cr.line].name || D.edges[cr.line].cls, x: Math.round(x), z: Math.round(z), over: +over.toFixed(2) });

@@ -165,7 +165,11 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
   const major = jE.map((l) => l.filter((i) => I.rank(i) >= 3).length >= 2);
 
   // A tee: a side road meeting a road that carries straight on (see `thru`).
-  const teeAt = jE.map((l, j) => !!I.thru && l.length === 3 && l.filter((i) => I.thru!(i, edges[i].a === j ? 0 : 1)).length === 2);
+  // (Or two side roads, one from each side of it. A side road may be only
+  // an opening in a divider: a few metres of road to the other side of a
+  // divided road, itself a tee there.)
+  const thruAt = (i: number, j: number) => !!I.thru && I.thru(i, edges[i].a === j ? 0 : 1);
+  const teeAt = jE.map((l, j) => !!I.thru && (l.length === 3 || l.length === 4) && l.filter((i) => thruAt(i, j)).length === 2);
   /** Room for a side road's bell mouth beyond the through road's edge, metres. */
   const TEE_ROOM = 4;
 
@@ -186,6 +190,10 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // (A tee keeps to itself: its through road is not part of any junction,
       // and its side road needs only room for a bell mouth.)
       if ((teeAt[a] || teeAt[b]) && len[i] > rad[a] + rad[b] + TEE_ROOM) continue;
+      // (Nor does it take in a short side road: that ends in a bell mouth
+      // with just room for its corners, or is an opening paved between two
+      // such roads.)
+      if ((teeAt[a] && !thruAt(i, a)) || (teeAt[b] && !thruAt(i, b))) continue;
       const ra = find(a);
       const rb = find(b);
       stub[i] = 1;
@@ -482,18 +490,12 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     // through road is one strip, not cut back at the joint, so the junction
     // is only the side road's bell mouth: from its mouth, round a corner
     // curve either side, to the through road's edge.
-    const teeShape = (j: number): Built | null => {
-      const l = jE[j];
-      // (Why a marked joint could not be built as a tee: kept for the checks.)
-      const no = (why: string) => {
-        out.why.push({ nodes: [j], why: 'tee: ' + why });
-        return null;
-      };
-      const sLine = l.find((i) => !I.thru!(i, edges[i].a === j ? 0 : 1))!;
-      const through = l.filter((i) => i !== sLine);
+    const INSET = 0.1; // the paving tucks this far under the through road's edge
+    const REACH = 90;
+    /** Where side road sLine's two edges leave the road running through joint j (null: they never do). */
+    const teeGeom = (j: number, sLine: number) => {
+      const through = jE[j].filter((i) => thruAt(i, j));
       const sEnd: 0 | 1 = edges[sLine].a === j ? 0 : 1;
-      const INSET = 0.1; // the paving tucks this far under the through road's edge
-      const REACH = 90;
       // Each through piece from the joint outward: its points and half widths.
       const legs = through.map((i) => {
         const pts = EP[i];
@@ -510,7 +512,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         }
         return { P, H };
       });
-      if (legs.some((o) => o.P.length < 2)) return no('short');
+      if (legs.some((o) => o.P.length < 2)) return null;
       // Distance from a point to the through road's middle, less its half width there (below zero: on the road).
       const offRoad = (x: number, z: number) => {
         let best = Infinity;
@@ -542,6 +544,14 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         }
         return null;
       });
+      return { through, sEnd, legs, offRoad, sp, sL, sideAt, leaves };
+    };
+    type TeePart = { ring: XZ[]; corners: XZ[][]; kerbs: XZ[][]; c: XZ; mouth: Mouth | null; inside: number | null; more: NonNullable<Built['more']>; kerbed: boolean; flip: number };
+    /** The paving where side road sLine meets the road running through joint j. */
+    const teePart = (j: number, sLine: number, no: (why: string) => null): TeePart | null => {
+      const G = teeGeom(j, sLine);
+      if (!G) return no('short');
+      const { through, sEnd, legs, offRoad, sp, sL, sideAt, leaves } = G;
       if (!leaves[0] || !leaves[1]) return no('side road never leaves the road');
       const hS = I.halfAt(sLine, sEnd === 0 ? 0 : sp.length - 1);
       const farJ = sEnd === 0 ? edges[sLine].b : edges[sLine].a;
@@ -567,10 +577,22 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         }
         if (dG < 0 || dG > room) return no('no room for the slip road to come away');
       }
+      // An opening in a divider: the side road is a few metres across to
+      // another road that runs through its own joint the same way, with no
+      // room between the two for a strip of its own. Each joint paves its
+      // half: as far as half way across the gap between the two roads' edges.
+      const Rd = Math.max(2.5, Math.min(6, 1.5 + hS * 0.8));
+      let openAt = -1;
+      if (!sharp && teeAt[farJ] && !thruAt(sLine, farJ)) {
+        const F = teeGeom(farJ, sLine);
+        const dF = F && F.leaves[0] && F.leaves[1] ? Math.max(F.leaves[0].d, F.leaves[1].d) : -1;
+        if (dF >= 0 && sL - dMax - dF < 2 * Rd + 3) openAt = dMax + Math.max(0.15, (sL - dMax - dF) / 2);
+      }
       // (A slip road's outside edge swings onto the road's over a longer curve.)
-      const R = sharp ? Math.min(10, dG - leaves[1 - g]!.d) : Math.min(Math.max(2.5, Math.min(6, 1.5 + hS * 0.8)), room - dMax);
-      if (R < 1) return no('no room for the corners');
-      const M = makeMouth(sLine, sEnd, sharp ? dG : dMax + R, true);
+      const R = sharp ? Math.min(10, dG - leaves[1 - g]!.d) : Math.min(Rd, (openAt >= 0 ? openAt : room) - dMax);
+      // (A short stub has room for corners of half a metre at least.)
+      if (R < (openAt >= 0 ? 0.1 : 0.4)) return no('no room for the corners');
+      const M = makeMouth(sLine, sEnd, sharp ? dG : openAt >= 0 ? openAt : dMax + R, true);
       // The through road's edge on the side road's side, as one line through the joint.
       const edgeLine = (o: (typeof legs)[number], flip: number): XZ[] =>
         o.P.map((p, k) => {
@@ -619,6 +641,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       let corners: XZ[][];
       let c: XZ;
       let more: Built['more'];
+      let kerbLines: XZ[][] | undefined;
       if (sharp) {
         const o = 1 - g;
         const sgnO = o === 0 ? 1 : -1;
@@ -652,6 +675,13 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           ring = ring.reverse();
           corners = [[...nose].reverse(), [...outer].reverse()];
         }
+        // (The kerbs stop at the road's edge: the outline itself tucks under it.)
+        const clearOfRoad = (q: XZ) => offRoad(q[0], q[1]) >= 0.2;
+        const noseOut = Math.min(0.9, 0.4 / (Math.hypot(nose[1][0] - nose[0][0], nose[1][1] - nose[0][1]) || 1));
+        const noseK: XZ[] = [[nose[0][0] + (nose[1][0] - nose[0][0]) * noseOut, nose[0][1] + (nose[1][1] - nose[0][1]) * noseOut], nose[1]];
+        const outerK = outer.filter(clearOfRoad);
+        kerbLines = turned ? [[...noseK].reverse(), [...outerK].reverse()] : [outerK, noseK];
+        kerbLines = kerbLines.filter((k) => k.length >= 2);
         let k0 = kernelOf(ring);
         if (!k0) {
           // A long wedge beside a curving road can't be filled from one
@@ -736,8 +766,39 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         return null;
       }
       const kerbed = Math.max(I.rank(sLine), ...through.map((i) => I.rank(i))) >= 1;
-      const radius = Math.max(...ring.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
-      return { nodes: [j], centre: c, radius, ring, kerbs: kerbed ? corners : [], corners, mouths: [M], internal: [], hull: false, tee: true, more };
+      return { ring, corners, kerbs: kerbLines ?? corners, c, mouth: openAt >= 0 ? null : M, inside: openAt >= 0 ? sLine : null, more: more ?? [], kerbed, flip: flipOf(legs[0]) };
+    };
+    const teeShape = (j: number): Built | null => {
+      // (Why a marked joint could not be built as a tee: kept for the checks.)
+      const no = (why: string) => {
+        out.why.push({ nodes: [j], why: 'tee: ' + why });
+        return null;
+      };
+      const parts: TeePart[] = [];
+      for (const sLine of jE[j]) {
+        if (thruAt(sLine, j)) continue;
+        const part = teePart(j, sLine, no);
+        if (!part) return null;
+        parts.push(part);
+      }
+      // (Two side roads: one from each side of the road, so each has its own paving.)
+      if (parts.length === 2 && parts[0].flip === parts[1].flip) return no('two side roads on one side');
+      const reach = (ring: XZ[], c: XZ) => Math.max(...ring.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
+      const [first, ...rest] = parts;
+      const more = [...first.more, ...rest.flatMap((q) => [{ ring: q.ring, centre: q.c, radius: reach(q.ring, q.c) }, ...q.more])];
+      return {
+        nodes: [j],
+        centre: first.c,
+        radius: reach(first.ring, first.c),
+        ring: first.ring,
+        kerbs: parts.flatMap((q) => (q.kerbed ? q.kerbs : [])),
+        corners: parts.flatMap((q) => q.corners),
+        mouths: parts.flatMap((q) => (q.mouth ? [q.mouth] : [])),
+        internal: parts.flatMap((q) => (q.inside !== null ? [q.inside] : [])),
+        hull: false,
+        tee: true,
+        more,
+      };
     };
     if (nodes.length === 1 && teeAt[nodes[0]]) {
       const t = teeShape(nodes[0]);

@@ -481,12 +481,16 @@ window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.01) => 
       continue;
     }
     // Which side the side road leaves on (+1: to the right of p -> q).
-    let side = 0;
+    // (0: one from each side, so neither kerb runs unbroken.)
+    let side = 0, both = false;
     d.edges.forEach((e, i) => {
       if (i === p || i === q || (e.a !== j && e.b !== j)) return;
-      const S = along(i, e.a === j ? 0 : 1, 6);
-      side = Math.sign(-P0[2] * (S[1] - P0[1]) + P0[3] * (S[0] - P0[0])) || 0;
+      const S = along(i, e.a === j ? 0 : 1, Math.min(6, d.ELEN[i] / 2));
+      const sg = Math.sign(-P0[2] * (S[1] - P0[1]) + P0[3] * (S[0] - P0[0])) || 0;
+      if (side && sg && sg !== side) both = true;
+      side = sg || side;
     });
+    if (both) side = 0;
     const rows = [];
     for (let s = -8; s <= 8.001; s += 0.5) {
       const A = s < 0 ? along(p, pe, -s) : along(q, qe, s);

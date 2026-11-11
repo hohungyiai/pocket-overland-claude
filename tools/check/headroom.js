@@ -24,7 +24,8 @@ window.__checkHeadroom = (NEED = 4.8) => {
       const [x, z] = P[k];
       d.roads.each(x, z, d.EHALF[i] + 12, (o, seg, u, dd) => {
         if (o === i || meet(i, o)) return;
-        if (dd > d.EHALF[i] + d.EHALF[o] - 0.3) return;
+        // (A joined line is as wide as it is drawn at this place, not its widest.)
+        if (dd > d.halfNear(i, k, 0) + d.halfNear(o, seg, u) - 0.3) return;
         const yl = yOn(o, seg, u, x, z);
         if (Y[k] - yl < 0.6) return; // level with it, or o goes over i
         samples++;

@@ -82,7 +82,7 @@
           const z = F[q][1] - ((b[0] - a[0]) / tl) * 0.05;
           n++;
           roads.each(x, z, 16, (line, seg, u, dd) => {
-            const over = EHALF[line] - 0.3 - dd;
+            const over = d().halfNear(line, seg, u) - 0.3 - dd;
             if (over > 0 && !isDeck[line] && drawn(line, seg, u)) bad.push({ road: edges[line].name || edges[line].cls, x: Math.round(x), z: Math.round(z), over: +over.toFixed(2) });
           });
         }
@@ -99,7 +99,7 @@
       for (const [x, z] of s.ring) {
         n++;
         let best = Infinity;
-        roads.each(x, z, 30, (line, _seg, _u, dd) => (best = Math.min(best, dd - EHALF[line])));
+        roads.each(x, z, 30, (line, seg, u, dd) => (best = Math.min(best, dd - d().halfNear(line, seg, u))));
         const over = best - 5.5; // as far as a junction may reach (SPILL in src/world/junctions.ts)
         if (over > 0) bad.push({ x: Math.round(x), z: Math.round(z), over: +over.toFixed(2) });
       }
