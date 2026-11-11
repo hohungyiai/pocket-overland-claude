@@ -788,17 +788,9 @@ if (steps.has('roads')) {
   // The two pieces are one curve through the joint: eased over the 12 m
   // either side of it (the importer smoothed each piece on its own), with
   // the joint, and the side road's end, moved onto the curve.
-  const chaikin = (pts) => {
-    const out = [pts[0]];
-    for (let k = 0; k + 1 < pts.length; k++) {
-      const [ax, az] = pts[k];
-      const [bx, bz] = pts[k + 1];
-      out.push([ax * 0.75 + bx * 0.25, az * 0.75 + bz * 0.25], [ax * 0.25 + bx * 0.75, az * 0.25 + bz * 0.75]);
-    }
-    out.push(pts[pts.length - 1]);
-    return out;
-  };
-  const r1 = (p) => [+p[0].toFixed(1), +p[1].toFixed(1)];
+  // (To the centimetre: at the 2 m spacing of an eased line, rounding to
+  // 0.1 m alone turns the line a few degrees left and right at every point.)
+  const r1 = (p) => [+p[0].toFixed(2), +p[1].toFixed(2)];
   let moved = 0;
   for (const [j, p, q, sd] of pairs) {
     const P = p.b === j ? p.pts : [...p.pts].reverse(); // into the joint
@@ -821,7 +813,28 @@ if (steps.has('roads')) {
     const cp = cutAt([...P].reverse(), Math.min(12, p.len * 0.45));
     const cq = cutAt(Q, Math.min(12, q.len * 0.45));
     if (!cp || !cq) continue;
-    const eased = chaikin(chaikin([...cp[0].reverse(), ...cq[0].slice(1)]));
+    // One curve from the point 12 m before the joint to the point 12 m after
+    // it, leaving each the way its piece runs there (corner cutting only
+    // rounds the metre or two beside a corner: the turn stayed at the joint).
+    const headAt = (near, far) => {
+      // (The piece's direction at the cut: on from it, over 2 m or more.)
+      const o = near[near.length - 1];
+      for (const x of far) if (Math.hypot(x[0] - o[0], x[1] - o[1]) >= 2) return [x[0] - o[0], x[1] - o[1]];
+      const b = near[near.length - 2];
+      return [o[0] - b[0], o[1] - b[1]];
+    };
+    const A = cp[0][cp[0].length - 1], B = cq[0][cq[0].length - 1];
+    const span = Math.hypot(B[0] - A[0], B[1] - A[1]);
+    const unit = (v) => v.map((c) => (c / (Math.hypot(v[0], v[1]) || 1)) * span);
+    const tA = unit(headAt(cp[0], cp[1])).map((c) => -c); // toward the joint
+    const tB = unit(headAt(cq[0], cq[1])); // away from it
+    const eased = [];
+    const steps = Math.max(4, Math.ceil(span / 2));
+    for (let n = 0; n <= steps; n++) {
+      const u = n / steps, u2 = u * u, u3 = u2 * u;
+      const h = [2 * u3 - 3 * u2 + 1, u3 - 2 * u2 + u, -2 * u3 + 3 * u2, u3 - u2];
+      eased.push([h[0] * A[0] + h[1] * tA[0] + h[2] * B[0] + h[3] * tB[0], h[0] * A[1] + h[1] * tA[1] + h[2] * B[1] + h[3] * tB[1]]);
+    }
     // The joint goes to the nearest point of the eased line (added to it).
     let m = 0, bd = Infinity, bx = null;
     for (let n = 0; n + 1 < eased.length; n++) {
@@ -832,7 +845,7 @@ if (steps.has('roads')) {
       if (d < bd) (bd = d), (m = n), (bx = x);
     }
     const at = r1(bx);
-    const far = (pts) => pts.filter((x) => Math.hypot(x[0] - at[0], x[1] - at[1]) > 0.5).map(r1);
+    const far = (pts) => pts.filter((x) => Math.hypot(x[0] - at[0], x[1] - at[1]) > 1).map(r1);
     const P2 = [...cp[1].reverse(), ...far(eased.slice(0, m + 1)), at];
     const Q2 = [at, ...far(eased.slice(m + 1)), ...cq[1]];
     p.pts = p.b === j ? P2 : P2.reverse();
@@ -878,6 +891,18 @@ if (steps.has('roads')) {
 const inBox = box ? (p) => p[0] >= box[0] && p[0] <= box[1] && p[1] >= box[2] && p[1] <= box[3] : () => true;
 const near = box ? (p) => p[0] >= box[0] - 150 && p[0] <= box[1] + 150 && p[1] >= box[2] - 150 && p[1] <= box[3] + 150 : () => true;
 if (box) edges = edges.filter((e) => e.pts.some(inBox));
+// (A road marked as carrying straight on past a joint needs both its pieces: the box may have taken one.)
+{
+  const marks = new Map();
+  for (const e of edges) {
+    if (e.ta) marks.set(e.a, (marks.get(e.a) ?? 0) + 1);
+    if (e.tb) marks.set(e.b, (marks.get(e.b) ?? 0) + 1);
+  }
+  for (const e of edges) {
+    if (e.ta && marks.get(e.a) !== 2) delete e.ta;
+    if (e.tb && marks.get(e.b) !== 2) delete e.tb;
+  }
+}
 
 // ---------- write ----------
 // Joints no road uses any more are dropped, and the rest renumbered.

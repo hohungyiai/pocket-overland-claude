@@ -412,3 +412,122 @@ window.__checkSwitchedOff = (all = false) => {
   }
   return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40) };
 };
+
+// In-page check: a road is one strip. Where the map marks two pieces as one
+// road carrying straight on past a side road (the marks ta / tb on a piece's
+// ends), the finished road must show no sign of the joint between them:
+//   plan   the builder took the mark (a tee), cut neither piece back, and the
+//          two meet at one width, turning no more sharply at the joint than
+//          the road does just before and after it;
+//   drawn  across the joint the asphalt covers the whole width, nothing
+//          stands across it (no kerb inside the road), every line painted
+//          solid before and after it is solid through it, the kerb on the
+//          side away from the side road never breaks, and the road's slope
+//          does not change.
+// (A map with no such marks has nothing to test: today's map.)
+window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.02) => {
+  const d = globalThis.__osm;
+  const F = window.__finishIndex();
+  const at = new Map();
+  d.edges.forEach((e, i) => {
+    if (e.ta) (at.get(e.a) ?? at.set(e.a, []).get(e.a)).push([i, 0]);
+    if (e.tb) (at.get(e.b) ?? at.set(e.b, []).get(e.b)).push([i, 1]);
+  });
+  // A point `s` metres from piece i's end `end`, along it: [x, z, tx, tz, half], heading away from the joint.
+  const along = (i, end, s) => {
+    const P = d.EP[i], cum = d.ECUM[i], len = cum[cum.length - 1];
+    const t = Math.min(len, Math.max(0, end ? len - s : s));
+    let k = 0;
+    while (k < P.length - 2 && cum[k + 1] <= t) k++;
+    const sl = cum[k + 1] - cum[k] || 1, u = (t - cum[k]) / sl;
+    const sg = end ? -1 : 1;
+    return [P[k][0] + (P[k + 1][0] - P[k][0]) * u, P[k][1] + (P[k + 1][1] - P[k][1]) * u, (sg * (P[k + 1][0] - P[k][0])) / sl, (sg * (P[k + 1][1] - P[k][1])) / sl,
+      d.halfAtE(i, k) + (d.halfAtE(i, k + 1) - d.halfAtE(i, k)) * u];
+  };
+  const bad = [];
+  let n = 0;
+  for (const [j, ends] of at) {
+    n++;
+    const flag = (why, value, x, z) => bad.push({ road: d.edges[ends[0][0]].name || d.edges[ends[0][0]].cls, j, why, x: +x.toFixed(1), z: +z.toFixed(1), over: +value.toFixed(2) });
+    const [p, pe] = ends[0];
+    const P0 = along(p, pe, 0);
+    if (ends.length !== 2) {
+      flag('marks', ends.length, P0[0], P0[1]);
+      continue;
+    }
+    const [q, qe] = ends[1];
+    // The plan.
+    if (!d.JX.tee[j]) {
+      flag('not built as one strip', 1, P0[0], P0[1]);
+      continue;
+    }
+    const cut = Math.max(pe ? d.JX.trimB[p] : d.JX.trimA[p], qe ? d.JX.trimB[q] : d.JX.trimA[q]);
+    if (cut > 0.01) flag('cut back', cut, P0[0], P0[1]);
+    const Q0 = along(q, qe, 0);
+    if (Math.abs(P0[4] - Q0[4]) > WIDTH / 2) flag('width', Math.abs(P0[4] - Q0[4]) * 2, P0[0], P0[1]);
+    // (The road's heading over each 3 m from 6 m before the joint to 6 m after: on a
+    // curve it turns as much before and after the joint as at it; at a corner it does not.)
+    const mark = [-6, -3, 0, 3, 6].map((s) => (s < 0 ? along(p, pe, -s) : along(q, qe, s)));
+    const head = [0, 1, 2, 3].map((k) => Math.atan2(mark[k + 1][1] - mark[k][1], mark[k + 1][0] - mark[k][0]));
+    const bendAt = (k) => Math.abs(((((head[k + 1] - head[k]) * 180) / Math.PI + 540) % 360) - 180);
+    const turn = bendAt(1) - Math.max(bendAt(0), bendAt(2));
+    if (turn > TURN) flag('turn', turn, P0[0], P0[1]);
+    // The finished road: cross-sections from 8 m before the joint (on p) to 8 m after (on q).
+    const yj = F.asphaltAt(P0[0], P0[1], d.hasProfile[p] ? d.deckY(p)[pe ? d.EP[p].length - 1 : 0] : d.surfaceAt(P0[0], P0[1]), 1.5);
+    if (Number.isNaN(yj)) {
+      flag('no road at the joint', 1, P0[0], P0[1]);
+      continue;
+    }
+    // Which side the side road leaves on (+1: to the right of p -> q).
+    let side = 0;
+    d.edges.forEach((e, i) => {
+      if (i === p || i === q || (e.a !== j && e.b !== j)) return;
+      const S = along(i, e.a === j ? 0 : 1, 6);
+      side = Math.sign(-P0[2] * (S[1] - P0[1]) + P0[3] * (S[0] - P0[0])) || 0;
+    });
+    const rows = [];
+    for (let s = -8; s <= 8.001; s += 0.5) {
+      const A = s < 0 ? along(p, pe, -s) : along(q, qe, s);
+      // (Across, to the right of the way p -> q runs.)
+      const fx = s < 0 ? -A[2] : A[2], fz = s < 0 ? -A[3] : A[3];
+      const rx = -fz, rz = fx;
+      const y = F.asphaltAt(A[0], A[1], yj, 1.5);
+      const row = { s, x: A[0], z: A[1], y, half: A[4], hole: 0, kerbIn: 0, paint: new Set(), kerb: [false, false] };
+      rows.push(row);
+      if (Number.isNaN(y)) continue;
+      for (let o = -A[4] - 0.8; o <= A[4] + 0.8001; o += 0.1) {
+        const x = A[0] + rx * o, z = A[1] + rz * o;
+        const inside = Math.abs(o) < A[4] - 0.35;
+        if (inside && Number.isNaN(F.asphaltAt(x, z, y, 0.6))) row.hole++;
+        for (const f of F.flatAt(x, z)) {
+          if (Math.abs(f.h - y) > 0.6) continue;
+          if (f.kind === 'kerb') {
+            if (inside) row.kerbIn++;
+            else if (Math.abs(o) > A[4] - 0.5) row.kerb[o > 0 ? 1 : 0] = true;
+          } else if (f.kind !== 'road' && inside) row.paint.add(Math.round(o * 10));
+        }
+      }
+    }
+    const near = rows.filter((r) => Math.abs(r.s) <= 4), far = rows.filter((r) => Math.abs(r.s) > 4);
+    const hole = near.reduce((m, r) => Math.max(m, r.hole), 0);
+    if (hole) flag('ground shows', hole / 10, P0[0], P0[1]);
+    const kerbIn = near.reduce((m, r) => Math.max(m, r.kerbIn), 0);
+    if (kerbIn) flag('kerb across', kerbIn / 10, P0[0], P0[1]);
+    // A line that is solid on both approaches (at every row there, give or take 0.2 m sideways) is solid through.
+    const has = (r, o) => r.paint.has(o) || r.paint.has(o - 1) || r.paint.has(o + 1) || r.paint.has(o - 2) || r.paint.has(o + 2);
+    const solid = [...far[0].paint].filter((o) => far.every((r) => has(r, o)));
+    const broken = solid.filter((o) => !near.every((r) => has(r, o)));
+    if (broken.length) flag('line stops', broken.length / 10, P0[0], P0[1]);
+    // The kerb on the side away from the side road.
+    for (const k of [0, 1]) {
+      if (side === (k ? 1 : -1) || !side) continue;
+      if (far.every((r) => r.kerb[k]) && !near.every((r) => r.kerb[k])) flag('kerb breaks', near.filter((r) => !r.kerb[k]).length * 0.5, P0[0], P0[1]);
+    }
+    // The slope before the joint against the slope after it.
+    const yAt = (s) => rows.find((r) => Math.abs(r.s - s) < 0.01).y;
+    const bend = Math.abs((yAt(-1) - yAt(-5)) / 4 - (yAt(5) - yAt(1)) / 4);
+    if (bend > SLOPE) flag('slope', bend * 100, P0[0], P0[1]);
+  }
+  bad.sort((a, b) => b.over - a.over);
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: '' };
+};

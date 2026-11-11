@@ -2868,7 +2868,8 @@ export async function buildPasirRisCourse(
         const rank = Math.min(rankOf(ea.cls), rankOf(eb.cls));
         if (ea.one) {
           const offs = (m: typeof A, i: number, sg: number) => {
-            const n = lanesOf(i), w = (2 * EHALF[i]) / n;
+            // (The lane width the road itself draws its lines at: see laneWOf.)
+            const w = laneWOf(i), n = Math.max(lanesOf(i), Math.floor((2 * EHALF[i]) / w + 0.01));
             const cum = ECUM[i];
             const out: number[] = [];
             for (let l = 1; l < n; l++) {
@@ -4735,14 +4736,43 @@ export async function buildPasirRisCourse(
     .sort((p, q) => order.indexOf(p.kind) - order.indexOf(q.kind) || Math.abs(ringArea(q.pts)) - Math.abs(ringArea(p.pts)))
     .forEach((a) => mapAreas.push({ pts: a.pts, color: MAP_COLOR[a.kind] }));
   for (const b of blds) mapAreas.push({ pts: b.pts, color: b.walls ? '#b9b1a7' : '#cfc9c0' });
+  // The roads as the map draws them: a road built as one strip past its side
+  // roads (a tee) is one line, the pieces between other joints are a line
+  // each. (So the map shows a break only where the road has one.)
+  const mapRoads: { e: OsmEdge; pts: XZ[]; width: number }[] = [];
+  {
+    const used = new Uint8Array(edges.length);
+    const next = (i: number, j: number) => (JX.tee[j] ? thruMate(i, j) : undefined);
+    edges.forEach((e, i) => {
+      if (used[i]) return;
+      // Back to where the strip starts, then along it.
+      let first = i, from = e.a;
+      for (let o = next(first, from); o !== undefined && o !== i && !used[o]; o = next(first, from)) {
+        from = edges[o].a === from ? edges[o].b : edges[o].a;
+        first = o;
+      }
+      const pts: XZ[] = [];
+      let wl = 0, len = 0;
+      for (let c: number | undefined = first, at = from; c !== undefined && !used[c]; ) {
+        used[c] = 1;
+        const P = edges[c].a === at ? EP[c] : [...EP[c]].reverse();
+        pts.push(...(pts.length ? P.slice(1) : P));
+        wl += edges[c].w * ELEN[c];
+        len += ELEN[c];
+        at = edges[c].a === at ? edges[c].b : edges[c].a;
+        c = next(c, at);
+      }
+      // (One piece: its own width, as before. A strip of several: their average by length.)
+      mapRoads.push({ e, pts, width: len > ELEN[first] && len > 0 ? wl / len : edges[first].w });
+    });
+  }
   const mapLines: MapData['lines'] = [
     ...canals.map((c) => ({ pts: c.pts, width: c.w, color: '#7fb6d4' })),
     ...paths.map((p) => ({ pts: p.pts, width: 1.6, color: p.k === 'cycle' ? '#c98a73' : '#e2dccd' })),
     ...viaducts.map((pts) => ({ pts, width: 5, color: '#8d8d96' })),
-    ...edges
-      .map((e, i) => ({ e, i }))
+    ...mapRoads
       .sort((p, q) => rankOf(p.e.cls) - rankOf(q.e.cls))
-      .map(({ e, i }) => ({ pts: EP[i], width: e.w, color: rankOf(e.cls) >= 5 ? '#f3c46b' : rankOf(e.cls) >= 3 ? '#f8e29a' : '#ffffff' })),
+      .map(({ e, pts, width }) => ({ pts, width, color: rankOf(e.cls) >= 5 ? '#f3c46b' : rankOf(e.cls) >= 3 ? '#f8e29a' : '#ffffff' })),
   ];
   const pois: MapData['pois'] = [];
   const seen = new Set<string>();
