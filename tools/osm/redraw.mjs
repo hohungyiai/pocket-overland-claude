@@ -785,7 +785,8 @@ if (steps.has('roads')) {
         // expressway's own carriageway so far: where one slip road leaves
         // another, the junction is still shaped as before.)
         const fast = FAST.test(p.cls) || FAST.test(q.cls);
-        if (fast && (l.length !== 3 || !FAST.test(p.cls) || !FAST.test(q.cls) || /_link$/.test(p.cls) || /_link$/.test(q.cls))) continue;
+        // (A slip road carries on the same way past another that leaves or joins it.)
+        if (fast && (l.length !== 3 || !FAST.test(p.cls) || !FAST.test(q.cls) || /_link$/.test(p.cls) !== /_link$/.test(q.cls))) continue;
         const h = fast ? h20 : h10;
         // p and q: one road carrying straight on. (Whichever way each piece
         // is drawn: the map draws some one-way pieces backwards.)
@@ -804,11 +805,13 @@ if (steps.has('roads')) {
           // few metres across a divider for turning back, not a slip road.)
           const slip = FAST.test(sd.cls) && !(/_link$/.test(sd.cls) && !fast && cut >= 40);
           // (One side of a divided road is half of its road.)
-          if ((fast && !slip) || cut < (slip ? 6 : 40) || sd.w > (p.one && !fast ? 2 : 1) * Math.max(wp, wq) + 0.5) ok = false;
+          if ((fast && !slip && !/_link$/.test(p.cls)) || cut < (slip ? 6 : 40) || sd.w > (p.one && !fast ? 2 : 1) * Math.max(wp, wq) + 0.5) ok = false;
           // (A slip road is narrower than the road it leaves at every point.
           // One as wide that comes away at a narrow angle is not a side road:
           // the road forks there, and neither branch carries on.)
-          else if (slip && (sd.len < 30 || sd.w > narrow + 0.5 || (sd.w > 0.8 * narrow && cut < 20))) ok = false;
+          // (And long enough to have come clear of the road: the wedge between
+          // the two is paved until they are 1.8 m apart.)
+          else if (slip && (sd.len < Math.min(30, (Math.max(wp, wq) / 2 + sd.w / 2 + 1.8) / Math.sin((cut * Math.PI) / 180) + 4) || sd.w > narrow + 0.5 || (sd.w > 0.8 * narrow && cut < 20))) ok = false;
           // (A few metres of road: an opening in a divider, or a stub with just room for its corners. See below.)
           else if (!slip && sd.len < 15) sd.len < 4 ? (ok = false) : short.push({ sd, room: sd.len >= Math.max(wp, wq) + 1 });
           if (!ok) break;

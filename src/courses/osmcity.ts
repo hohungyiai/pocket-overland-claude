@@ -1874,7 +1874,14 @@ export async function buildPasirRisCourse(
         // (A road is never below its base: one whose base alone already
         // clears this point needn't work out how far above it stands.)
         if (yr + slack >= h) return;
-        yr += relAlong(line, sa);
+        const rel = relAlong(line, sa);
+        yr += rel;
+        // (A road still down on the ground lies on it, along and across,
+        // as tiltAt has it: there the ground is held to its own shape, not
+        // to the height of the road's middle. On a slope that height is a
+        // step down for the road that carries on from its end. Redrawn
+        // maps only: today's map keeps its ground to the centimetre.)
+        if (oneLine && rel < 1) yr = lerp(Math.max(yr, hb), yr, smoothstep(0.1, 1, rel));
         const cap = yr + slack;
         if (cap < h) h = cap;
       });
