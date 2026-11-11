@@ -217,9 +217,14 @@ if (steps.has('corners')) {
 
 // ---------- pair ----------
 if (steps.has('pair')) {
-  const GAP = 10; // widest median two sides may have and still be one road
+  // (--median: 10 m unless given. With 1.5, only a street whose two sides
+  // lie closer than a divider needs: nothing can stand between them, and
+  // the builder paves such a pair as one surface anyway.)
+  const GAP = +(flag('median') ?? 10); // widest median two sides may have and still be one road
   const NEAR_END = 6; // a cut this close to a joint uses that joint instead
-  const side = (e) => !!e.one && !!e.name && /^(primary|secondary|tertiary|unclassified|residential)$/.test(e.cls);
+  // (--pair-only: the classes of road it is done for, where not all of them.)
+  const pairOnly = flag('pair-only')?.split(',');
+  const side = (e) => !!e.one && !!e.name && /^(primary|secondary|tertiary|unclassified|residential)$/.test(e.cls) && (!pairOnly || pairOnly.includes(e.cls));
   const dirAt = (e, k) => {
     const a = e.pts[Math.max(0, Math.min(e.pts.length - 2, k))];
     const b = e.pts[Math.max(1, Math.min(e.pts.length - 1, k + 1))];
@@ -860,8 +865,7 @@ if (steps.has('roads')) {
         // two-way road carries on as one of its sides, and the other side
         // leaves it as a slip road does.
         const parts = (p.one ?? 0) !== (q.one ?? 0);
-        // (Only where it carries nearly straight on: the lane a driver is in runs on into its side.)
-        if (parts && !(same && turn <= 15 && sides.length === 1 && sides[0].one && sameRoad(p, sides[0]) && cuts[0] < 40)) continue;
+        if (parts && !(same && sides.length === 1 && sides[0].one && sameRoad(p, sides[0]) && cuts[0] < 40)) continue;
         const wp = widthAt(p, j), wq = widthAt(q, j);
         const narrow = Math.min(wp, wq);
         // (No more than twice as wide one side as the other: turning lanes added at a crossing taper in along the road.)
@@ -1072,9 +1076,27 @@ if (box) edges = edges.filter((e) => e.pts.some(inBox));
     if (e.ta) marks.set(e.a, (marks.get(e.a) ?? 0) + 1);
     if (e.tb) marks.set(e.b, (marks.get(e.b) ?? 0) + 1);
   }
+  const lost = new Set();
   for (const e of edges) {
-    if (e.ta && marks.get(e.a) !== 2) delete e.ta;
-    if (e.tb && marks.get(e.b) !== 2) delete e.tb;
+    if (e.ta && marks.get(e.a) !== 2) (delete e.ta, lost.add(e.a));
+    if (e.tb && marks.get(e.b) !== 2) (delete e.tb, lost.add(e.b));
+  }
+  // (And a short piece carries on at both its ends or at neither, as above:
+  // where the box took that from its far end, its near end goes too.)
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const e of edges) {
+      if (e.len >= (/^(motorway|trunk)|_link$/.test(e.cls) ? 40 : 20)) continue;
+      for (const [j, far] of [[e.a, e.b], [e.b, e.a]]) {
+        if (!(j === e.a ? e.ta : e.tb) || !lost.has(far)) continue;
+        for (const o of edges) {
+          if (o.a === j) delete o.ta;
+          if (o.b === j) delete o.tb;
+        }
+        lost.add(j);
+        changed = true;
+      }
+    }
   }
 }
 
