@@ -68,9 +68,10 @@ export async function buildPasirRisCourse(
   scene: THREE.Scene,
   world: RAPIER_NS.World,
   RAPIER: Rapier,
-  opts: { style?: D.ArtStyle } = {},
+  opts: { style?: D.ArtStyle; map?: string; name?: string; startAt?: XZ } = {},
 ): Promise<Course> {
-  const res = await fetch(PASIR_RIS_MAP);
+  // (A trial area is the same builder on another map file: see tools/osm/redraw.mjs.)
+  const res = await fetch(opts.map ?? PASIR_RIS_MAP);
   if (!res.ok) throw new Error(`map data missing (${res.status})`);
   const M = (await res.json()) as OsmMap;
   const detailed = opts.style === 'detailed';
@@ -4563,8 +4564,8 @@ export async function buildPasirRisCourse(
     return [x / pts.length, z / pts.length];
   };
   const carparkC = findArea(/^Carpark C Pasir Ris Park/);
-  const [sx, sz] = carparkC ? centroid(carparkC.pts) : [86, -1202];
-  const sr = roads.nearest(sx, sz, 300)!;
+  const [sx, sz] = opts.startAt ?? (carparkC ? centroid(carparkC.pts) : [86, -1202]);
+  const sr = roads.nearest(sx, sz, 300) ?? roads.nearest(sx, sz, 8000)!;
   const spts = EP[sr.line];
   const sa = spts[sr.seg];
   const sb = spts[sr.seg + 1];
@@ -4679,7 +4680,7 @@ export async function buildPasirRisCourse(
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
   return {
-    name: 'Pasir Ris & Tampines',
+    name: opts.name ?? 'Pasir Ris & Tampines',
     styles: true,
     camps,
     start: new THREE.Vector3(startX, heightAt(startX, startZ) + 1.4, startZ),
