@@ -73,6 +73,9 @@ const CHECKS = [
   ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 198],
   ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 38],
   ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, 54],
+  // (Roads as one line: where the map marks a road as carrying straight on
+  // past a side road, nothing of the joint may show. No marks, nothing to test.)
+  ['A road is one strip past a side road: no cut, step, turn or break in its kerb and lines', 'finish.js', '__checkOneStrip', 0],
 ];
 
 (async () => {

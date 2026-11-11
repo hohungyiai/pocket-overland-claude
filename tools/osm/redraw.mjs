@@ -720,10 +720,189 @@ if (steps.has('join')) {
   report.join = { joined };
 }
 
+// ---------- roads ----------
+// A road is one line through every place a smaller road meets it. Where a
+// side road meets a road that carries straight on (three pieces at a joint,
+// two of them one road), the two are marked as through ends (`ta`, `tb`):
+// the builder then lays them as one unbroken strip and ends the side road at
+// its edge, instead of cutting all three back to a patch of paving.
+if (steps.has('roads')) {
+  const FAST = /^(motorway|trunk)|_link$/;
+  const at = new Map();
+  for (const e of edges) {
+    if (e.a === e.b) continue;
+    for (const j of [e.a, e.b]) (at.get(j) ?? at.set(j, []).get(j)).push(e);
+  }
+  // Heading out of the joint along a piece, taken 10 m along it.
+  const head = (e, j) => {
+    const pts = e.a === j ? e.pts : [...e.pts].reverse();
+    let run = 0;
+    let k = 0;
+    while (k + 1 < pts.length - 1 && run < 10) {
+      run += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
+      k++;
+    }
+    const q = pts[Math.max(1, k)];
+    const l = Math.hypot(q[0] - pts[0][0], q[1] - pts[0][1]) || 1;
+    return [(q[0] - pts[0][0]) / l, (q[1] - pts[0][1]) / l];
+  };
+  const widthAt = (e, j) => (e.spans ? (e.a === j ? e.spans[0][1] : e.spans[e.spans.length - 1][1]) : e.w);
+  const sameRoad = (p, q) => (p.name ? p.name === q.name : !q.name && p.cls === q.cls);
+  const deg = (c) => (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI;
+  let tees = 0;
+  const pairs = [];
+  const why = {};
+  const no = (k) => (why[k] = (why[k] ?? 0) + 1);
+  for (const [j, l] of at) {
+    if (l.length !== 3) continue;
+    if (l.some((e) => (e.lv ?? 0) !== 0)) { no('level'); continue; }
+    if (l.some((e) => FAST.test(e.cls))) { no('fast'); continue; }
+    const h = l.map((e) => head(e, j));
+    let best = null;
+    for (const [x, y, z] of [[0, 1, 2], [0, 2, 1], [1, 2, 0]]) {
+      const p = l[x], q = l[y], sd = l[z];
+      // p and q: one road carrying straight on.
+      const turn = deg(-(h[x][0] * h[y][0] + h[x][1] * h[y][1]));
+      if (turn > 25 || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
+      if (p.one && (p.a === j) === (q.a === j)) continue; // one-way pieces meeting head on are not one road
+      const wp = widthAt(p, j), wq = widthAt(q, j);
+      if (Math.max(wp, wq) > 1.5 * Math.min(wp, wq) || Math.min(p.len, q.len) < 20) continue;
+      // The side road comes in across it, and is no wider.
+      const cut = Math.min(deg(h[z][0] * h[x][0] + h[z][1] * h[x][1]), deg(h[z][0] * h[y][0] + h[z][1] * h[y][1]));
+      if (cut < 40 || sd.w > Math.max(wp, wq) + 0.5 || sd.len < 15) continue;
+      if (!best || turn < best.turn) best = { p, q, turn };
+    }
+    if (!best) {
+      no('shape');
+      if (process.env.ROADS_DEBUG) {
+        const [dx, dz] = process.env.ROADS_DEBUG.split(',').map(Number);
+        if (Math.hypot(pos[j][0] - dx, pos[j][1] - dz) < 400)
+          console.error(pos[j].map(Math.round).join(','), l.map((e, k) => `${e.name ?? e.cls}/${e.one ?? 0}/${e.dual ? 'D' : ''}/w${widthAt(e, j)}/len${Math.round(e.len)}`).join(' | '), [[0, 1], [0, 2], [1, 2]].map(([x, y]) => Math.round(deg(-(h[x][0] * h[y][0] + h[x][1] * h[y][1])))).join(','));
+      }
+      continue;
+    }
+    for (const e of [best.p, best.q]) e.a === j ? (e.ta = 1) : (e.tb = 1);
+    pairs.push([j, best.p, best.q, l.find((e) => e !== best.p && e !== best.q)]);
+    tees++;
+  }
+  // The two pieces are one curve through the joint: eased over the 12 m
+  // either side of it (the importer smoothed each piece on its own), with
+  // the joint, and the side road's end, moved onto the curve.
+  // (To the centimetre: at the 2 m spacing of an eased line, rounding to
+  // 0.1 m alone turns the line a few degrees left and right at every point.)
+  const r1 = (p) => [+p[0].toFixed(2), +p[1].toFixed(2)];
+  let moved = 0;
+  for (const [j, p, q, sd] of pairs) {
+    const P = p.b === j ? p.pts : [...p.pts].reverse(); // into the joint
+    const Q = q.a === j ? q.pts : [...q.pts].reverse(); // out of it
+    // (A point 12 m from the joint on each side bounds the eased stretch.)
+    const cutAt = (pts, d) => {
+      // pts run away from the joint: [kept near part incl. the new point, far part]
+      let run = 0;
+      for (let n = 0; n + 1 < pts.length; n++) {
+        const sl = Math.hypot(pts[n + 1][0] - pts[n][0], pts[n + 1][1] - pts[n][1]);
+        if (run + sl >= d) {
+          const u = (d - run) / (sl || 1);
+          const x = [pts[n][0] + (pts[n + 1][0] - pts[n][0]) * u, pts[n][1] + (pts[n + 1][1] - pts[n][1]) * u];
+          return [[...pts.slice(0, n + 1), x], pts.slice(n + 1)];
+        }
+        run += sl;
+      }
+      return null;
+    };
+    const cp = cutAt([...P].reverse(), Math.min(12, p.len * 0.45));
+    const cq = cutAt(Q, Math.min(12, q.len * 0.45));
+    if (!cp || !cq) continue;
+    // One curve from the point 12 m before the joint to the point 12 m after
+    // it, leaving each the way its piece runs there (corner cutting only
+    // rounds the metre or two beside a corner: the turn stayed at the joint).
+    const headAt = (near, far) => {
+      // (The piece's direction at the cut: on from it, over 2 m or more.)
+      const o = near[near.length - 1];
+      for (const x of far) if (Math.hypot(x[0] - o[0], x[1] - o[1]) >= 2) return [x[0] - o[0], x[1] - o[1]];
+      const b = near[near.length - 2];
+      return [o[0] - b[0], o[1] - b[1]];
+    };
+    const A = cp[0][cp[0].length - 1], B = cq[0][cq[0].length - 1];
+    const span = Math.hypot(B[0] - A[0], B[1] - A[1]);
+    const unit = (v) => v.map((c) => (c / (Math.hypot(v[0], v[1]) || 1)) * span);
+    const tA = unit(headAt(cp[0], cp[1])).map((c) => -c); // toward the joint
+    const tB = unit(headAt(cq[0], cq[1])); // away from it
+    const eased = [];
+    const steps = Math.max(4, Math.ceil(span / 2));
+    for (let n = 0; n <= steps; n++) {
+      const u = n / steps, u2 = u * u, u3 = u2 * u;
+      const h = [2 * u3 - 3 * u2 + 1, u3 - 2 * u2 + u, -2 * u3 + 3 * u2, u3 - u2];
+      eased.push([h[0] * A[0] + h[1] * tA[0] + h[2] * B[0] + h[3] * tB[0], h[0] * A[1] + h[1] * tA[1] + h[2] * B[1] + h[3] * tB[1]]);
+    }
+    // The joint goes to the nearest point of the eased line (added to it).
+    let m = 0, bd = Infinity, bx = null;
+    for (let n = 0; n + 1 < eased.length; n++) {
+      const dx = eased[n + 1][0] - eased[n][0], dz = eased[n + 1][1] - eased[n][1];
+      const u = Math.max(0, Math.min(1, ((pos[j][0] - eased[n][0]) * dx + (pos[j][1] - eased[n][1]) * dz) / (dx * dx + dz * dz || 1)));
+      const x = [eased[n][0] + dx * u, eased[n][1] + dz * u];
+      const d = Math.hypot(x[0] - pos[j][0], x[1] - pos[j][1]);
+      if (d < bd) (bd = d), (m = n), (bx = x);
+    }
+    const at = r1(bx);
+    const far = (pts) => pts.filter((x) => Math.hypot(x[0] - at[0], x[1] - at[1]) > 1).map(r1);
+    const P2 = [...cp[1].reverse(), ...far(eased.slice(0, m + 1)), at];
+    const Q2 = [at, ...far(eased.slice(m + 1)), ...cq[1]];
+    p.pts = p.b === j ? P2 : P2.reverse();
+    q.pts = q.a === j ? Q2 : Q2.reverse();
+    moved = Math.max(moved, bd);
+    pos[j] = [...at];
+    if (sd.a === j) sd.pts[0] = [...at];
+    if (sd.b === j) sd.pts[sd.pts.length - 1] = [...at];
+    for (const e of [p, q, sd]) e.len = lenOf(e.pts);
+  }
+  // A paired road's painted median keeps its place through the joint: where
+  // the two pieces have it at different offsets or widths, it eases from one
+  // to the other across the joint (1 m sideways in 40 m), as knots [fraction
+  // along the piece, offset, width] (`ms`).
+  const knots = new Map();
+  for (const [j, p, q] of pairs) {
+    if (!p.dual || !q.dual) continue;
+    // (Offsets are to the left of each piece as drawn: taken here along p into the joint and on out along q.)
+    const sp = p.b === j ? 1 : -1, sq = q.a === j ? 1 : -1;
+    const vp = [sp * (p.mo ?? 0), p.med ?? 0], vq = [sq * (q.mo ?? 0), q.med ?? 0];
+    const diff = Math.max(Math.abs(vp[0] - vq[0]), Math.abs(vp[1] - vq[1]) / 2);
+    if (diff < 0.05) continue;
+    const mid = [(vp[0] + vq[0]) / 2, (vp[1] + vq[1]) / 2];
+    for (const [e, sgn] of [[p, sp], [q, sq]]) {
+      const T = Math.min(0.45 * e.len, Math.max(12, diff * 20));
+      (knots.get(e) ?? knots.set(e, []).get(e)).push({ atA: e.a === j, T, v: [sgn * mid[0], mid[1]] });
+    }
+  }
+  for (const [e, l] of knots) {
+    const own = [e.mo ?? 0, e.med ?? 0];
+    const ms = [];
+    const a = l.find((k) => k.atA), b = l.find((k) => !k.atA);
+    if (a) ms.push([0, ...a.v], [+(a.T / e.len).toFixed(3), ...own]);
+    else ms.push([0, ...own]);
+    if (b) ms.push([+(1 - b.T / e.len).toFixed(3), ...own], [1, ...b.v]);
+    else ms.push([1, ...own]);
+    e.ms = ms.map(([f, mo, med]) => [f, +mo.toFixed(2), +med.toFixed(2)]);
+  }
+  report.roads = { tees, why, moved: +moved.toFixed(2), medians: knots.size };
+}
+
 // ---------- box ----------
 const inBox = box ? (p) => p[0] >= box[0] && p[0] <= box[1] && p[1] >= box[2] && p[1] <= box[3] : () => true;
 const near = box ? (p) => p[0] >= box[0] - 150 && p[0] <= box[1] + 150 && p[1] >= box[2] - 150 && p[1] <= box[3] + 150 : () => true;
 if (box) edges = edges.filter((e) => e.pts.some(inBox));
+// (A road marked as carrying straight on past a joint needs both its pieces: the box may have taken one.)
+{
+  const marks = new Map();
+  for (const e of edges) {
+    if (e.ta) marks.set(e.a, (marks.get(e.a) ?? 0) + 1);
+    if (e.tb) marks.set(e.b, (marks.get(e.b) ?? 0) + 1);
+  }
+  for (const e of edges) {
+    if (e.ta && marks.get(e.a) !== 2) delete e.ta;
+    if (e.tb && marks.get(e.b) !== 2) delete e.tb;
+  }
+}
 
 // ---------- write ----------
 // Joints no road uses any more are dropped, and the rest renumbered.
