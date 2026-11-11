@@ -48,8 +48,8 @@ const CHECKS = [
   ['Every road joining a through road has its give-way line', 'through.js', '__checkGiveWays', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
   // Drivable from a standstill: 60% of what the car can do (src/limits.ts).
-  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 19],
-  ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, 6],
+  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 17],
+  ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, 4],
   ['No side tilt that could tip the car', 'drive.js', '__checkTilt', 0],
   ['The drive bot gets through the hard spots', 'routes.js', '__checkRoutes', 0],
   ['The drive bot gets round the map on random trips, never stuck or tipped over', 'walk.js', '__checkWalk', 0],
@@ -67,10 +67,10 @@ const CHECKS = [
   // The finished road (finish.js): what is drawn, followed along the whole of
   // every road, whatever rule drew it. (Known: counted on the map as it
   // stood when these checks were written.)
-  ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, 152],
-  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 202],
-  ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 201],
-  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 41],
+  ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, 149],
+  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 201],
+  ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 198],
+  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 39],
   ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, 54],
 ];
 

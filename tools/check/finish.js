@@ -393,9 +393,12 @@ window.__checkUprights = (all = false) => {
 
 // In-page count: the splits where the builder's own rules are switched off.
 // Beside a flyover (within 300 m along the roads) a split on the ground
-// keeps its roads as the map data draws them: no width caps, no branch moved
-// out to the road's edge, no plain joint. Every such place is one where the
-// faults those rules prevent can come back, so the count may only fall.
+// still goes without three of them: the road's width may taper into a
+// narrower branch, the junction is not shaped with its branches side by
+// side, and an expressway joint is not left plain. (Its width caps and the
+// branch moved out to the road's edge are back on.) Every such place is one
+// where the faults those rules prevent can come back, so the count may only
+// fall.
 window.__checkSwitchedOff = (all = false) => {
   const d = globalThis.__osm;
   const bad = [];
