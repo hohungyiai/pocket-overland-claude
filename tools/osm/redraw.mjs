@@ -3,7 +3,7 @@
 // game builds it. Reads a map the importer wrote and writes another in the
 // same format, so the builder needs to know nothing about it.
 //
-//   node tools/osm/redraw.mjs <in.json> <out.json> [--box x0,x1,z0,z1] [--steps lanes]
+//   node tools/osm/redraw.mjs <in.json> <out.json> [--box x0,x1,z0,z1] [--steps lanes,join]
 //
 // Steps (each can be left out, to measure what it buys):
 //   lanes  service lanes that lead nowhere are dropped. A service lane is
@@ -11,6 +11,9 @@
 //          of lanes between two proper roads that is shorter than 2/3 of
 //          the way round by those roads. Car park aisles, driveways and
 //          loops off one street go.
+//   join   where the same road simply carries on through a joint (same
+//          class, name, level, direction and width, nothing else joining),
+//          its two pieces become one line, eased through the joint.
 //
 // --box keeps only the roads (and the buildings, paths and land) that
 // touch a box in game metres: a trial area.
@@ -28,7 +31,7 @@ const box = flag('box')?.split(',').map(Number) ?? null;
 const steps = new Set((flag('steps') ?? '').split(',').filter(Boolean));
 const [IN, OUT] = args;
 if (!IN || !OUT) {
-  console.error('usage: redraw.mjs <in.json> <out.json> [--box x0,x1,z0,z1] [--steps lanes]');
+  console.error('usage: redraw.mjs <in.json> <out.json> [--box x0,x1,z0,z1] [--steps lanes,join]');
   process.exit(1);
 }
 
@@ -124,6 +127,83 @@ if (steps.has('lanes')) {
   const before = edges.filter(isLane).length;
   edges = edges.filter((e, i) => !isLane(e) || keep.has(i));
   report.lanes = { runs: runs.length, lanes: before, kept: keep.size, dropped: before - keep.size, through };
+}
+
+// ---------- join ----------
+if (steps.has('join')) {
+  /** Corner cutting (Chaikin), ends kept. */
+  const ease = (pts, rounds) => {
+    for (let r = 0; r < rounds; r++) {
+      const out = [pts[0]];
+      for (let k = 0; k + 1 < pts.length; k++) {
+        const [ax, az] = pts[k];
+        const [bx, bz] = pts[k + 1];
+        out.push([ax * 0.75 + bx * 0.25, az * 0.75 + bz * 0.25], [ax * 0.25 + bx * 0.75, az * 0.25 + bz * 0.75]);
+      }
+      out.push(pts[pts.length - 1]);
+      pts = out;
+    }
+    return pts;
+  };
+  const round = (p) => [+p[0].toFixed(1), +p[1].toFixed(1)];
+  const same = (a, b) => a.cls === b.cls && (a.name ?? '') === (b.name ?? '') && (a.lv ?? 0) === (b.lv ?? 0) && (a.one ?? 0) === (b.one ?? 0) && a.w === b.w;
+  const at = new Map();
+  const add = (j, e) => (at.get(j) ?? at.set(j, new Set()).get(j)).add(e);
+  for (const e of edges) {
+    add(e.a, e);
+    add(e.b, e);
+  }
+  const gone = new Set();
+  let joined = 0;
+  const todo = [...at.keys()];
+  while (todo.length) {
+    const j = todo.pop();
+    const l = [...(at.get(j) ?? [])];
+    if (l.length !== 2) continue;
+    let [p, q] = l;
+    if (p.a === p.b || q.a === q.b || !same(p, q)) continue;
+    // p runs into the joint and q out of it. A one-way road keeps its
+    // direction, so two that meet head on (or tail to tail) are not one road.
+    if (p.one) {
+      if (p.b !== j) [p, q] = [q, p];
+      if (p.b !== j || q.a !== j) continue;
+    } else {
+      if (p.b !== j) {
+        p.pts.reverse();
+        [p.a, p.b] = [p.b, p.a];
+      }
+      if (q.a !== j) {
+        q.pts.reverse();
+        [q.a, q.b] = [q.b, q.a];
+      }
+    }
+    if (p.a === q.b && p.a === j) continue;
+    // Eased over the 12 m either side of the joint.
+    const k = p.pts.length - 1;
+    const pts = [...p.pts, ...q.pts.slice(1)];
+    const reach = (from, step) => {
+      let run = 0;
+      let n = from;
+      while (n + step >= 0 && n + step < pts.length && run < 12) {
+        run += Math.hypot(pts[n + step][0] - pts[n][0], pts[n + step][1] - pts[n][1]);
+        n += step;
+      }
+      return n;
+    };
+    const k0 = reach(k, -1);
+    const k1 = reach(k, 1);
+    p.pts = [...pts.slice(0, k0), ...ease(pts.slice(k0, k1 + 1), 2).map(round), ...pts.slice(k1 + 1)];
+    at.get(q.b).delete(q);
+    at.get(q.b).add(p);
+    at.delete(j);
+    p.b = q.b;
+    p.len = lenOf(p.pts);
+    gone.add(q);
+    joined++;
+    todo.push(p.a, p.b);
+  }
+  edges = edges.filter((e) => !gone.has(e));
+  report.join = { joined };
 }
 
 // ---------- box ----------
