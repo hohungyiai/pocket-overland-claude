@@ -759,6 +759,46 @@ if (steps.has('roads')) {
     return [(q[0] - pts[0][0]) / l, (q[1] - pts[0][1]) / l];
   };
   const widthAt = (e, j) => (e.spans ? (e.a === j ? e.spans[0][1] : e.spans[e.spans.length - 1][1]) : e.w);
+  // How far along a slip road (from joint j) its near edge has come 1.8 m
+  // clear of the road it leaves (pieces p and q): the builder paves the
+  // wedge between the two as far as that, and needs the slip road to go on
+  // beyond it. Infinity where it never does within 90 m: two sides of a
+  // road with a divider thinner than that run on as one surface.
+  const clearsAt = (sd, j, p, q) => {
+    const segs = [];
+    for (const e of [p, q]) for (let k = 0; k + 1 < e.pts.length; k++) segs.push([e.pts[k], e.pts[k + 1], e]);
+    const off = (x, z) => {
+      let best = Infinity;
+      for (const [a, b, e] of segs) {
+        const dx = b[0] - a[0], dz = b[1] - a[1];
+        const u = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz || 1)));
+        best = Math.min(best, Math.hypot(x - a[0] - dx * u, z - a[1] - dz * u) - widthAt(e, j) / 2);
+      }
+      return best;
+    };
+    const pts = sd.a === j ? sd.pts : [...sd.pts].reverse();
+    let run = 0;
+    for (let k = 0; k + 1 < pts.length && run <= 90; k++) {
+      const sl = Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
+      const nx = -(pts[k + 1][1] - pts[k][1]) / (sl || 1), nz = (pts[k + 1][0] - pts[k][0]) / (sl || 1);
+      const hw = widthAt(sd, j) / 2;
+      for (let t = 0; t < sl; t += 1) {
+        const u = t / (sl || 1);
+        const x = pts[k][0] + (pts[k + 1][0] - pts[k][0]) * u, z = pts[k][1] + (pts[k + 1][1] - pts[k][1]) * u;
+        // (Its edge nearer the road.)
+        if (Math.min(off(x + nx * hw, z + nz * hw), off(x - nx * hw, z - nz * hw)) >= 1.7) return run + t;
+      }
+      run += sl;
+    }
+    return Infinity;
+  };
+  // (The length of it the builder has for that: short of the junction at its
+  // far end. Measured here on the roads as drawn, before the joint is eased:
+  // 3 m of slack, and the one-strip check catches a joint that still fails.)
+  const roomOn = (sd, j) => {
+    const far = at.get(sd.a === j ? sd.b : sd.a) ?? [];
+    return far.length >= 3 ? Math.max(sd.len * 0.5, sd.len - Math.max(...far.map((e) => e.w / 2)) - 4) : sd.len * 0.8;
+  };
   const sameRoad = (p, q) => (p.name ? p.name === q.name : !q.name && p.cls === q.cls);
   const deg = (c) => (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI;
   let tees = 0;
@@ -786,37 +826,66 @@ if (steps.has('roads')) {
         // and the carriageway may lose or gain its lane there. (Only an
         // expressway's own carriageway so far: where one slip road leaves
         // another, the junction is still shaped as before.)
-        const fast = FAST.test(p.cls) || FAST.test(q.cls);
+        // (Each road meeting it: the angle it comes in at, and whether it
+        // is a slip road: one that comes away at a narrow angle. A slip
+        // road by its class, or the one-way side of a divided road.)
+        const anyFast = FAST.test(p.cls) || FAST.test(q.cls);
+        const cuts = sides.map((sd) => {
+          const z = l.indexOf(sd);
+          const hh = anyFast ? h20 : h10;
+          return Math.min(deg(hh[z][0] * hh[x][0] + hh[z][1] * hh[x][1]), deg(hh[z][0] * hh[y][0] + hh[z][1] * hh[y][1]));
+        });
+        const linkP = /_link$/.test(p.cls), linkQ = /_link$/.test(q.cls);
+        // (An expressway's own carriageway always. A slip road's piece only
+        // where something leaves it at a narrow angle: where every road
+        // comes in square it is a road like any other, at a crossing with
+        // lights at the foot of a ramp.)
+        const fast = anyFast && ((FAST.test(p.cls) && !linkP) || (FAST.test(q.cls) && !linkQ) || cuts.some((c) => c < 40));
+        const links = linkP && linkQ;
         // (A slip road carries on the same way past another that leaves or joins it.)
-        if (fast && (l.length !== 3 || !FAST.test(p.cls) || !FAST.test(q.cls) || /_link$/.test(p.cls) !== /_link$/.test(q.cls))) continue;
+        if (fast && (l.length !== 3 || !FAST.test(p.cls) || !FAST.test(q.cls) || linkP !== linkQ)) continue;
         const h = fast ? h20 : h10;
         // p and q: one road carrying straight on. (Whichever way each piece
         // is drawn: the map draws some one-way pieces backwards.)
         const turn = deg(-(h[x][0] * h[y][0] + h[x][1] * h[y][1]));
-        if (turn > (fast ? 15 : 25) || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
+        // (Slip roads are slow and curve: one may turn as far as a street does.)
+        if (turn > (fast && !links ? 15 : 25) || !!p.dual !== !!q.dual) continue;
+        // One road by its name. A slip road is one road with the slip road
+        // it runs into, named or not; and off the expressways a road that
+        // changes its name or its class at a crossing still carries
+        // straight on (see the key below: the same name wins).
+        const same = sameRoad(p, q);
+        if (!same && fast && !links) continue;
+        // Where a divider starts, the road's two directions part: the
+        // two-way road carries on as one of its sides, and the other side
+        // leaves it as a slip road does.
+        const parts = (p.one ?? 0) !== (q.one ?? 0);
+        // (Only where it carries nearly straight on: the lane a driver is in runs on into its side.)
+        if (parts && !(same && turn <= 15 && sides.length === 1 && sides[0].one && sameRoad(p, sides[0]) && cuts[0] < 40)) continue;
         const wp = widthAt(p, j), wq = widthAt(q, j);
         const narrow = Math.min(wp, wq);
         // (No more than twice as wide one side as the other: turning lanes added at a crossing taper in along the road.)
         if (Math.max(wp, wq) > (fast ? 1.6 : 2) * narrow + 0.01 || Math.min(p.len, q.len) < (fast ? 20 : MINLEN)) continue;
         let ok = true;
         const short = [];
-        for (const sd of sides) {
-          const z = l.indexOf(sd);
+        for (const [n, sd] of sides.entries()) {
           // The side road comes in across it, and is no wider.
-          const cut = Math.min(deg(h[z][0] * h[x][0] + h[z][1] * h[x][1]), deg(h[z][0] * h[y][0] + h[z][1] * h[y][1]));
+          const cut = cuts[n];
           // (A link that comes in square is a side road like any other: the
           // few metres across a divider for turning back, not a slip road.)
-          const slip = FAST.test(sd.cls) && !(/_link$/.test(sd.cls) && !fast && cut >= 40);
+          const slip = cut < 40 && (FAST.test(sd.cls) || (parts && !!sd.one));
           // (One side of a divided road is half of its road.)
-          if ((fast && !slip && !/_link$/.test(p.cls)) || cut < (slip ? 6 : 40) || widthAt(sd, j) > (fast ? 1 : p.one ? 2 : 1.5) * Math.max(wp, wq) + 0.5) ok = false;
+          if ((fast && !slip && !links) || cut < (slip ? 6 : 40) || widthAt(sd, j) > (fast ? 1 : p.one ? 2 : 1.5) * Math.max(wp, wq) + 0.5) ok = false;
           // (A slip road is narrower than the road it leaves at every point.
-          // One as wide that comes away at a narrow angle is not a side road:
-          // the road forks there, and neither branch carries on.)
+          // One as wide that leaves an expressway at a narrow angle is not a
+          // side road: the expressway forks there, and neither branch
+          // carries on. Where a slip road forks, one branch does: see the key.)
           // (And long enough to have come clear of the road: the wedge between
           // the two is paved until they are 1.8 m apart.)
-          else if (slip && (sd.len < Math.min(30, (Math.max(wp, wq) / 2 + sd.w / 2 + 1.8) / Math.sin((cut * Math.PI) / 180) + 4) || sd.w > narrow + 0.5 || (sd.w > 0.8 * narrow && cut < 20))) ok = false;
+          else if (slip && (sd.len < Math.min(30, (Math.max(wp, wq) / 2 + sd.w / 2 + 1.8) / Math.sin((cut * Math.PI) / 180) + 4) || widthAt(sd, j) > narrow + 0.5 || (!links && !parts && sd.w > 0.8 * narrow && cut < 20) || clearsAt(sd, j, p, q) > roomOn(sd, j) + 3)) ok = false;
           // (A few metres of road: an opening in a divider, or a stub with just room for its corners. See below.)
           else if (!slip && sd.len < 15) sd.len < 4 ? (ok = false) : short.push({ sd, room: sd.len >= Math.max(wp, wq) + 1 });
+          if (process.env.ROADS_J && Math.hypot(pos[j][0] - +process.env.ROADS_J.split(',')[0], pos[j][1] - +process.env.ROADS_J.split(',')[1]) < 3) console.error('j', pos[j].map(Math.round).join(','), 'pair', p.name ?? p.cls, q.name ?? q.cls, 'side', sd.name ?? sd.cls, { cut: Math.round(cut), slip, fast, links, parts, len: Math.round(sd.len), clears: clearsAt(sd, j, p, q), room: roomOn(sd, j), ok });
           if (!ok) break;
         }
         if (!ok) continue;
@@ -828,7 +897,8 @@ if (steps.has('roads')) {
         // (Of two slip roads leaving one another, the wider carries on.)
         // (Where two roads cross, the bigger road carries on: by its class,
         // then by how straight it runs.)
-        const key = turn - (fast ? narrow : 0) - 100 * Math.min(RANK(p.cls), RANK(q.cls));
+        // (And the road that keeps its name, before one that changes it.)
+        const key = turn - (fast ? narrow : 0) - 100 * Math.min(RANK(p.cls), RANK(q.cls)) + (same ? 0 : 50);
         if (!best || key < best.key) best = { p, q, sides, short, key, fast };
       }
     if (!best) {
@@ -852,9 +922,11 @@ if (steps.has('roads')) {
     for (const [j, c] of cand) {
       // (And a piece of the road itself shorter than 20 m carries on at
       // both its ends, or at neither: a junction shaped the old way at its
-      // far end would cut it back further than it is long.)
+      // far end would cut it back further than it is long. 40 m where a
+      // slip road leaves, unless it ends as a side road at a road that
+      // carries on: those junctions reach further along their roads.)
       const far = (e) => cand.get(e.a === j ? e.b : e.a);
-      const chain = [c.p, c.q].every((e) => e.len >= 20 || [far(e)?.p, far(e)?.q].includes(e));
+      const chain = [c.p, c.q].every((e) => e.len >= (c.fast ? 40 : 20) || [far(e)?.p, far(e)?.q].includes(e) || (c.fast && e.len >= 20 && far(e)?.sides.includes(e)));
       if (chain && c.short.every(({ sd, room }) => room || far(sd)?.sides.includes(sd))) continue;
       cand.delete(j);
       no(chain ? 'short' : 'chain');

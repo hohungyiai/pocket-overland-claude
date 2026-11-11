@@ -101,6 +101,8 @@ export interface JunctionShape {
   /** Short stubs between merged points, drawn as part of the junction. */
   internal: number[];
   radius: number;
+  /** A slip road's wedge (it comes away from the road it meets at a narrow angle), not a side road's bell mouth. */
+  slip?: boolean;
 }
 
 export interface JunctionOut {
@@ -115,7 +117,7 @@ export interface JunctionOut {
   fallback: number[];
   /** Islands inside big crossings (between slip lanes and the main roads), paved over. */
   /** Ground paved over that is no junction's own outline: islands roads enclose, and the far parts of a slip road's long wedge (`tee`: the joint it belongs to). */
-  fills: { ring: XZ[]; centre: XZ; radius: number; tee?: number }[];
+  fills: { ring: XZ[]; centre: XZ; radius: number; tee?: number; slip?: boolean }[];
   /** Junctions paved as the hull of their mouths. */
   hulls: number;
   /** Why each fallback group was not shaped (for checks). */
@@ -549,7 +551,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       });
       return { through, sEnd, legs, offRoad, sp, sL, sideAt, leaves };
     };
-    type TeePart = { ring: XZ[]; corners: XZ[][]; kerbs: XZ[][]; c: XZ; mouth: Mouth | null; inside: number | null; more: NonNullable<Built['more']>; kerbed: boolean; flip: number };
+    type TeePart = { ring: XZ[]; corners: XZ[][]; kerbs: XZ[][]; c: XZ; mouth: Mouth | null; inside: number | null; more: NonNullable<Built['more']>; kerbed: boolean; flip: number; sharp: boolean };
     /** The paving where side road sLine meets the road running through joint j. */
     const teePart = (j: number, sLine: number, no: (why: string) => null): TeePart | null => {
       const G = teeGeom(j, sLine);
@@ -606,6 +608,27 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         });
       const sDir: XZ = [M.q[0] - junctions[j][0], M.q[1] - junctions[j][1]];
       const flipOf = (o: (typeof legs)[number]) => (cross([o.P[1][0] - o.P[0][0], o.P[1][1] - o.P[0][1]], sDir) > 0 ? 1 : -1);
+      // Another side road close by on the same side of the road, at the
+      // next joint along it (the other side of a divided road, a few
+      // metres on): each rounds its corner over no more than half the gap
+      // between the two, so their pavings meet and never overlap. (With no
+      // gap to speak of, the corner is square: the divider's nose.)
+      const lim = [R, R];
+      if (!sharp)
+        for (const t of through) {
+          const j2 = edges[t].a === j ? edges[t].b : edges[t].a;
+          if (len[t] > 40 || !teeAt[j2] || !thruAt(t, j2)) continue;
+          const along: XZ = [junctions[j2][0] - junctions[j][0], junctions[j2][1] - junctions[j][1]];
+          for (const s2 of jE[j2]) {
+            if (thruAt(s2, j2)) continue;
+            const G2 = teeGeom(j2, s2);
+            if (!G2 || !G2.leaves[0] || !G2.leaves[1]) continue;
+            const q2 = G2.sideAt(Math.min(G2.sL, Math.max(G2.leaves[0].d, G2.leaves[1].d) + 2), 0);
+            if (cross(along, sDir) > 0 !== cross(along, [q2[0] - junctions[j2][0], q2[1] - junctions[j2][1]]) > 0) continue;
+            for (const lv2 of G2.leaves)
+              for (const k of [0, 1]) lim[k] = Math.min(lim[k], Math.max(0, (Math.hypot(leaves[k]!.p[0] - lv2!.p[0], leaves[k]!.p[1] - lv2!.p[1]) - 0.3) / 2));
+          }
+        }
       const e0 = edgeLine(legs[0], flipOf(legs[0]));
       const e1 = edgeLine(legs[1], flipOf(legs[1]));
       const jp: XZ = [(e0[0][0] + e1[0][0]) / 2, (e0[0][1] + e1[0][1]) / 2];
@@ -629,7 +652,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       const uX = leaves.map((lv) => uOf(lv!.p));
       if (Math.abs(uX[0] - uX[1]) < 0.5) return no('corners meet');
       const curveOf = (k: number): XZ[] => {
-        const outU = uX[k] + (uX[k] > uX[1 - k] ? R : -R);
+        const outU = uX[k] + (uX[k] > uX[1 - k] ? lim[k] : -lim[k]);
         if (outU < 0.5 || outU > eLen - 0.5) return [];
         const p0 = corner[k], c1 = eAt(uX[k]), p2 = eAt(outU);
         const n = 8;
@@ -744,7 +767,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         const cLo = curveOf(lo); // mouth corner -> the edge
         const cHi = curveOf(hi);
         if (!cLo.length || !cHi.length) return no('no corner');
-        const uLo = uX[lo] - R, uHi = uX[hi] + R;
+        const uLo = uX[lo] - lim[lo], uHi = uX[hi] + lim[hi];
         const between: XZ[] = [];
         for (let k = E.length - 1; k >= 0; k--) if (eCum[k] > uLo + 0.3 && eCum[k] < uHi - 0.3) between.push(E[k]);
         // Edge (low end) -> round to the mouth -> across it -> round to the edge (high end) -> back along the edge.
@@ -769,7 +792,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         return null;
       }
       const kerbed = Math.max(I.rank(sLine), ...through.map((i) => I.rank(i))) >= 1;
-      return { ring, corners, kerbs: kerbLines ?? corners, c, mouth: openAt >= 0 ? null : M, inside: openAt >= 0 ? sLine : null, more: more ?? [], kerbed, flip: flipOf(legs[0]) };
+      return { ring, corners, kerbs: kerbLines ?? corners, c, mouth: openAt >= 0 ? null : M, inside: openAt >= 0 ? sLine : null, more: (more ?? []).map((f) => ({ ...f, slip: sharp })), kerbed, flip: flipOf(legs[0]), sharp };
     };
     const teeShape = (j: number): Built | null => {
       // (Why a marked joint could not be built as a tee: kept for the checks.)
@@ -788,7 +811,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       if (parts.length === 2 && parts[0].flip === parts[1].flip) return no('two side roads on one side');
       const reach = (ring: XZ[], c: XZ) => Math.max(...ring.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
       const [first, ...rest] = parts;
-      const more = [...first.more, ...rest.flatMap((q) => [{ ring: q.ring, centre: q.c, radius: reach(q.ring, q.c) }, ...q.more])];
+      const more = [...first.more, ...rest.flatMap((q) => [{ ring: q.ring, centre: q.c, radius: reach(q.ring, q.c), slip: q.sharp }, ...q.more])];
       return {
         nodes: [j],
         centre: first.c,
@@ -800,6 +823,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         internal: parts.flatMap((q) => (q.inside !== null ? [q.inside] : [])),
         hull: false,
         tee: true,
+        slip: first.sharp,
         more,
       };
     };
@@ -1205,6 +1229,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       mouths: b.mouths,
       internal: b.internal,
       radius: b.radius,
+      slip: b.slip,
     });
     for (const j of nodes) out.shapeOf[j] = id;
     if (b.tee) for (const j of nodes) out.tee[j] = 1;
@@ -1324,7 +1349,8 @@ interface Built {
   hull: boolean;
   tee?: boolean;
   /** More paving that belongs to this junction, each part filled from its own centre. */
-  more?: { ring: XZ[]; centre: XZ; radius: number }[];
+  more?: { ring: XZ[]; centre: XZ; radius: number; slip?: boolean }[];
+  slip?: boolean;
 }
 
 /** Does any point of ring a lie inside ring b, more than 0.3 m in? */

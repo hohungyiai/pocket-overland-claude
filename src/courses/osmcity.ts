@@ -651,14 +651,18 @@ export async function buildPasirRisCourse(
   const mate1 = (i: number, j: number) => {
     const t = thruMate(i, j);
     if (t !== undefined) return t;
+    // (Never a piece that is marked as carrying on into another here: a
+    // marked joint the shaper could not build as one strip still has its
+    // own idea of which road runs through.)
+    const free = (c: number) => thruMate(c, j) === undefined;
     const o = throughOf(j, i);
-    if (o !== undefined) return o !== i && throughOf(j, o) === i ? o : undefined;
+    if (o !== undefined) return o !== i && throughOf(j, o) === i && free(o) ? o : undefined;
     if ((jE[j]?.length ?? 0) < 3) return undefined;
     // (Not the short pieces inside a big junction: its shape joins those.)
     // (Nor flyover decks: the roads beside a deck are set out from its full width.)
     if (ELEN[i] < 30 || isDeck[i]) return undefined;
     const c = carryOn(j, i);
-    return c !== undefined && carryOn(j, c) === i ? c : undefined;
+    return c !== undefined && carryOn(j, c) === i && free(c) ? c : undefined;
   };
   // (Not from a road into a narrower branch of it at a split: the road keeps
   // its width up to the joint, and its branches are set out from its edges.)
@@ -1749,13 +1753,15 @@ export async function buildPasirRisCourse(
     return (wT * yT + wS * yS) / (wT + wS);
   };
   /** For each road built as one strip through a junction: the paving (the junction's outline and any further parts) that opens off its edge there. */
+  /** For each road that runs through joints as one strip: the paving along it where a slip road leaves or joins (its long wedge). */
   let teePavingMap: Map<number, number[]> | undefined;
   const teePaving = () => {
     if (!teePavingMap) {
       teePavingMap = new Map();
       for (let id = 0; id < JPOLY.length; id++) {
-        const j = id < JX.shapes.length ? (JX.shapes[id].nodes.length === 1 ? JX.shapes[id].nodes[0] : -1) : JX.fills[id - JX.shapes.length].tee ?? -1;
-        if (j < 0 || !JX.tee[j]) continue;
+        const fill = id < JX.shapes.length ? undefined : JX.fills[id - JX.shapes.length];
+        const j = fill ? fill.tee ?? -1 : JX.shapes[id].nodes.length === 1 ? JX.shapes[id].nodes[0] : -1;
+        if (j < 0 || !JX.tee[j] || !(fill ? fill.slip : JX.shapes[id].slip)) continue;
         for (const i of jE[j]) if (thruEnd(i, j)) (teePavingMap.get(i) ?? teePavingMap.set(i, []).get(i)!).push(id);
       }
     }
@@ -3325,8 +3331,9 @@ export async function buildPasirRisCourse(
         const clearM = thA || thB ? clearOn(P) : clear;
         // (No edge line across a slip road's opening: along a junction's
         // paving that this road runs through as one strip.)
-        // (An expressway's only: elsewhere a road's lines run on past a side road, as its kerb line would.)
-        const openings = /^(motorway|trunk)/.test(e.cls) ? teePaving().get(line) : undefined;
+        // (A slip road's only, whatever the road: past a side road that
+        // comes in square a road's lines run on, as its kerb line would.)
+        const openings = teePaving().get(line);
         const openAt = (kk: number, off: number) => {
           if (!openings) return false;
           const a = mp[kk], b = mp[kk + 1];
