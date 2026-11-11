@@ -298,6 +298,22 @@ if (steps.has('pair')) {
    * and stays two sides up to there. Returns the joints to hold next time.
    */
   const pairOnce = (held) => {
+  // A paired road never forks on a bridge: where a held joint's side runs
+  // onto one, the road stays two sides to the bridge's far end, and that
+  // joint is held too.
+  for (const todo = [...held.keys()]; todo.length; ) {
+    const j = todo.pop();
+    for (const [e, d] of armsAt(j)) {
+      if (!side(e) || !(e.lv ?? 0) || !held.get(j).some((h) => h[0] * d[0] + h[1] * d[1] > 0.5)) continue;
+      const far = e.a === j ? e.b : e.a;
+      const on = e.a === j ? dirAt(e, e.pts.length - 2) : dirAt(e, 0).map((v) => -v);
+      const had = held.get(far) ?? [];
+      if (had.some((h) => h[0] * on[0] + h[1] * on[1] > 0.5)) continue;
+      // (The fork then lies 30 m beyond the bridge's end, or at the next joint if that is nearer than 28 m beyond that.)
+      held.set(far, [...had, [...on, 30]]);
+      todo.push(far);
+    }
+  }
   // Joints drawn together.
   const par = new Map();
   const find = (j) => {
@@ -368,8 +384,10 @@ if (steps.has('pair')) {
       done.add(j);
       if (held.has(j)) {
         for (const [e, d] of armsAt(j)) {
-          if (!side(e) || e.len < 20 || !held.get(j).some((h) => h[0] * d[0] + h[1] * d[1] > 0.5)) continue;
-          const from = Math.min(30, e.len / 2);
+          const h = held.get(j).find((h) => h[0] * d[0] + h[1] * d[1] > 0.5);
+          if (!side(e) || e.len < 20 || (e.lv ?? 0) || !h) continue;
+          if (h[2] && e.len - h[2] < 28) continue;
+          const from = h[2] ?? Math.min(30, e.len / 2);
           cutAtLen(e, e.a === j ? from : e.len - from);
           cuts++;
           any = true;
@@ -427,6 +445,7 @@ if (steps.has('pair')) {
     const a = find(e.a), b = find(e.b);
     // (A piece between two joints drawn together is inside the new joint.)
     if (a === b && e.a !== e.b && e.len < 60) return false;
+    e.len0 = e.len;
     for (const [end, j] of [[0, e.a], [1, e.b]]) {
       const c = moved.get(j);
       if (!c) continue;
@@ -518,7 +537,8 @@ if (steps.has('pair')) {
   let inside = 0;
   for (const e of edges) {
     const over = twoWays.get(`${Math.min(e.a, e.b)}:${Math.max(e.a, e.b)}`);
-    if (!over || e.dual || gone.has(e) || e.a === e.b || (e.lv ?? 0) !== (over.lv ?? 0) || e.len > over.len * 1.5 + 5) continue;
+    // (As long as it was before its ends moved; a link across the median is up to the road's width longer.)
+    if (!over || e.dual || gone.has(e) || e.a === e.b || (e.lv ?? 0) !== (over.lv ?? 0) || (e.len0 ?? e.len) > over.len * 1.5 + Math.max(5, over.w)) continue;
     gone.add(e);
     inside++;
   }
@@ -716,7 +736,7 @@ const idFor = (j) => {
   }
   return idOf.get(j);
 };
-const outEdges = edges.map(({ len, spans, ...e }) => {
+const outEdges = edges.map(({ len, len0, spans, ...e }) => {
   const o = { ...e, a: idFor(e.a), b: idFor(e.b) };
   if (spans) {
     const all = spans.reduce((t, sp) => t + sp[0], 0);
