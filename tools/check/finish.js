@@ -423,9 +423,9 @@ window.__checkSwitchedOff = (all = false) => {
 //          stands across it (no kerb inside the road), every line painted
 //          solid before and after it is solid through it, the kerb on the
 //          side away from the side road never breaks, and the road's slope
-//          does not change.
+//          changes no more sharply at the joint than just before and after it.
 // (A map with no such marks has nothing to test: today's map.)
-window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.02) => {
+window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.01) => {
   const d = globalThis.__osm;
   const F = window.__finishIndex();
   const at = new Map();
@@ -457,7 +457,9 @@ window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.02) => 
     }
     const [q, qe] = ends[1];
     // The plan.
-    if (!d.JX.tee[j]) {
+    // (A joint of just the two pieces has no junction to build: the two only have to meet as one.)
+    const pieces = d.edges.reduce((n, e) => n + (e.a === j ? 1 : 0) + (e.b === j ? 1 : 0), 0);
+    if (!d.JX.tee[j] && pieces !== 2) {
       flag('not built as one strip', 1, P0[0], P0[1]);
       continue;
     }
@@ -523,9 +525,13 @@ window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.02) => 
       if (side === (k ? 1 : -1) || !side) continue;
       if (far.every((r) => r.kerb[k]) && !near.every((r) => r.kerb[k])) flag('kerb breaks', near.filter((r) => !r.kerb[k]).length * 0.5, P0[0], P0[1]);
     }
-    // The slope before the joint against the slope after it.
+    // The road's slope over each 4 m from 8 m before the joint to 8 m after: on
+    // a crest or a dip it changes as much before and after the joint as at it;
+    // at a corner in the road's height it does not (as for the turn, above).
     const yAt = (s) => rows.find((r) => Math.abs(r.s - s) < 0.01).y;
-    const bend = Math.abs((yAt(-1) - yAt(-5)) / 4 - (yAt(5) - yAt(1)) / 4);
+    const rise = [-8, -4, 0, 4].map((s) => (yAt(s + 4) - yAt(s)) / 4);
+    const stepAt = (k) => Math.abs(rise[k + 1] - rise[k]);
+    const bend = stepAt(1) - Math.max(stepAt(0), stepAt(2));
     if (bend > SLOPE) flag('slope', bend * 100, P0[0], P0[1]);
   }
   bad.sort((a, b) => b.over - a.over);

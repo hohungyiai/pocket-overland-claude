@@ -114,11 +114,12 @@ export interface JunctionOut {
   /** Junctions that could not be shaped cleanly and keep a plain pad. */
   fallback: number[];
   /** Islands inside big crossings (between slip lanes and the main roads), paved over. */
-  fills: { ring: XZ[]; centre: XZ; radius: number }[];
+  /** Ground paved over that is no junction's own outline: islands roads enclose, and the far parts of a slip road's long wedge (`tee`: the joint it belongs to). */
+  fills: { ring: XZ[]; centre: XZ; radius: number; tee?: number }[];
   /** Junctions paved as the hull of their mouths. */
   hulls: number;
   /** Why each fallback group was not shaped (for checks). */
-  why: { nodes: number[]; why: string }[];
+  why: { nodes: number[]; why: string; ring?: XZ[] }[];
   /** Joints where a side road meets a road that carries straight on: the road runs through uncut, and the shape is only the side road's bell mouth. */
   tee: Uint8Array;
 }
@@ -492,7 +493,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       const through = l.filter((i) => i !== sLine);
       const sEnd: 0 | 1 = edges[sLine].a === j ? 0 : 1;
       const INSET = 0.1; // the paving tucks this far under the through road's edge
-      const REACH = 40;
+      const REACH = 90;
       // Each through piece from the joint outward: its points and half widths.
       const legs = through.map((i) => {
         const pts = EP[i];
@@ -547,9 +548,29 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // (The far end needs room for its own junction, if it has one.)
       const room = jE[farJ].length >= 3 ? Math.max(sL * 0.5, sL - rad[farJ] - 4) : sL * 0.8;
       const dMax = Math.max(leaves[0].d, leaves[1].d);
-      const R = Math.min(Math.max(2.5, Math.min(6, 1.5 + hS * 0.8)), room - dMax);
+      // A slip road: it comes away at a narrow angle (under about 40 degrees:
+      // one edge leaves the road much further out than the other). No corner
+      // is rounded on the side of the wedge between the two roads: the two
+      // are one surface until they are GAP apart, and the slip road's own
+      // strip starts there.
+      const g = leaves[0].d >= leaves[1].d ? 0 : 1; // the wedge's side: 0 the side road's left as it leaves, 1 its right
+      const sharp = Math.abs(leaves[0].d - leaves[1].d) > 2.4 * hS;
+      const GAP = 1.8; // (a little more than the 1.5 m under which roads side by side are paved as one: that paving has nothing left to do here)
+      let dG = -1;
+      if (sharp) {
+        for (let d = leaves[g]!.d; d <= Math.min(sL, REACH); d += 0.5) {
+          const p = sideAt(d, g === 0 ? 1 : -1);
+          if (offRoad(p[0], p[1]) >= GAP - INSET) {
+            dG = d;
+            break;
+          }
+        }
+        if (dG < 0 || dG > room) return no('no room for the slip road to come away');
+      }
+      // (A slip road's outside edge swings onto the road's over a longer curve.)
+      const R = sharp ? Math.min(10, dG - leaves[1 - g]!.d) : Math.min(Math.max(2.5, Math.min(6, 1.5 + hS * 0.8)), room - dMax);
       if (R < 1) return no('no room for the corners');
-      const M = makeMouth(sLine, sEnd, dMax + R, true);
+      const M = makeMouth(sLine, sEnd, sharp ? dG : dMax + R, true);
       // The through road's edge on the side road's side, as one line through the joint.
       const edgeLine = (o: (typeof legs)[number], flip: number): XZ[] =>
         o.P.map((p, k) => {
@@ -594,33 +615,129 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         }
         return c;
       };
-      const lo = uX[0] < uX[1] ? 0 : 1;
-      const hi = 1 - lo;
-      let cLo = curveOf(lo); // mouth corner -> the edge
-      let cHi = curveOf(hi);
-      if (!cLo.length || !cHi.length) return no('no corner');
-      const uLo = uX[lo] - R, uHi = uX[hi] + R;
-      const between: XZ[] = [];
-      for (let k = E.length - 1; k >= 0; k--) if (eCum[k] > uLo + 0.3 && eCum[k] < uHi - 0.3) between.push(E[k]);
-      // Edge (low end) -> round to the mouth -> across it -> round to the edge (high end) -> back along the edge.
-      let ring: XZ[] = [...[...cLo].reverse(), ...cHi, ...between];
-      let area = 0;
-      for (let k = 0; k < ring.length; k++) area += cross(ring[k], ring[(k + 1) % ring.length]);
-      let corners: XZ[][] = [[...cLo].reverse(), cHi];
-      if (area < 0) {
-        ring = ring.reverse();
-        corners = [[...cHi].reverse(), cLo];
+      let ring: XZ[];
+      let corners: XZ[][];
+      let c: XZ;
+      let more: Built['more'];
+      if (sharp) {
+        const o = 1 - g;
+        const sgnO = o === 0 ? 1 : -1;
+        // Where the mouth's corner on the wedge's side is nearest the road's edge: the paving closes straight across there.
+        const uG = uOf(corner[g]);
+        const outU = uX[o] + (uX[o] > uG ? R : -R);
+        if (outU < 0.5 || outU > eLen - 0.5) return no('no corner');
+        // The outside: back along the slip road's own edge from its mouth, then round onto the road's edge.
+        const outer: XZ[] = [corner[o]];
+        for (let d = dG - 2; d > leaves[o]!.d + R + 1; d -= 2) outer.push(sideAt(d, sgnO));
+        const p0 = sideAt(leaves[o]!.d + R, sgnO), c1 = eAt(uX[o]), p2 = eAt(outU);
+        for (let q = 0; q <= 8; q++) {
+          const u = q / 8;
+          outer.push([(1 - u) * (1 - u) * p0[0] + 2 * u * (1 - u) * c1[0] + u * u * p2[0], (1 - u) * (1 - u) * p0[1] + 2 * u * (1 - u) * c1[1] + u * u * p2[1]]);
+        }
+        const nose: XZ[] = [eAt(uG), corner[g]];
+        // The road's edge between the two, from the rounded end to the wedge.
+        const between: XZ[] = [];
+        const fwd = uG > outU;
+        for (let k = fwd ? 0 : E.length - 1; k >= 0 && k < E.length; k += fwd ? 1 : -1)
+          if (eCum[k] > Math.min(uG, outU) + 0.3 && eCum[k] < Math.max(uG, outU) - 0.3) between.push(E[k]);
+        ring = [...nose, ...outer, ...between];
+        corners = [outer, nose];
+        const ccw = (r: XZ[]) => {
+          let area = 0;
+          for (let k = 0; k < r.length; k++) area += cross(r[k], r[(k + 1) % r.length]);
+          return area >= 0;
+        };
+        const turned = !ccw(ring);
+        if (turned) {
+          ring = ring.reverse();
+          corners = [[...nose].reverse(), [...outer].reverse()];
+        }
+        let k0 = kernelOf(ring);
+        if (!k0) {
+          // A long wedge beside a curving road can't be filled from one
+          // point. It is cut across into lengths of 12 m or so: the one at
+          // the mouth is the junction's own outline, the rest are paved
+          // with it (same surface, same height), each from its own centre.
+          const lower: XZ[] = [eAt(uG), ...[...between].reverse(), eAt(outU)];
+          const even = (poly: XZ[], n: number): XZ[] => {
+            const cum = [0];
+            for (let k = 1; k < poly.length; k++) cum.push(cum[k - 1] + Math.hypot(poly[k][0] - poly[k - 1][0], poly[k][1] - poly[k - 1][1]));
+            const out: XZ[] = [];
+            for (let k = 0; k <= n; k++) out.push(along(poly, cum, (cum[cum.length - 1] * k) / n).p);
+            return out;
+          };
+          const lenOf = (poly: XZ[]) => {
+            let l = 0;
+            for (let k = 1; k < poly.length; k++) l += Math.hypot(poly[k][0] - poly[k - 1][0], poly[k][1] - poly[k - 1][1]);
+            return l;
+          };
+          // (Its far end comes to a point along the road's edge, which no
+          // centre can see into: it stops where it is 0.2 m wide, half of
+          // that tucked under the road's edge and the rest under the kerb.)
+          const fine = Math.max(8, Math.ceil(lenOf(outer)));
+          const O0 = even(outer, fine), L0 = even(lower, fine);
+          let end = fine;
+          while (end > 2 && Math.hypot(O0[end][0] - L0[end][0], O0[end][1] - L0[end][1]) < 0.2) end--;
+          const oCut = O0.slice(0, end + 1), lCut = L0.slice(0, end + 1);
+          const lenO = lenOf(oCut);
+          let parts: XZ[][] = [];
+          let cs: (XZ | null)[] = [null];
+          // (Shorter lengths where the road curves too much for these.)
+          for (let K = Math.max(2, Math.ceil(lenO / 12)); K <= 64 && cs.some((x) => !x); K *= 2) {
+            const m = Math.max(2, Math.ceil(lenO / K / 2.5));
+            const O = even(oCut, K * m), Lw = even(lCut, K * m);
+            parts = [];
+            for (let q = 0; q < K; q++) {
+              const a = q * m, b = (q + 1) * m;
+              let part: XZ[] = [Lw[a], ...(q === 0 ? [corner[g]] : []), ...O.slice(a, b + 1), ...Lw.slice(a + 1, b + 1).reverse()];
+              if (!ccw(part)) part = part.reverse();
+              parts.push(part);
+            }
+            cs = parts.map((r) => kernelOf(r));
+          }
+          if (cs.some((x) => !x)) {
+            no('outline folds');
+            out.why[out.why.length - 1].ring = parts[cs.findIndex((x) => !x)];
+            return null;
+          }
+          ring = parts[0];
+          k0 = cs[0];
+          more = parts.slice(1).map((r, q) => ({ ring: r, centre: cs[q + 1]!, radius: Math.max(...r.map((p) => Math.hypot(p[0] - cs[q + 1]![0], p[1] - cs[q + 1]![1]))) }));
+        }
+        c = k0 ?? eAt((uG + outU) / 2);
+      } else {
+        const lo = uX[0] < uX[1] ? 0 : 1;
+        const hi = 1 - lo;
+        const cLo = curveOf(lo); // mouth corner -> the edge
+        const cHi = curveOf(hi);
+        if (!cLo.length || !cHi.length) return no('no corner');
+        const uLo = uX[lo] - R, uHi = uX[hi] + R;
+        const between: XZ[] = [];
+        for (let k = E.length - 1; k >= 0; k--) if (eCum[k] > uLo + 0.3 && eCum[k] < uHi - 0.3) between.push(E[k]);
+        // Edge (low end) -> round to the mouth -> across it -> round to the edge (high end) -> back along the edge.
+        ring = [...[...cLo].reverse(), ...cHi, ...between];
+        let area = 0;
+        for (let k = 0; k < ring.length; k++) area += cross(ring[k], ring[(k + 1) % ring.length]);
+        corners = [[...cLo].reverse(), cHi];
+        if (area < 0) {
+          ring = ring.reverse();
+          corners = [[...cHi].reverse(), cLo];
+        }
+        const mid = eAt((uLo + uHi) / 2);
+        c = [mid[0] + (M.q[0] - mid[0]) * 0.3, mid[1] + (M.q[1] - mid[1]) * 0.3];
+        if (sees(ring, c) <= 1e-6) c = seesBest(ring, c);
       }
-      const mid = eAt((uLo + uHi) / 2);
-      let c: XZ = [mid[0] + (M.q[0] - mid[0]) * 0.3, mid[1] + (M.q[1] - mid[1]) * 0.3];
-      if (sees(ring, c) <= 1e-6) c = seesBest(ring, c);
       // (A bell mouth's corners come in along the road's edge, so the points
       // that see the whole outline can be a strip a hand wide: found exactly.)
       if (sees(ring, c) <= 1e-6) c = kernelOf(ring) ?? c;
-      if (sees(ring, c) <= 1e-6) return no('outline folds');
+      if (sees(ring, c) <= 1e-6) {
+        no('outline folds');
+        out.why[out.why.length - 1].ring = ring;
+        return null;
+      }
       const kerbed = Math.max(I.rank(sLine), ...through.map((i) => I.rank(i))) >= 1;
       const radius = Math.max(...ring.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
-      return { nodes: [j], centre: c, radius, ring, kerbs: kerbed ? corners : [], corners, mouths: [M], internal: [], hull: false, tee: true };
+      return { nodes: [j], centre: c, radius, ring, kerbs: kerbed ? corners : [], corners, mouths: [M], internal: [], hull: false, tee: true, more };
     };
     if (nodes.length === 1 && teeAt[nodes[0]]) {
       const t = teeShape(nodes[0]);
@@ -1013,6 +1130,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     }
     const id = out.shapes.length;
     if (b.hull) out.hulls++;
+    for (const f of b.more ?? []) out.fills.push({ ...f, tee: nodes[0] });
     out.shapes.push({
       id,
       nodes,
@@ -1141,6 +1259,8 @@ interface Built {
   internal: number[];
   hull: boolean;
   tee?: boolean;
+  /** More paving that belongs to this junction, each part filled from its own centre. */
+  more?: { ring: XZ[]; centre: XZ; radius: number }[];
 }
 
 /** Does any point of ring a lie inside ring b, more than 0.3 m in? */

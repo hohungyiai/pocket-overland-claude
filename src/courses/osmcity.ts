@@ -243,6 +243,8 @@ export async function buildPasirRisCourse(
     const COS35 = Math.cos((35 * Math.PI) / 180);
     for (const [j, list] of byNode) {
       if (list.length !== 3 || new Set(list).size !== 3) continue;
+      // (Not where the map marks one road as carrying straight on: that road is one strip, and the third meets its edge.)
+      if (list.some((i) => (edges[i].a === j ? edges[i].ta : edges[i].tb))) continue;
       const lv = edges[list[0]].lv ?? 0;
       if (list.some((i) => (edges[i].lv ?? 0) !== lv)) continue;
       const P = list.map((i) => from(i, j));
@@ -628,6 +630,7 @@ export async function buildPasirRisCourse(
     jE.forEach((all, j) => {
       const l = all.filter((i) => edges[i].a !== edges[i].b);
       if (l.length !== 3 || all.length !== 3 || l.some((i) => isDeck[i] || ELEN[i] < 30)) return;
+      if (l.some((i) => thruEnd(i, j))) return;
       const h = l.map((i) => headOut(i, j));
       const dot = (x: number, y: number) => h[x][0] * h[y][0] + h[x][1] * h[y][1];
       for (const [x, y, w] of [[0, 1, 2], [0, 2, 1], [1, 2, 0]]) {
@@ -641,6 +644,8 @@ export async function buildPasirRisCourse(
       }
     });
   }
+  /** The next piece of the same strip at joint j, where the builder lays the two as one (a tee, or a joint of just the two). */
+  const thruJoint = (i: number, j: number) => (JX.tee[j] || (jE[j]?.length ?? 0) === 2 ? thruMate(i, j) : undefined);
   const mate1 = (i: number, j: number) => {
     const t = thruMate(i, j);
     if (t !== undefined) return t;
@@ -905,8 +910,9 @@ export async function buildPasirRisCourse(
     if (list.length < 2) return;
     for (const i of list)
       for (const o of list) {
-        // (Two flyover decks climb together.)
-        if (o === i || (elevated[i] && elevated[o])) continue;
+        // (Two flyover decks climb together. Two pieces of one strip are
+        // not side by side: one carries on where the other ends.)
+        if (o === i || (elevated[i] && elevated[o]) || thruJoint(i, j) === o) continue;
         const ia = edges[i].a === j;
         const oa = edges[o].a === j;
         const far = Math.min(40, ELEN[i], ELEN[o]);
@@ -1016,7 +1022,11 @@ export async function buildPasirRisCourse(
       }
     }
   };
+  const thruSlopeCache = new Map<number, number | undefined>();
+  const stripShapes = new Map<number, 0 | 1 | 2>();
   const lift = () => {
+    thruSlopeCache.clear();
+    stripShapes.clear();
     jRel.fill(0);
     ceilings();
     const heap = heapOf(-1);
@@ -1082,17 +1092,23 @@ export async function buildPasirRisCourse(
       const farO = m.oa ? ELEN[m.o] - so : so;
       const t = (1 - smoothstep(m.L, m.L + fade, d)) * smoothstep(0, 12, Math.min(farI, farO));
       if (t <= 0) continue;
-      sum += t * (relOwn(m.o, so) - r) / 2;
+      // (Beside a road running through the joint as one strip, the strip
+      // keeps its own height and the road beside it takes the strip's.)
+      const j = m.ia ? edges[i].a : edges[i].b;
+      const iThru = thruJoint(i, j) !== undefined, oThru = thruJoint(m.o, j) !== undefined;
+      if (iThru && !oThru) continue;
+      sum += (t * (relOwn(m.o, so) - r)) / (oThru && !iThru ? 1 : 2);
       w += t;
     }
     return w > 1 ? r + sum / w : r + sum;
   };
-  /** Road height above the ground at distance s along edge i, on its own. */
-  const relOwn = (i: number, s: number) => {
+  /** Road height above the ground at distance s along edge i, on its own: straight ramps. */
+  const relRamps = (i: number, s: number, shaped?: number) => {
     const ra = jRel[edges[i].a] ?? 0;
     const rb = jRel[edges[i].b] ?? 0;
     let r: number;
-    if (elevated[i]) {
+    if (shaped !== undefined) r = shaped;
+    else if (elevated[i]) {
       // A flyover stands at its full height, coming down only near an end
       // held lower (at 1 in 10).
       const t = runLen(i) > 0 ? runA(i, s) / runLen(i) : 0;
@@ -1119,6 +1135,98 @@ export async function buildPasirRisCourse(
       r = Math.max(r, top - g * Math.abs(sa - na));
     }
     return r;
+  };
+  // A road built as one strip through a joint (the map's marks) is one
+  // strip in height too. Straight ramps meet at a joint in a corner: a
+  // crest where the road climbs to the joint and falls away beyond it, a
+  // dip between two raised joints, a sharp start where a ramp meets a level
+  // bridge deck. A piece of a strip takes a smooth shape instead:
+  // 1. short (its two ramps would meet above the ground): one curve from
+  //    one end's height to the other's, where no other road runs into its
+  //    far end beside it (that road expects the ramp);
+  // 2. long: from each of the strip's joints it comes down to the ground
+  //    in an eased curve, half as long again as the ramp;
+  // 0. otherwise its ramps, eased over EASE m from each of the strip's joints.
+  // At the strip's joint the two pieces share one slope: half way between
+  // the slopes each would take (a bridge deck's own, since a deck does not
+  // bend). The joint keeps its height; an end that is not the strip's
+  // stays as it was (level into a junction, or the ramp).
+  const EASE = 30;
+  const stripShape = (i: number): 0 | 1 | 2 => {
+    let v = stripShapes.get(i);
+    if (v !== undefined) return v;
+    v = 0;
+    const e = edges[i];
+    const run = runLen(i);
+    const ra = jRel[e.a] ?? 0, rb = jRel[e.b] ?? 0;
+    const thruA = thruJoint(i, e.a) !== undefined, thruB = thruJoint(i, e.b) !== undefined;
+    if (!elevated[i] && run > 0 && e.a !== e.b && (ra > 0.02 || rb > 0.02) && (thruA || thruB)) {
+      if (run >= (1.5 * (ra + rb)) / RAMP_GRADE) v = 2;
+      else if (!mates[i].some((m) => !(m.ia ? thruA : thruB)) && (1.5 * Math.abs(rb - ra)) / run <= MAX_GRADE) v = 1;
+    }
+    stripShapes.set(i, v);
+    return v;
+  };
+  /** The slope piece q would take climbing away from joint j, left to itself. */
+  const awayOwn = (q: number, j: number) => {
+    const sh = stripShape(q);
+    const rj = jRel[j] ?? 0;
+    if (sh === 1) return ((jRel[edges[q].a === j ? edges[q].b : edges[q].a] ?? 0) - rj) / runLen(q);
+    if (sh === 2) return rj > 0.02 ? -RAMP_GRADE / 1.5 : 0;
+    if (ELEN[q] <= 2) return 0;
+    return (edges[q].a === j ? relRamps(q, 2) - relRamps(q, 0) : relRamps(q, ELEN[q] - 2) - relRamps(q, ELEN[q])) / 2;
+  };
+  /** The slope piece i takes climbing away from the strip's joint j, shared with the next piece (undefined: not a strip's joint, or nothing raised). */
+  const awayAt = (i: number, j: number) => {
+    const key = i * 2 + (edges[i].a === j ? 0 : 1);
+    if (thruSlopeCache.has(key)) return thruSlopeCache.get(key);
+    let v: number | undefined;
+    const o = thruJoint(i, j);
+    if (o !== undefined && !elevated[i] && ((jRel[j] ?? 0) > 0.02 || elevated[o])) {
+      // (Carrying straight on, the road climbs away on one side as it falls on the other.)
+      const aI = awayOwn(i, j), aO = awayOwn(o, j);
+      v = Math.max(-MAX_GRADE, Math.min(MAX_GRADE, elevated[o] ? -aO : (aI - aO) / 2));
+    }
+    thruSlopeCache.set(key, v);
+    return v;
+  };
+  /** Road height above the ground at distance s along edge i, on its own. */
+  const relOwn = (i: number, s: number) => {
+    if (elevated[i]) return relRamps(i, s);
+    const e = edges[i];
+    const sh = stripShape(i);
+    if (sh === 1) {
+      const run = runLen(i);
+      const t = runA(i, s) / run, t2 = t * t, t3 = t2 * t;
+      const ma = awayAt(i, e.a) ?? 0, mb = awayAt(i, e.b) ?? 0;
+      return relRamps(i, s, Math.max(0, (2 * t3 - 3 * t2 + 1) * jRel[e.a] + (t3 - 2 * t2 + t) * run * ma + (-2 * t3 + 3 * t2) * jRel[e.b] - (t3 - t2) * run * mb));
+    }
+    if (sh === 2) {
+      const down = (j: number, d: number) => {
+        const rj = jRel[j] ?? 0;
+        if (rj <= 0.02) return 0;
+        const m = awayAt(i, j);
+        if (m === undefined) return Math.max(0, rj - RAMP_GRADE * d);
+        const D = (1.5 * rj) / RAMP_GRADE;
+        if (d >= D) return 0;
+        const t = d / D, t2 = t * t, t3 = t2 * t;
+        return Math.max(0, (2 * t3 - 3 * t2 + 1) * rj + (t3 - 2 * t2 + t) * D * m);
+      };
+      return relRamps(i, s, Math.max(down(e.a, runA(i, s)), down(e.b, runB(i, s))));
+    }
+    let r = relRamps(i, s);
+    const D = Math.min(EASE, ELEN[i]);
+    for (const [j, d] of [[e.a, s], [e.b, ELEN[i] - s]] as const) {
+      if (d >= D || (e.a === e.b && j === e.b)) continue;
+      const m = awayAt(i, j);
+      if (m === undefined) continue;
+      // (The eased ramp is at its steepest a third again of the change beyond the ramp's own slope.)
+      const own = awayOwn(i, j);
+      const spare = Math.max(0, MAX_GRADE - Math.abs(own)) * 3;
+      const t = d / D;
+      r += Math.max(-spare, Math.min(spare, m - own)) * D * t * (1 - t) * (1 - t);
+    }
+    return Math.max(0, r);
   };
   // The ground a raised road's height is measured from: the hills under it,
   // except that across a shaped junction (and fading out over the next
@@ -1526,9 +1634,66 @@ export async function buildPasirRisCourse(
     }
     return r;
   };
+  /** A road's drawn surface at a point of its line (piece seg, u along it), under (x, z). */
+  const topAt = (i: number, seg: number, u: number, x: number, z: number) => {
+    if (!hasProfile[i]) return dropAt(x, z);
+    const Y = deckY(i);
+    let y = lerp(Y[seg], Y[Math.min(Y.length - 1, seg + 1)], u);
+    if (!elevated[i]) {
+      const sAt = ECUM[i][seg] + u * (ECUM[i][Math.min(ECUM[i].length - 1, seg + 1)] - ECUM[i][seg]);
+      const t = tiltAt(i, sAt);
+      if (t > 0) y = lerp(y, dropAt(x, z) + relAlong(i, sAt), t);
+    }
+    return y;
+  };
+  // A tee's paving lies between the road running through and the side
+  // road's mouth: it meets each at that road's own height (the through
+  // road's along its edge, the side road's across its mouth and along its
+  // edges), and between the two it blends, the nearer counting most. (Roads
+  // on the ground follow the ground, and so does the paving between them.)
+  const teeRoads = new Map<number, { thru: number[]; side: number } | null>();
+  const teeTop = (id: number, x: number, z: number): number | undefined => {
+    let t = teeRoads.get(id);
+    if (t === undefined) {
+      // (The junction's own outline, or a further part of its paving.)
+      const nodes = id < JX.shapes.length ? JX.shapes[id].nodes : [];
+      const j = id < JX.shapes.length ? (nodes.length === 1 ? nodes[0] : -1) : JX.fills[id - JX.shapes.length].tee ?? -1;
+      const side = j >= 0 && JX.tee[j] ? jE[j].filter((i) => !thruEnd(i, j)) : [];
+      t = side.length === 1 ? { thru: jE[j].filter((i) => thruEnd(i, j)), side: side[0] } : null;
+      if (t && ![...t.thru, t.side].some((i) => hasProfile[i])) t = null;
+      teeRoads.set(id, t);
+    }
+    if (!t) return undefined;
+    const { thru, side } = t;
+    const hT = roads.nearest(x, z, 60, (i) => thru.includes(i));
+    const hS = roads.nearest(x, z, 60, (i) => i === side);
+    if (!hT || !hS) return undefined;
+    const outside = (h: NonNullable<typeof hT>) => Math.max(0, h.d - lerp(halfAtE(h.line, h.seg), halfAtE(h.line, h.seg + 1), h.u));
+    const dT = outside(hT), dS = outside(hS);
+    const yT = topAt(hT.line, hT.seg, hT.u, x, z), yS = topAt(hS.line, hS.seg, hS.u, x, z);
+    const wT = 1 / (dT + 0.05) ** 2, wS = 1 / (dS + 0.05) ** 2;
+    return (wT * yT + wS * yS) / (wT + wS);
+  };
+  /** For each road built as one strip through a junction: the paving (the junction's outline and any further parts) that opens off its edge there. */
+  let teePavingMap: Map<number, number[]> | undefined;
+  const teePaving = () => {
+    if (!teePavingMap) {
+      teePavingMap = new Map();
+      for (let id = 0; id < JPOLY.length; id++) {
+        const j = id < JX.shapes.length ? (JX.shapes[id].nodes.length === 1 ? JX.shapes[id].nodes[0] : -1) : JX.fills[id - JX.shapes.length].tee ?? -1;
+        if (j < 0 || !JX.tee[j]) continue;
+        for (const i of jE[j]) if (thruEnd(i, j)) (teePavingMap.get(i) ?? teePavingMap.set(i, []).get(i)!).push(id);
+      }
+    }
+    return teePavingMap;
+  };
   /** The top of junction id's paving at (x, z) (before its small lift). */
   const jTop = (id: number, x: number, z: number) => {
     const sh = JPOLY[id];
+    const tee = teeTop(id, x, z);
+    if (tee !== undefined) return tee;
+    // (A further part of a junction's paving lies on the ground as the junction's own outline does.)
+    if (sh.fill && JX.fills[id - JX.shapes.length].tee !== undefined) return Math.max(rawHeight(x, z), WL + 0.15);
     if (sh.fill) return fillTop(id, x, z);
     const rels = relsOf(id);
     const g = Math.max(rawHeight(x, z), WL + 0.15);
@@ -1747,7 +1912,9 @@ export async function buildPasirRisCourse(
         const [d, px, pz] = ringDist(sh.ring, x, z);
         if (d > SEAL + 2) continue;
         // (Deeper under a big island: its wide triangles cut corners off the ground.)
-        const cap = (sh.fill ? fillTop(id, px, pz) : Math.max(rawHeight(px, pz), WL + 0.15)) - (d === 0 && sh.fill ? 0.5 : 0.12) + Math.max(0, d - SEAL);
+        // (A further part of a junction's paving is treated as the junction's own outline is.)
+        const island = sh.fill && JX.fills[id - JX.shapes.length].tee === undefined;
+        const cap = (island ? fillTop(id, px, pz) : Math.max(rawHeight(px, pz), WL + 0.15)) - (d === 0 && island ? 0.5 : 0.12) + Math.max(0, d - SEAL);
         if (cap < h) h = cap;
       }
     probe.s = ps;
@@ -2779,7 +2946,8 @@ export async function buildPasirRisCourse(
       if (sh.nodes.length === 1 && JX.tee[sh.nodes[0]]) {
         const j = sh.nodes[0];
         const top = Math.max(...jE[j].filter((i) => thruEnd(i, j)).map((i) => rankOf(edges[i].cls)));
-        if (M.length === 1 && !crossEnd.has(`${M[0].line}:${M[0].end}`) && rankOf(edges[M[0].line].cls) <= top) giveWay(id, M[0]);
+        // (Not a slip road: it leaves or joins in its own lane.)
+        if (M.length === 1 && !crossEnd.has(`${M[0].line}:${M[0].end}`) && rankOf(edges[M[0].line].cls) <= top && !/^(motorway|trunk)|_link$/.test(edges[M[0].line].cls)) giveWay(id, M[0]);
         return;
       }
       if (M.length < 3) return;
@@ -2921,7 +3089,7 @@ export async function buildPasirRisCourse(
   const markStops = (line: number): [number, number] => {
     const e = edges[line];
     // (A road running through a tee carries its markings straight through.)
-    const stopAt = (j: number, trim: number) => (trim > 0 ? trim + 1 : jDegree[j] === 2 ? 0.3 : JX.tee[j] && thruMate(line, j) !== undefined ? -1 : jDegree[j] > 2 ? jRadius[j] + 2 : 2);
+    const stopAt = (j: number, trim: number) => (trim > 0 ? trim + 1 : thruMate(line, j) !== undefined && (JX.tee[j] || jDegree[j] === 2) ? -1 : jDegree[j] === 2 ? 0.3 : jDegree[j] > 2 ? jRadius[j] + 2 : 2);
     return [
       crossEnd.has(`${line}:0`) ? JX.trimA[line] + STOP_AT + 0.5 : stopAt(e.a, JX.trimA[line]),
       crossEnd.has(`${line}:1`) ? JX.trimB[line] + STOP_AT + 0.5 : stopAt(e.b, JX.trimB[line]),
@@ -3060,7 +3228,18 @@ export async function buildPasirRisCourse(
         const mp = thA || thB ? P : pts;
         const mo = thA || thB ? { lo: cut.lo, hi: cut.hi } : {};
         const clearM = thA || thB ? clearOn(P) : clear;
-        const solid = (off: (kk: number) => number) => (kk: number) => ends(kk) && clearM(kk, off(kk));
+        // (No edge line across a slip road's opening: along a junction's
+        // paving that this road runs through as one strip.)
+        const openings = teePaving().get(line);
+        const openAt = (kk: number, off: number) => {
+          if (!openings) return false;
+          const a = mp[kk], b = mp[kk + 1];
+          const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+          const o = off + Math.sign(off) * 0.8;
+          const x = (a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * o, z = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * o;
+          return openings.some((id) => inRingXZ(JPOLY[id].ring, x, z));
+        };
+        const solid = (off: (kk: number) => number) => (kk: number) => ends(kk) && clearM(kk, off(kk)) && !openAt(kk, off(kk));
         const dashed = (off: (kk: number) => number) => (kk: number) => kk % 3 === 0 && ends(kk) && clearM(kk, off(kk));
         if (rank >= 2) {
           const l = (kk: number) => halfAt(kk) - 0.35;
@@ -4742,7 +4921,7 @@ export async function buildPasirRisCourse(
   const mapRoads: { e: OsmEdge; pts: XZ[]; width: number }[] = [];
   {
     const used = new Uint8Array(edges.length);
-    const next = (i: number, j: number) => (JX.tee[j] ? thruMate(i, j) : undefined);
+    const next = (i: number, j: number) => (JX.tee[j] || jDegree[j] === 2 ? thruMate(i, j) : undefined);
     edges.forEach((e, i) => {
       if (used[i]) return;
       // Back to where the strip starts, then along it.
@@ -4827,7 +5006,7 @@ export async function buildPasirRisCourse(
       JX,
       halfAtE,
       cutOf,
-      needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, ELEN, tiltAt, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
+      needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, relOwn, mates, jE, ELEN, tiltAt, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
       fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads };
