@@ -12,6 +12,14 @@ const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
   // a ratchet, lowered as they are fixed, until it reaches 0.
+  // The performance budget (perf.js: the figures and where they come from).
+  // First, on the page as a player has it: the other checks leave their
+  // own indexes of the whole map in memory, and the browser's clean-up of
+  // those lands inside a slice (31 ms alone, 61 ms after one finished-road
+  // check, 102 ms after all of them, in a different kind of slice each time).
+  ['The game starts within 20 s', 'perf.js', '__checkStart', 0],
+  ['No frame draws more than the budget, anywhere on the map', 'perf.js', '__checkDrawn', 0],
+  ['No slice of map building holds a frame up for more than 100 ms', 'perf.js', '__checkSlices', 0],
   ['Ground never rises above a road', 'ground.js', '__checkGround', 0],
   ['No pier stands on a road', 'piers.js', '__checkPiers', 0],
   ['At least 4.8 m headroom under every footbridge', 'footbridges.js', '__checkFootHeadroom', 0],
@@ -60,14 +68,10 @@ const CHECKS = [
   // every road, whatever rule drew it. (Known: counted on the map as it
   // stood when these checks were written.)
   ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, 152],
-  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 330],
+  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 202],
   ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 201],
-  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 42],
+  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 41],
   ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, 54],
-  // The performance budget (perf.js: the figures and where they come from).
-  ['The game starts within 20 s', 'perf.js', '__checkStart', 0],
-  ['No frame draws more than the budget, anywhere on the map', 'perf.js', '__checkDrawn', 0],
-  ['No slice of map building holds a frame up for more than 100 ms', 'perf.js', '__checkSlices', 0],
 ];
 
 (async () => {

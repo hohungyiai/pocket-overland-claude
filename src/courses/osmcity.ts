@@ -2289,6 +2289,19 @@ export async function buildPasirRisCourse(
   // verge between them begins.
   const GORE = 1.5;
   const gores: { ring: XZ[]; rows: { a: XZ; b: XZ; ya: number; yb: number }[] }[] = [];
+  const GCELL = 64;
+  const goreGrid = new Map<number, number[]>();
+  const gridGore = (id: number) => {
+    const g = gores[id];
+    const xs = g.ring.map((p) => p[0]), zs = g.ring.map((p) => p[1]);
+    for (let a = Math.floor(Math.min(...xs) / GCELL); a <= Math.floor(Math.max(...xs) / GCELL); a++)
+      for (let b = Math.floor(Math.min(...zs) / GCELL); b <= Math.floor(Math.max(...zs) / GCELL); b++) {
+        const key = a * 100003 + b;
+        (goreGrid.get(key) ?? goreGrid.set(key, []).get(key)!).push(id);
+      }
+  };
+  /** In a gore (the paved wedge where two roads split or join, or the paved strip between two running side by side)? */
+  const inGore = (x: number, z: number) => !!goreGrid.get(Math.floor(x / GCELL) * 100003 + Math.floor(z / GCELL))?.some((id) => inRingXZ(gores[id].ring, x, z));
   {
     /** Road i's drawn height at distance s along it, at (x, z). */
     const roadY = (i: number, k: number, u: number, s: number, x: number, z: number) => {
@@ -2375,30 +2388,196 @@ export async function buildPasirRisCourse(
           finish();
         }
     });
-  }
-  const GCELL = 64;
-  const goreGrid = new Map<number, number[]>();
-  gores.forEach((g, id) => {
-    const xs = g.ring.map((p) => p[0]), zs = g.ring.map((p) => p[1]);
-    for (let a = Math.floor(Math.min(...xs) / GCELL); a <= Math.floor(Math.max(...xs) / GCELL); a++)
-      for (let b = Math.floor(Math.min(...zs) / GCELL); b <= Math.floor(Math.max(...zs) / GCELL); b++) {
-        const key = a * 100003 + b;
-        (goreGrid.get(key) ?? goreGrid.set(key, []).get(key)!).push(id);
+    // Alongside. Two roads at one level that run side by side with less
+    // than GORE m of ground between them are one surface there too, wherever
+    // that is: not only out from a joint they share (a second carriageway
+    // beside the first past the next junction, a median narrowing to
+    // nothing before a junction). The strip between their edges is paved
+    // and their kerbs stop, as in a gore; where it widens to GORE m the
+    // verge begins, square-ended: never a needle of grass with a kerb on
+    // each side of it. (Where one stands higher than the other they are not
+    // one surface: a ramp beside the road it left. And not where a gore out
+    // from a joint has paved the ground already.)
+    gores.forEach((_, id) => gridGore(id));
+    const COS_NEAR = Math.cos((50 * Math.PI) / 180);
+    const widest = EHALF.reduce((m, h) => Math.max(m, h), 0) + 1;
+    const far2 = (GORE + widest) * (GORE + widest);
+    /** Walks road i: at(s) gives the point and direction there (as out() does, but from where it last stood, not searching from the start each time). */
+    const walker = (i: number) => {
+      const P = EP[i];
+      const cum = ECUM[i];
+      let k = 0;
+      return (s: number) => {
+        while (k > 0 && cum[k] > s) k--;
+        while (k < P.length - 2 && cum[k + 1] <= s) k++;
+        const sl = cum[k + 1] - cum[k] || 1;
+        const u = (s - cum[k]) / sl;
+        return { x: lerp(P[k][0], P[k + 1][0], u), z: lerp(P[k][1], P[k + 1][1], u), tx: (P[k + 1][0] - P[k][0]) / sl, tz: (P[k + 1][1] - P[k][1]) / sl, k, u, s };
+      };
+    };
+    edges.forEach((eA, A) => {
+      if (JX.internal[A] || eA.a === eA.b) return;
+      // (Between its junctions, whose own paving has its own heights.)
+      const s0 = JX.trimA[A] || 0;
+      const s1 = ELEN[A] - (JX.trimB[A] || 0);
+      if (s1 - s0 < 2) return;
+      // The pieces of other roads that might lie beside this one, gathered
+      // every 20 m along it (each pair of roads once, from the lower-numbered
+      // one): most roads have none, and are done here.
+      const STEP = 20;
+      const reach = GORE + widest + EP[A].reduce((m, _, k) => Math.max(m, halfAtE(A, k)), 0) + STEP / 2 + 0.5;
+      const near: number[][] = [];
+      let any = false;
+      const coarse = walker(A);
+      for (let c = 0, C = Math.ceil((s1 - s0) / STEP); c <= C; c++) {
+        const pc = coarse(Math.min(s1, s0 + c * STEP));
+        const l: number[] = [];
+        roads.each(pc.x, pc.z, reach, (B, seg) => {
+          if (B <= A || JX.internal[B] || elevated[B] !== elevated[A] || edges[B].a === edges[B].b) return;
+          const Q = EP[B];
+          const sl = Math.hypot(Q[seg + 1][0] - Q[seg][0], Q[seg + 1][1] - Q[seg][1]) || 1;
+          if (Math.abs(((Q[seg + 1][0] - Q[seg][0]) * pc.tx + (Q[seg + 1][1] - Q[seg][1]) * pc.tz) / sl) < COS_NEAR) return;
+          l.push(B, seg);
+        });
+        near.push(l);
+        if (l.length) any = true;
       }
-  });
-  /** In a gore (the paved wedge where two roads split or join)? */
-  const inGore = (x: number, z: number) => !!goreGrid.get(Math.floor(x / GCELL) * 100003 + Math.floor(z / GCELL))?.some((id) => inRingXZ(gores[id].ring, x, z));
+      if (!any) return;
+      // Every 2 m, and at each corner of the road's own line (none closer than half a metre).
+      const stations: number[] = [];
+      {
+        const cum = ECUM[A];
+        let k = 1;
+        let last = -Infinity;
+        for (let n = 0, N = Math.ceil((s1 - s0) / 2); n <= N; n++) {
+          const sn = Math.min(s1, s0 + n * 2);
+          for (; k < cum.length && cum[k] < sn; k++) if (cum[k] > s0 && cum[k] - last >= 0.5 && sn - cum[k] >= 0.5) stations.push((last = cum[k]));
+          stations.push((last = sn));
+        }
+      }
+      for (const sgn of [-1, 1]) {
+        let rows: { a: XZ; b: XZ; ya: number; yb: number }[] = [];
+        // (A row already paved by another gore: the piece after it starts from it, so no gap opens between the two.)
+        let paved: { a: XZ; b: XZ; ya: number; yb: number } | null = null;
+        // (The road the piece in hand runs beside: one piece, one neighbour,
+        // or that neighbour's next piece. A strip that hopped between two
+        // roads would be drawn as teeth.)
+        let beside = -1;
+        const finish = () => {
+          // (Nothing shorter than 3 m: a scrap of paving at a junction's mouth only roughens the edge there.)
+          if (rows.length >= 2 && Math.hypot(rows[0].a[0] - rows[rows.length - 1].a[0], rows[0].a[1] - rows[rows.length - 1].a[1]) >= 3 && rows.some((r) => Math.hypot(r.a[0] - r.b[0], r.a[1] - r.b[1]) > 0.2)) {
+            gores.push({ ring: [...rows.map((r) => r.a), ...rows.map((r) => r.b).reverse()], rows });
+            gridGore(gores.length - 1);
+          }
+          rows = [];
+        };
+        const fine = walker(A);
+        type Beside = { B: number; seg: number; u: number; gap: number; hb: number; x: number; z: number; s: number };
+        /** This side's edge at sA along the road, and the nearest road beside it there (if any). */
+        const probe = (sA: number) => {
+          const l = near[Math.min(near.length - 1, Math.round((sA - s0) / STEP))];
+          if (!l.length) return null;
+          const pa = fine(sA);
+          const nx = -pa.tz * sgn, nz = pa.tx * sgn;
+          // (The road's edge exactly as it is drawn, so the strip meets it with no hairline of ground between.)
+          const ha = lerp(halfAtE(A, pa.k), halfAtE(A, pa.k + 1), pa.u);
+          const ea: XZ = [pa.x + nx * ha, pa.z + nz * ha];
+          // The nearest road beside this edge (each pair once, from the lower-numbered road).
+          let best: Beside | null = null;
+          for (let q = 0; q < l.length; q += 2) {
+            const B = l[q], seg = l[q + 1];
+            const Q = EP[B];
+            const vx = Q[seg + 1][0] - Q[seg][0], vz = Q[seg + 1][1] - Q[seg][1];
+            const sl2 = vx * vx + vz * vz || 1;
+            const u = Math.max(0, Math.min(1, ((ea[0] - Q[seg][0]) * vx + (ea[1] - Q[seg][1]) * vz) / sl2));
+            const x = Q[seg][0] + vx * u, z = Q[seg][1] + vz * u;
+            const dB2 = (ea[0] - x) * (ea[0] - x) + (ea[1] - z) * (ea[1] - z);
+            // (Most are nowhere near: no need to ask how wide they are.)
+            if (dB2 > far2) continue;
+            const hb = lerp(halfAtE(B, seg), halfAtE(B, seg + 1), u);
+            const gap = Math.sqrt(dB2) - hb;
+            if (gap >= GORE || (best && gap >= best.gap)) continue;
+            // (On this side of A, running with it or against it, clear of B's own junctions.)
+            if ((x - pa.x) * nx + (z - pa.z) * nz <= 0) continue;
+            const sl = Math.sqrt(sl2);
+            if (Math.abs((vx * pa.tx + vz * pa.tz) / sl) < COS) continue;
+            const s = ECUM[B][seg] + u * sl;
+            if (s < (JX.trimA[B] || 0) || s > ELEN[B] - (JX.trimB[B] || 0)) continue;
+            best = { B, seg, u, gap, hb, x, z, s };
+          }
+          const m = best as Beside | null;
+          return m ? { pa, ea, m } : null;
+        };
+        /** The next row of the strip (or its end, where there is no road beside). */
+        const take = (at: ReturnType<typeof probe>) => {
+          if (!at) {
+            finish();
+            paved = null;
+            return;
+          }
+          const { pa, ea, m } = at;
+          const ya = roadY(A, pa.k, pa.u, pa.s, ea[0], ea[1]);
+          // (B's edge facing A; where A's edge is already on B, the strip has no width.)
+          const dB = Math.hypot(ea[0] - m.x, ea[1] - m.z) || 1;
+          const eb: XZ = m.gap <= 0 ? ea : [m.x + ((ea[0] - m.x) / dB) * m.hb, m.z + ((ea[1] - m.z) / dB) * m.hb];
+          const yb = m.gap <= 0 ? ya : roadY(m.B, m.seg, m.u, m.s, eb[0], eb[1]);
+          if (Math.abs(ya - yb) > 0.25) {
+            finish();
+            paved = null;
+            return;
+          }
+          const prev = rows[rows.length - 1];
+          if (m.B !== beside) {
+            const next = beside >= 0 && [edges[beside].a, edges[beside].b].some((j) => j === edges[m.B].a || j === edges[m.B].b);
+            if (!next || !prev || Math.hypot(prev.b[0] - eb[0], prev.b[1] - eb[1]) > Math.hypot(prev.a[0] - ea[0], prev.a[1] - ea[1]) + 1) {
+              finish();
+              paved = null;
+            }
+            beside = m.B;
+          }
+          const row = { a: ea, b: eb, ya, yb };
+          if (m.gap > 0 && inGore((ea[0] + eb[0]) / 2, (ea[1] + eb[1]) / 2)) {
+            if (rows.length) rows.push(row);
+            finish();
+            paved = row;
+            return;
+          }
+          if (!rows.length && paved) rows.push(paved);
+          paved = null;
+          rows.push(row);
+          // (In pieces short enough to belong to the tile they are drawn with.)
+          if (rows.length >= 48) {
+            finish();
+            rows.push(row);
+          }
+        };
+        // (The 2 m steps find where a road lies beside this one; there, the rows are a metre apart.)
+        let prevS = NaN;
+        let prevHit = false;
+        for (const sA of stations) {
+          const at = probe(sA);
+          if ((at || prevHit) && sA - prevS > 1.2) take(probe((prevS + sA) / 2));
+          take(at);
+          prevS = sA;
+          prevHit = !!at;
+        }
+        finish();
+      }
+    });
+  }
   // Does road `line` have a parapet beside piece kk of its middle line, off
   // metres out? Not where another road at its level, a junction's paving
   // or the paved wedge of a split lies there: all of that is road, and a
   // parapet on it would stand across the lanes. (One answer for the parapet
   // that is drawn and the one the car hits.)
-  const parapetClear = (line: number, kk: number, off: number) => {
+  const besideMid = (line: number, kk: number, off: number): XZ => {
     const a = EP[line][kk];
     const b = EP[line][kk + 1];
     const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-    const x = (a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * off;
-    const z = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * off;
+    return [(a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * off, (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * off];
+  };
+  const parapetClear = (line: number, kk: number, off: number) => {
+    const [x, z] = besideMid(line, kk, off);
     const y = hasProfile[line] ? (deckY(line)[kk] + deckY(line)[kk + 1]) / 2 : NaN;
     return !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y) && !inGore(x, z);
   };
@@ -2714,7 +2893,7 @@ export async function buildPasirRisCourse(
               dr[kk - lo] = dy[kk] + 0.09 - heightAt(P[kk][0] + ((b[1] - a[1]) / tl) * o, P[kk][1] - ((b[0] - a[0]) / tl) * o);
             }
             const y = (kk: number) => dy[kk] + 0.09;
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, 0.05, (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > 0.15);
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, 0.05, (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > 0.15 && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)));
             band(deck, P, cum, lo, hi, off, y, 0, 0.95, (kk) => Math.min(dr[kk - lo], dr[kk + 1 - lo]) > 1.2 && parapetClear(line, kk, off(kk)));
           }
         }
