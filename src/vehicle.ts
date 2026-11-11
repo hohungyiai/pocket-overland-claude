@@ -28,10 +28,14 @@ const TUNING = {
   reverseForce: 2600,
   brakeMax: 55,
   holdBrake: 25,
+  holdGrade: 4.5, // m/s² of gravity along the car the hill-hold cancels (a slope of 27°)
+  holdStop: 1.5, // m/s² at which it brings the last of the car's speed to nothing
   steerCrawl: 0.62,
   steerFast: 0.14,
   steerRate: 2.6, // rad/s
 };
+
+const GRAVITY = 9.81; // the world's (main.ts)
 
 // Front-left, front-right, rear-left, rear-right.
 const WHEELS = [
@@ -266,6 +270,7 @@ export class Vehicle {
     const force = low ? TUNING.engineForceLow : TUNING.engineForceHigh;
     let drive = 0;
     let brake = 0;
+    let hold = false;
     if (input.throttle > 0.02) {
       if (v < -0.6) brake = TUNING.brakeMax * input.throttle; // moving backwards: brake first
       else drive = input.throttle * force * clamp(1 - v / top, 0, 1);
@@ -274,6 +279,7 @@ export class Vehicle {
       else drive = input.throttle * TUNING.reverseForce * (low ? 1.8 : 1) * clamp(1 + v / 6, 0, 1);
     } else if (absV < 1.2) {
       brake = TUNING.holdBrake; // hill-hold when off the pedals
+      hold = true;
     }
 
     // Per-wheel surface and contact, plus a simple open/locked differential:
@@ -310,6 +316,24 @@ export class Vehicle {
     }
 
     c.updateVehicle(dt);
+
+    // Hill-hold. The wheel brakes only slow the car in proportion to its
+    // speed, so off the pedals on a hill it crept downhill at half a metre
+    // a second for as long as it was left. Held properly, along the car's
+    // length: what gravity is about to add this step is taken off (up to
+    // holdGrade, more than any slope it can climb), and the speed it still
+    // has is brought down at holdStop, the gentle roll to a stop it had.
+    // (With three wheels down at least: in the air nothing holds it.)
+    if (hold && onGround >= 3) {
+      const q = this.body.rotation();
+      const f = this.tmpV.set(1, 0, 0).applyQuaternion(this.tmpQ.set(q.x, q.y, q.z, q.w));
+      const lv = this.body.linvel();
+      const pull = clamp(-GRAVITY * f.y, -TUNING.holdGrade, TUNING.holdGrade) * dt;
+      const along = lv.x * f.x + lv.y * f.y + lv.z * f.z;
+      const dv = -pull - clamp(along, -TUNING.holdStop * dt, TUNING.holdStop * dt);
+      const m = this.body.mass();
+      this.body.applyImpulse({ x: f.x * dv * m, y: f.y * dv * m, z: f.z * dv * m }, true);
+    }
 
     // Self-recovery after a roll.
     const q = this.body.rotation();
