@@ -63,4 +63,35 @@
     bad.sort((a, b) => b.over - a.over);
     return { samples: n, bad: bad.length, worst: bad.slice(0, 12) };
   };
+
+  /**
+   * A junction's yellow box lies on its paving: every piece of its outline
+   * and its X on the asphalt (not on a kerb, a verge or another road's
+   * lines), a hair above it.
+   */
+  window.__checkYellowBoxes = (all = false) => {
+    const D = d();
+    const F = window.__finishIndex();
+    const pts = [];
+    let n = 0;
+    for (const k of D.farTiles()) {
+      const r = D.tileAccs(k).box;
+      if (!r) continue;
+      const { pos, idx } = r;
+      for (let q = 0; q < idx.length; q += 3) {
+        const a = idx[q] * 3, b = idx[q + 1] * 3, c = idx[q + 2] * 3;
+        const x = (pos[a] + pos[b] + pos[c]) / 3;
+        const y = (pos[a + 1] + pos[b + 1] + pos[c + 1]) / 3;
+        const z = (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3;
+        n++;
+        const h = F.asphaltAt(x, z, y, 0.6);
+        // (On the asphalt, 0.02 to 0.2 m over it; no kerb or other line there.)
+        const off = h !== h ? 1 : y - h < 0.02 ? 0.02 - (y - h) : y - h > 0.2 ? y - h - 0.2 : 0;
+        const other = F.lineAt(x, z, y, 0.3);
+        if (off > 0 || other) pts.push({ x: +x.toFixed(1), z: +z.toFixed(1), y: +y.toFixed(1), value: +Math.max(off, other ? 0.01 : 0).toFixed(2), on: other ?? (h !== h ? 'no asphalt' : 'height') });
+      }
+    }
+    const bad = F.places(pts, 3);
+    return { samples: n, bad: bad.length, boxes: D.yBoxes.length, worst: all ? bad : bad.slice(0, 20), unit: 'm' };
+  };
 })();

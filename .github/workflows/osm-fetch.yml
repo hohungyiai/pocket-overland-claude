@@ -15,19 +15,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # (On a push, only the query files that push changed: a new query for
+      # one more kind of thing must not fetch, and so change, the data the
+      # others already brought in. By hand, every query.)
+      # A query <name>.overpassql fills data/osm/<name>/raw.json.gz; a query
+      # <name>.<part>.overpassql fills data/osm/<name>/<part>.json.gz beside it.
       - name: Run each query against Overpass
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           set -e
-          for q in tools/osm/*.overpassql; do
-            name=$(basename "$q" .overpassql)
+          if [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            queries=$(git diff --name-only "$BEFORE" HEAD -- 'tools/osm/*.overpassql')
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            # (A new branch: what it changed since it left main.)
+            queries=$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD -- 'tools/osm/*.overpassql')
+          else
+            queries=$(ls tools/osm/*.overpassql)
+          fi
+          for q in $queries; do
+            [ -f "$q" ] || continue
+            base=$(basename "$q" .overpassql)
+            name=${base%%.*}
+            part=raw
+            if [ "$base" != "$name" ]; then part=${base#*.}; fi
             mkdir -p "data/osm/$name"
             for url in https://overpass-api.de/api/interpreter https://overpass.kumi.systems/api/interpreter; do
-              if curl -sS --fail -m 900 -H "User-Agent: pocket-overland-osm-import/1.0 (+https://github.com/hohungyiai/pocket-overland-claude)" --data-urlencode "data@$q" "$url" -o "/tmp/$name.json"; then break; fi
+              if curl -sS --fail -m 900 -H "User-Agent: pocket-overland-osm-import/1.0 (+https://github.com/hohungyiai/pocket-overland-claude)" --data-urlencode "data@$q" "$url" -o "/tmp/$base.json"; then break; fi
               echo "retrying with the next server"; sleep 20
             done
-            python3 -c "import json,sys; d=json.load(open('/tmp/$name.json')); print(len(d['elements']), 'elements')"
-            gzip -9 -c "/tmp/$name.json" > "data/osm/$name/raw.json.gz"
-            { echo "# $name (OpenStreetMap extract)"; echo; echo "Fetched $(date -u +%Y-%m-%dT%H:%MZ) from Overpass with tools/osm/$name.overpassql."; echo; echo "Map data (c) OpenStreetMap contributors, ODbL 1.0. https://www.openstreetmap.org/copyright"; } > "data/osm/$name/README.md"
+            python3 -c "import json,sys; d=json.load(open('/tmp/$base.json')); print(len(d['elements']), 'elements')"
+            gzip -9 -c "/tmp/$base.json" > "data/osm/$name/$part.json.gz"
+            if [ "$part" = raw ]; then
+              { echo "# $name (OpenStreetMap extract)"; echo; echo "Fetched $(date -u +%Y-%m-%dT%H:%MZ) from Overpass with tools/osm/$name.overpassql."; echo; echo "Map data (c) OpenStreetMap contributors, ODbL 1.0. https://www.openstreetmap.org/copyright"; } > "data/osm/$name/README.md"
+            else
+              echo "$part.json.gz fetched $(date -u +%Y-%m-%dT%H:%MZ) from Overpass with tools/osm/$base.overpassql." >> "data/osm/$name/README.md"
+            fi
           done
       - name: Commit the data
         run: |

@@ -37,6 +37,8 @@ interface OsmMap {
   rail: { kind: string; bridge: number; tunnel: number; pts: XZ[] }[];
   stations: { name: string; x: number; z: number }[];
   buildings: { k: string; l?: number; h?: number; name?: string; pts: XZ[] }[];
+  /** Where OSM has a junction's traffic lights (a pedestrian crossing's alone left out). */
+  signals?: XZ[];
 }
 
 const SEED = 1729;
@@ -1638,11 +1640,15 @@ export async function buildPasirRisCourse(
     sh.kerbs = kept;
   }
   // ---------- Crossings and traffic lights ----------
-  // At a major junction (three or more roads, two of them secondary or
-  // bigger, no expressway) each road gets a zebra crossing just outside its
-  // mouth, a stop line for the traffic coming in, and a traffic light on the
-  // left kerb (Singapore drives on the left). The lights take turns by
-  // direction: roads lined up with the first one, then the rest.
+  // At a junction with traffic lights each road gets a zebra crossing just
+  // outside its mouth, a stop line for the traffic coming in, and a traffic
+  // light on the left kerb (Singapore drives on the left); between the stop
+  // lines, a yellow box with an X across it. A junction has lights where
+  // the map has them (OSM's own, from Singapore's real junctions); where it
+  // has none nearby, at a crossroads of four streets or more, and at any
+  // junction of three or more roads where two of them are secondary or
+  // bigger (none an expressway). The lights take turns by direction: roads
+  // lined up with the first one, then the rest.
   const CROSS_FROM = 1; // metres out from the mouth
   const CROSS_W = 3;
   const STOP_AT = CROSS_FROM + CROSS_W + 1;
@@ -1652,6 +1658,27 @@ export async function buildPasirRisCourse(
   const crossEnd = new Map<string, Crossing>();
   type Arm = { line: number; end: 0 | 1; s: number; half: number; t: XZ };
   const armsOf: Arm[][] = JX.shapes.map((sh) => sh.mouths);
+  /** Each junction's middle (as armsOf), and the roads that run through it as one strip. */
+  const armsAt: { c: XZ; strips: number[]; rings: XZ[][] }[] = JX.shapes.map((sh) => ({ c: sh.centre, strips: [], rings: [sh.ring] }));
+  /** A yellow box: its corners in turn, and the two lines of its X. */
+  type YBox = { ring: XZ[]; x: [XZ, XZ][] };
+  const yBoxes: YBox[] = [];
+  /** Junctions with lights but no yellow box, and why (for the checks). */
+  const boxWhy: { x: number; z: number; why: string }[] = [];
+  // (The map's traffic lights, on a 32 m grid.)
+  const SIG = 32;
+  const sigGrid = new Map<number, XZ[]>();
+  for (const p of M.signals ?? []) {
+    const k = Math.floor(p[0] / SIG) * 100003 + Math.floor(p[1] / SIG);
+    (sigGrid.get(k) ?? sigGrid.set(k, []).get(k)!).push(p);
+  }
+  /** Is there a traffic light of the map's within r of (x, z)? */
+  const signalNear = (x: number, z: number, r: number) => {
+    for (let a = Math.floor((x - r) / SIG); a <= Math.floor((x + r) / SIG); a++)
+      for (let b = Math.floor((z - r) / SIG); b <= Math.floor((z + r) / SIG); b++)
+        for (const p of sigGrid.get(a * 100003 + b) ?? []) if (Math.hypot(p[0] - x, p[1] - z) < r) return true;
+    return false;
+  };
   // A road that runs through its junction as one strip has no mouth there:
   // its crossing lies across it just clear of the side roads' mouths, on
   // each side. (Strips either side of a divider, joined across an opening,
@@ -1690,14 +1717,34 @@ export async function buildPasirRisCourse(
           arms.push({ line: i, end: atA ? 0 : 1, s: far, half: halfAtE(i, k), t });
         }
       armsOf.push(arms);
+      let cx = 0, cz = 0;
+      for (const j of group) (cx += M.junctions[j][0]), (cz += M.junctions[j][1]);
+      armsAt.push({ c: [cx / group.length, cz / group.length], strips: [...new Set(group.flatMap((j) => jE[j].filter((i) => thruEnd(i, j))))], rings });
     });
   }
-  for (const mouths of armsOf) {
+  /** The point d along road line from its end (0 at a, 1 at b). */
+  const fromEnd = (line: number, end: 0 | 1, d: number): XZ => {
+    const P = EP[line];
+    const cum = ECUM[line];
+    const L = ELEN[line];
+    const sAt = end === 0 ? d : L - d;
+    let k = 0;
+    while (k < P.length - 2 && cum[k + 1] <= sAt) k++;
+    const u = (sAt - cum[k]) / (cum[k + 1] - cum[k] || 1);
+    return [lerp(P[k][0], P[k + 1][0], u), lerp(P[k][1], P[k + 1][1], u)];
+  };
+  const lit: { mouths: Arm[]; at: (typeof armsAt)[number]; cands: (typeof crossCand)[number][] }[] = [];
+  armsOf.forEach((mouths, g) => {
     const ms = mouths.filter((m) => !hasProfile[m.line] && rankOf(edges[m.line].cls) >= 1 && m.half >= 2.5 && ELEN[m.line] > m.s + STOP_AT + 4);
-    if (mouths.length < 3 || ms.length < 3) continue;
-    if (mouths.some((m) => edges[m.line].cls === 'motorway')) continue;
-    if (new Set(mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).map((m) => edges[m.line].name ?? m.line)).size < 2 && mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).length < 3) continue;
+    if (mouths.length < 3 || ms.length < 3) return;
+    if (mouths.some((m) => edges[m.line].cls === 'motorway')) return;
+    // (Lights of the map's own: on the junction, or on a road just before it.)
+    const at = armsAt[g];
+    const reach = Math.max(...mouths.map((m) => ((p) => Math.hypot(p[0] - at.c[0], p[1] - at.c[1]))(fromEnd(m.line, m.end, m.s)))) + 12;
+    const big = new Set(mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).map((m) => edges[m.line].name ?? m.line)).size >= 2 || mouths.filter((m) => rankOf(edges[m.line].cls) >= 3).length >= 3;
+    if (!signalNear(at.c[0], at.c[1], reach) && ms.length < 4 && !big) return;
     const axis = Math.atan2(ms[0].t[1], ms[0].t[0]);
+    const cands: (typeof crossCand)[number][] = [];
     for (const m of ms) {
       const e = edges[m.line];
       const P = EP[m.line];
@@ -1724,9 +1771,12 @@ export async function buildPasirRisCourse(
           }
       let da = Math.abs(Math.atan2(m.t[1], m.t[0]) - axis) % Math.PI;
       if (da > Math.PI / 2) da = Math.PI - da;
-      crossCand.push({ cr: { line: m.line, end: m.end, s: m.s, half: m.half, c, t: m.t, inbound, group: da < Math.PI / 4 ? 0 : 1, light: null }, lightOpts });
+      const cand = { cr: { line: m.line, end: m.end, s: m.s, half: m.half, c, t: m.t, inbound, group: da < Math.PI / 4 ? 0 : 1, light: null }, lightOpts };
+      crossCand.push(cand);
+      cands.push(cand);
     }
-  }
+    lit.push({ mouths, at, cands });
+  });
 
   // Everything paved at junctions: the shapes, and islands filled in.
   const JPOLY = [...JX.shapes.map((sh) => ({ ...sh, fill: false })), ...JX.fills.map((f) => ({ ...f, mouths: [] as typeof JX.shapes[number]['mouths'], kerbs: [] as XZ[][], fill: true }))];
@@ -1946,26 +1996,215 @@ export async function buildPasirRisCourse(
   {
     const inPoly = (x: number, z: number, fills: boolean) =>
       !!jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL))?.some((id) => (fills || !JPOLY[id].fill) && ringDist(JPOLY[id].ring, x, z)[0] === 0);
-    const onOther = (x: number, z: number, own: number, pad: number) => {
+    /** On a road drawn there, other than own (one road, or a set of them), pad beyond its edge? */
+    const onOther = (x: number, z: number, own: number | Set<number>, pad: number) => {
       let hit = false;
       roads.each(x, z, 16, (i, seg, u, d) => {
-        if (!hit && i !== own && !elevated[i] && drawnAt(i, seg, u) && d < halfNear(i, seg, u) + pad) hit = true;
+        if (!hit && (typeof own === 'number' ? i !== own : !own.has(i)) && !elevated[i] && drawnAt(i, seg, u) && d < halfNear(i, seg, u) + pad) hit = true;
       });
       return hit;
+    };
+    /** On crossing cr's stripes or its stop line, pad around them? */
+    const onCross = (cr: Crossing, x: number, z: number, pad: number) => {
+      const dx = x - cr.c[0], dz = z - cr.c[1];
+      if (dx * dx + dz * dz > 900) return false;
+      const along = dx * cr.t[0] + dz * cr.t[1];
+      return along > -CROSS_W / 2 - pad && along < STOP_AT - CROSS_FROM - CROSS_W / 2 + 0.2 + pad && Math.abs(-dx * cr.t[1] + dz * cr.t[0]) < cr.half + pad;
     };
     for (const { cr, lightOpts } of crossCand) {
       const left: XZ = [-cr.t[1], cr.t[0]];
       let ok = true;
-      for (const a of [-1, 0, 1])
+      for (const a of [-1, 0, 1, 2.6])
         for (const b of [-1, -0.5, 0, 0.5, 1]) {
           const x = cr.c[0] + cr.t[0] * a * (CROSS_W / 2) + left[0] * b * (cr.half - 0.4);
           const z = cr.c[1] + cr.t[1] * a * (CROSS_W / 2) + left[1] * b * (cr.half - 0.4);
-          if (onOther(x, z, cr.line, -0.3) || inPoly(x, z, false)) ok = false;
+          if (a <= 1 && (onOther(x, z, cr.line, -0.3) || inPoly(x, z, false))) ok = false;
+          // (Nor over another junction's crossing, on a short road between two.)
+          if (crossings.some((o) => onCross(o, x, z, 0.3))) ok = false;
         }
       if (!ok) continue;
       cr.light = lightOpts.find(([x, z]) => !onOther(x, z, -1, 0.3) && !inPoly(x, z, true)) ?? null;
       crossings.push(cr);
       crossEnd.set(`${cr.line}:${cr.end}`, cr);
+    }
+    // The yellow box, from corner to corner of the junction just inside its
+    // kerbs, and an X across it. (Each corner where two roads' kerbs would
+    // meet, brought in onto the paving; across a road that runs straight
+    // on past the junction, its far kerb.)
+    /** Asphalt of this junction at (x, z): its paving, one of its own roads out from its mouth, or a road running through it as one strip. */
+    const pavedOf = (own: Arm[], strips: number[], rings: XZ[][]) => (x: number, z: number) =>
+      rings.some((r) => inRingXZ(r, x, z)) ||
+      [...own.map((m) => [m.line, m.end, m.s] as const), ...strips.map((i) => [i, 0, -1] as const)].some(([i, end, s0]) => {
+        const h = roads.nearest(x, z, 30, (o) => o === i);
+        if (!h || h.d >= lerp(halfAtE(i, h.seg), halfAtE(i, h.seg + 1), h.u) - 0.05) return false;
+        if (s0 < 0) return true;
+        const c = ECUM[i];
+        const sAt = c[h.seg] + h.u * (c[Math.min(c.length - 1, h.seg + 1)] - c[h.seg]);
+        return (end === 0 ? sAt : ELEN[i] - sAt) >= s0 - 0.05;
+      });
+    const meet = (p: XZ, t: XZ, q: XZ, w: XZ): XZ | null => {
+      const det = t[0] * -w[1] - t[1] * -w[0];
+      if (Math.abs(det) < 0.05) return null;
+      const dx = q[0] - p[0], dz = q[1] - p[1];
+      const u = (dx * -w[1] - dz * -w[0]) / det;
+      return [p[0] + t[0] * u, p[1] + t[1] * u];
+    };
+    const STRAIGHT = (150 * Math.PI) / 180;
+    for (const { mouths, at, cands } of lit) {
+      const why = (w: string) => boxWhy.push({ x: +at.c[0].toFixed(1), z: +at.c[1].toFixed(1), why: w });
+      if (cands.filter((c) => crossings.includes(c.cr)).length < 2) {
+        why('fewer than two crossings');
+        continue;
+      }
+      if (mouths.some((m) => hasProfile[m.line] || elevated[m.line])) {
+        why('a raised road');
+        continue;
+      }
+      const paved = pavedOf(mouths.filter((m) => !at.strips.includes(m.line)), at.strips, at.rings);
+      const own = new Set([...mouths.map((m) => m.line), ...at.strips]);
+      /** Out on an arm's own drawn road, near its edge lines? */
+      const nearEdgeLine = (x: number, z: number) =>
+        mouths.some((m) => {
+          if (at.strips.includes(m.line)) return false;
+          const h = roads.nearest(x, z, 30, (o) => o === m.line);
+          if (!h) return false;
+          const c = ECUM[m.line];
+          const sAt = c[h.seg] + h.u * (c[Math.min(c.length - 1, h.seg + 1)] - c[h.seg]);
+          // (Its lines may start where the road itself does: where it was cut back for the junction.)
+          const out = (m.end === 0 ? sAt : ELEN[m.line] - sAt) - Math.min(m.s, (m.end === 0 ? JX.trimA[m.line] : JX.trimB[m.line]) || 0);
+          const half = lerp(halfAtE(m.line, h.seg), halfAtE(m.line, h.seg + 1), h.u);
+          return out > -1 && h.d < half + 0.2 && h.d > half - 0.9;
+        });
+      /** Paved there, and pad all round it? */
+      const clear = (x: number, z: number, pad: number) => {
+        if (!paved(x, z)) return false;
+        for (let k = 0; k < 8; k++) if (!paved(x + Math.cos((k * Math.PI) / 4) * pad, z + Math.sin((k * Math.PI) / 4) * pad)) return false;
+        return true;
+      };
+      // The arms in turn round the junction (the two sides of a divided road as one).
+      type BArm = { p: XZ; t: XZ; h: number; a: number };
+      let arms: BArm[] = mouths
+        .map((m) => ({ p: fromEnd(m.line, m.end, m.s), t: m.t, h: m.half, a: Math.atan2(m.t[1], m.t[0]) }))
+        .sort((u, v) => u.a - v.a);
+      for (let q = 0; arms.length > 2 && q < arms.length; ) {
+        const A = arms[q], B = arms[(q + 1) % arms.length];
+        let da = B.a - A.a;
+        if (da < 0) da += 2 * Math.PI;
+        if (da > (25 * Math.PI) / 180) {
+          q++;
+          continue;
+        }
+        const tl = Math.hypot(A.t[0] + B.t[0], A.t[1] + B.t[1]) || 1;
+        const t: XZ = [(A.t[0] + B.t[0]) / tl, (A.t[1] + B.t[1]) / tl];
+        const n: XZ = [-t[1], t[0]];
+        const oa = (A.p[0] - at.c[0]) * n[0] + (A.p[1] - at.c[1]) * n[1], ob = (B.p[0] - at.c[0]) * n[0] + (B.p[1] - at.c[1]) * n[1];
+        const lo = Math.min(oa - A.h, ob - B.h), hi = Math.max(oa + A.h, ob + B.h);
+        const da0 = (A.p[0] - at.c[0]) * t[0] + (A.p[1] - at.c[1]) * t[1], db0 = (B.p[0] - at.c[0]) * t[0] + (B.p[1] - at.c[1]) * t[1];
+        const along = Math.min(da0, db0), mid = (lo + hi) / 2;
+        const merged = { p: [at.c[0] + t[0] * along + n[0] * mid, at.c[1] + t[1] * along + n[1] * mid] as XZ, t, h: (hi - lo) / 2, a: Math.atan2(t[1], t[0]) };
+        const other = (q + 1) % arms.length;
+        arms = arms.filter((_, k) => k !== q && k !== other);
+        arms.push(merged);
+        arms.sort((u, v) => u.a - v.a);
+        q = 0;
+      }
+      if (arms.length < 3) {
+        why(`fewer than three arms: ${mouths.map((m) => `${m.line}:${m.end} t ${m.t.map((v) => v.toFixed(2))} s ${m.s.toFixed(1)}`).join('; ')}`);
+        continue;
+      }
+      // Each gap between one arm and the next: a corner, or (wider than 150°) a road's far kerb.
+      const N = arms.length;
+      const gap = arms.map((A, q) => {
+        const B = arms[(q + 1) % N];
+        let da = B.a - A.a;
+        if (da <= 0) da += 2 * Math.PI;
+        return da;
+      });
+      if (gap.filter((g) => g > STRAIGHT).length > 1) {
+        why('two straight sides');
+        continue;
+      }
+      const corner: (XZ | null)[] = arms.map((A, q) => {
+        if (gap[q] > STRAIGHT) return null;
+        const B = arms[(q + 1) % N];
+        const nA: XZ = [-A.t[1], A.t[0]], nB: XZ = [B.t[1], -B.t[0]];
+        const K = meet([A.p[0] + nA[0] * A.h, A.p[1] + nA[1] * A.h], A.t, [B.p[0] + nB[0] * B.h, B.p[1] + nB[1] * B.h], B.t);
+        if (!K) return null;
+        // (In from where the kerbs would meet, toward the middle, until a metre onto the paving: clear of the kerb and the lines along it.)
+        // (From 3 m further out: a mouth's width is not always the road's own there.)
+        const D0 = Math.hypot(at.c[0] - K[0], at.c[1] - K[1]);
+        if (D0 > 40) return null;
+        const v: XZ = [(at.c[0] - K[0]) / (D0 || 1), (at.c[1] - K[1]) / (D0 || 1)];
+        (K[0] -= v[0] * 3), (K[1] -= v[1] * 3);
+        const D = D0 + 3;
+        for (let r = 0; r < D * 0.8; r += 0.2) {
+          const x = K[0] + v[0] * r, z = K[1] + v[1] * r;
+          if (clear(x, z, 1)) return [x, z];
+        }
+        return null;
+      });
+      const ring: XZ[] = [];
+      let ok = true;
+      for (let q = 0; q < N && ok; q++) {
+        if (gap[q] <= STRAIGHT) {
+          if (!corner[q]) {
+            why(`no corner between arms ${q} and ${(q + 1) % N}`);
+            ok = false;
+          } else ring.push(corner[q]!);
+          continue;
+        }
+        // (Straight on past the junction: the corners on either side, carried across to its far kerb.)
+        const A = arms[q], B = arms[(q + 1) % N];
+        const Kp = corner[(q - 1 + N) % N], Kn = corner[(q + 1) % N];
+        if (!Kp || !Kn) {
+          why('no corner beside the straight side');
+          ok = false;
+          continue;
+        }
+        for (const [K, R] of [[Kp, A], [Kn, B]] as [XZ, BArm][]) {
+          const n: XZ = R === A ? [-R.t[1], R.t[0]] : [R.t[1], -R.t[0]];
+          const e: XZ = [R.p[0] + n[0] * (R.h - 0.5), R.p[1] + n[1] * (R.h - 0.5)];
+          const u = (K[0] - e[0]) * R.t[0] + (K[1] - e[1]) * R.t[1];
+          ring.push([e[0] + R.t[0] * u, e[1] + R.t[1] * u]);
+        }
+      }
+      if (!ok) continue;
+      if (ring.length < 4) {
+        why('fewer than four corners');
+        continue;
+      }
+      const xs: [XZ, XZ][] = [];
+      const R = ring.length;
+      for (let q = 0; q < Math.floor(R / 2); q++) xs.push([ring[q], ring[q + Math.floor(R / 2)]]);
+      // (Only a whole box, every line of it on the paving.)
+      const lines: [XZ, XZ][] = [...ring.map((p, q) => [p, ring[(q + 1) % R]] as [XZ, XZ]), ...xs];
+      const off = lines.find(([p, q]) => {
+        const L = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (L > 60) return true;
+        for (let s = 0; s <= L; s += 0.5) {
+          const f = L ? s / L : 0;
+          const x = lerp(p[0], q[0], f), z = lerp(p[1], q[1], f);
+          // (Clear of the kerbs: a line 0.2 m wide, a kerb 0.25 m.)
+          if (!clear(x, z, 0.4) || onOther(x, z, own, 0.3) || crossings.some((o) => onCross(o, x, z, 0.3))) return true;
+          // (Out on a road past its mouth, well clear of its edge lines.)
+          if (!at.rings.some((r) => inRingXZ(r, x, z)) && nearEdgeLine(x, z)) return true;
+        }
+        return false;
+      });
+      // (Not under a flyover: there the roads below weave between its piers and slip roads, no plain crossing.)
+      let under = false;
+      for (const [p, q] of lines)
+        for (let t = 0; t <= 1 && !under; t += 0.25)
+          roads.each(lerp(p[0], q[0], t), lerp(p[1], q[1], t), 16, (i, seg, u, dd) => void (!under && elevated[i] && dd < halfNear(i, seg, u) + 1 && (under = true)));
+      if (under) {
+        why('under a flyover');
+        continue;
+      }
+      if (off) {
+        why(`a line off the paving from ${off[0].map((v) => v.toFixed(1))} to ${off[1].map((v) => v.toFixed(1))}`);
+        continue;
+      }
+      yBoxes.push({ ring, x: xs });
     }
   }
 
@@ -2596,6 +2835,7 @@ export async function buildPasirRisCourse(
     kerb: flatMat(0xb9b5aa, -2),
     white: flatMat(0xf2efe4, -5),
     yellow: flatMat(0xe0b52a, -5),
+    box: flatMat(0xe0b52a, -5),
     foot: flatMat(0xbdb7aa, -1),
     cycle: flatMat(0xa45b49, -2, tartanTex),
     rail: flatMat(0xd9d6cf, -1),
@@ -4170,6 +4410,76 @@ export async function buildPasirRisCourse(
         quad(white, sx + left[0] * mid, sz + left[1] * mid, left, (w - from) / 2, 0.2, 0.115);
       }
     });
+  // Yellow boxes: on the junction's paving as drawn, or on a road through it.
+  /** The paving's drawn top at (x, z) (or the ground's, on a road), and a hair over it. */
+  const boxY = (x: number, z: number) => {
+    // (Over the highest of them, where a road's end and the paving overlap.)
+    let y = -Infinity;
+    for (const q of jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL)) ?? []) if (inRingXZ(JPOLY[q].ring, x, z)) y = Math.max(y, paveY(q, x, z) + 0.14);
+    let onRoad = y === -Infinity;
+    if (!onRoad) roads.each(x, z, 16, (i, seg, u, d) => void (!onRoad && !elevated[i] && drawnAt(i, seg, u) && d < halfNear(i, seg, u) && (onRoad = true)));
+    return Math.max(y, onRoad ? Math.max(rawHeight(x, z), WL + 0.15) + 0.145 : -Infinity);
+  };
+  {
+    // (Not where another junction's lines, carried across its paving, or a
+    // give-way line come within a metre of the box: two sets of paint.)
+    const painted: XZ[] = [];
+    for (const lines of throughLines.values()) for (const ln of lines) painted.push(...ln.pts);
+    for (const g of giveWays) painted.push(...g.dashes);
+    const PC = 8;
+    const pGrid = new Map<number, XZ[]>();
+    for (const p of painted) {
+      const k = Math.floor(p[0] / PC) * 100003 + Math.floor(p[1] / PC);
+      (pGrid.get(k) ?? pGrid.set(k, []).get(k)!).push(p);
+    }
+    const nearPaint = (x: number, z: number) => {
+      for (let a = Math.floor((x - 1) / PC); a <= Math.floor((x + 1) / PC); a++)
+        for (let b = Math.floor((z - 1) / PC); b <= Math.floor((z + 1) / PC); b++)
+          for (const p of pGrid.get(a * 100003 + b) ?? []) if (Math.hypot(p[0] - x, p[1] - z) < 1.2) return true;
+      return false;
+    };
+    for (let q = yBoxes.length - 1; q >= 0; q--) {
+      const b = yBoxes[q];
+      const lines = [...b.ring.map((p, i) => [p, b.ring[(i + 1) % b.ring.length]] as [XZ, XZ]), ...b.x];
+      const hit = lines.some(([p, r]) => {
+        const L = Math.hypot(r[0] - p[0], r[1] - p[1]);
+        for (let t = 0; t <= L; t += 0.5) if (nearPaint(lerp(p[0], r[0], L ? t / L : 0), lerp(p[1], r[1], L ? t / L : 0))) return true;
+        return false;
+      });
+      if (hit) {
+        boxWhy.push({ x: +b.ring[0][0].toFixed(1), z: +b.ring[0][1].toFixed(1), why: 'other lines across it' });
+        yBoxes.splice(q, 1);
+      }
+    }
+    const byTile = new Map<string, YBox[]>();
+    for (const b of yBoxes) {
+      const k = tileKey(b.ring[0][0], b.ring[0][1]);
+      (byTile.get(k) ?? byTile.set(k, []).get(k)!).push(b);
+    }
+    for (const [k, list] of byTile)
+      onTile('far', k, 'yellow boxes', (_kit, acc) => {
+        const box = acc('box');
+        for (const b of list)
+          for (const [p, q] of [...b.ring.map((p, i) => [p, b.ring[(i + 1) % b.ring.length]] as [XZ, XZ]), ...b.x]) {
+            // (In pieces a metre or so long, each draped on the ground.)
+            const L = Math.hypot(q[0] - p[0], q[1] - p[1]);
+            const n = Math.max(1, Math.ceil(L / 1.2));
+            const t: XZ = [(q[0] - p[0]) / (L || 1), (q[1] - p[1]) / (L || 1)];
+            const nn: XZ = [-t[1], t[0]];
+            for (let i = 0; i < n; i++) {
+              const f0 = i / n, f1 = (i + 1) / n;
+              const base = box.pos.length / 3;
+              for (const [f, w] of [[f0, -1], [f1, -1], [f0, 1], [f1, 1]]) {
+                const x = lerp(p[0], q[0], f) + t[0] * 0.1 * (f === f0 ? -1 : 1) + nn[0] * 0.1 * w;
+                const z = lerp(p[1], q[1], f) + t[1] * 0.1 * (f === f0 ? -1 : 1) + nn[1] * 0.1 * w;
+                box.pos.push(x, boxY(x, z), z);
+                box.uv.push(0, 0);
+              }
+              box.idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+            }
+          }
+      });
+  }
   // Give-way lines.
   {
     const byTile = new Map<string, GiveWay[]>();
@@ -5576,7 +5886,7 @@ export async function buildPasirRisCourse(
         viaducts.forEach((pts, line) => railPiers(line).forEach((q) => out.push({ x: pts[q][0], z: pts[q][1], top: railY(line, q) - 1.1, kind: 'rail', self: -1 })));
         return out;
       },
-      crossings, CROSS_FROM, CROSS_W,
+      crossings, CROSS_FROM, CROSS_W, yBoxes, boxWhy, signals: M.signals ?? [],
       // A far tile's road buffers, built off-scene (for the seam checks).
       farTiles: () => [...jobs.far.keys()],
       sliceCost,
