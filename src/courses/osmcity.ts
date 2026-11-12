@@ -2348,15 +2348,34 @@ export async function buildPasirRisCourse(
    * surface, and only rises again beyond that.
    */
   const SEAL = 6;
+  /** How far the sealed ground lies below a road's own height (its drawn surface is ROAD_LIFT above that). */
+  const UNDER = 0.12;
+  const ROAD_LIFT = 0.09;
+  const sealHits: { line: number; seg: number; u: number; d: number; half: number; s: number; used?: boolean }[] = [];
   function heightAt(x: number, z: number): number {
     let h = rawHeight(x, z);
     if (!(cell(x, z) & NEAR_ROAD)) return h;
     const ps = probe.s;
     const pw = probe.w;
+    // (Against each road at its point nearest here, not every piece of it
+    // in reach: on a climbing road the pieces a few metres back down the
+    // slope are lower, and held the bank beside it down to their height, a
+    // retaining wall where the bank should be. A road that comes back past
+    // here further along its line, another limb of it, counts again.)
+    sealHits.length = 0;
     roads.each(x, z, 14 + SEAL, (line, seg, u, d) => {
       if (elevated[line]) return;
       const half = halfNear(line, seg, u) + 0.35;
       if (d > half + SEAL + 2) return;
+      sealHits.push({ line, seg, u, d, half, s: lerp(ECUM[line][seg], ECUM[line][seg + 1], u) });
+    });
+    sealHits.sort((p, q) => p.d - q.d);
+    for (let q = 0; q < sealHits.length; q++) {
+      const { line, seg, u, d, half, s } = sealHits[q];
+      let other = false;
+      for (let r = 0; r < q && !other; r++) other = sealHits[r].line === line && !!sealHits[r].used && Math.abs(sealHits[r].s - s) < 2 * (half + SEAL + 2);
+      if (other) continue;
+      sealHits[q].used = true;
       const pts = EP[line];
       const cx = lerp(pts[seg][0], pts[seg + 1][0], u);
       const cz = lerp(pts[seg][1], pts[seg + 1][1], u);
@@ -2365,18 +2384,24 @@ export async function buildPasirRisCourse(
         yr = deckAtHit(line, seg, u);
         const tl = tiltAt(line, lerp(ECUM[line][seg], ECUM[line][seg + 1], u));
         if (tl > 0) {
+          // (As the road is drawn: its edge worked out at each of its own
+          // points, straight between them. Worked out here at this point
+          // instead, on a steep ramp over uneven ground it came out up to
+          // 20 cm off the drawn edge, and the ground with it.)
           const t = d > half ? half / d : 1;
-          const sa = lerp(ECUM[line][seg], ECUM[line][seg + 1], u);
-          yr = oneLine ? yr + tl * (dropAt(cx + (x - cx) * t, cz + (z - cz) * t) - dropAt(cx, cz)) : lerp(yr, dropAt(cx + (x - cx) * t, cz + (z - cz) * t) + relAlong(line, sa), tl);
+          const ox = (x - cx) * t, oz = (z - cz) * t;
+          const Y = deckY(line);
+          const edgeAt = (k: number) => tiltY(line, ECUM[line][k], Y[k], pts[k][0] + ox, pts[k][1] + oz, pts[k][0], pts[k][1]);
+          yr = lerp(edgeAt(seg), edgeAt(seg + 1), u);
         }
       } else {
         // A draped road's surface at its edge nearest this point.
         const t = d > half ? half / d : 1;
         yr = Math.max(rawHeight(cx + (x - cx) * t, cz + (z - cz) * t), WL + 0.15);
       }
-      const cap = yr - 0.12 + Math.max(0, d - half - SEAL);
+      const cap = yr - UNDER + Math.max(0, d - half - SEAL);
       if (cap < h) h = cap;
-    });
+    }
     // And under junctions, which reach past their roads at the corners.
     const near = jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL));
     if (near)
@@ -2388,7 +2413,7 @@ export async function buildPasirRisCourse(
         // (Deeper under a big island: its wide triangles cut corners off the ground.)
         // (A further part of a junction's paving is treated as the junction's own outline is.)
         const island = sh.fill && JX.fills[id - JX.shapes.length].tee === undefined;
-        const cap = (island ? fillTop(id, px, pz) : Math.max(rawHeight(px, pz), WL + 0.15)) - (d === 0 && island ? 0.5 : 0.12) + Math.max(0, d - SEAL);
+        const cap = (island ? fillTop(id, px, pz) : Math.max(rawHeight(px, pz), WL + 0.15)) - (d === 0 && island ? 0.5 : UNDER) + Math.max(0, d - SEAL);
         if (cap < h) h = cap;
       }
     probe.s = ps;
@@ -3384,8 +3409,13 @@ export async function buildPasirRisCourse(
   const PARAPET_FROM = 0.6;
   const PARAPET_FULL = 1.2;
   const PARAPET_H = 0.95;
-  const WALL_FROM = 0.1;
-  const wallTop = (drop: number) => 0.05 * smoothstep(WALL_FROM, 0.25, drop);
+  // (Drops are from the road's drawn surface. Beside every road the ground
+  // is sealed UNDER below the road's own height, ROAD_LIFT + UNDER below
+  // its surface: that is no drop at all. A wall begins a kerb's lip, 10 cm,
+  // past it. From a plain 10 cm, every raised road stood on a low wall
+  // along its whole length, a kerb raised well above the road.)
+  const WALL_FROM = ROAD_LIFT + UNDER + 0.1;
+  const wallTop = (drop: number) => 0.05 * smoothstep(WALL_FROM, WALL_FROM + 0.15, drop);
   const parapetTop = (drop: number) => Math.max(wallTop(drop), PARAPET_H * smoothstep(PARAPET_FROM, PARAPET_FULL, drop));
   const besideMid = (line: number, kk: number, off: number): XZ => {
     const a = EP[line][kk];

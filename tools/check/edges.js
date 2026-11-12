@@ -197,3 +197,79 @@ window.__checkWallEnds = (all = false) => {
   const bad = F.places(pts, 3);
   return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm' };
 };
+
+// __checkBanks: a raised road (one with a height of its own, not a flyover
+// deck) keeps the bank planned for it. The finished ground 1 to 2 m out from
+// its edge lies no more than 10 cm below the planned bank (the smooth ground
+// with its embankments, surfaceAt, but no higher than the road, sealed 12 cm
+// under it as beside every road) wherever nothing else is there to cut it:
+// no other road or junction within sealing reach. (The ground sealed under a
+// road was held to the height of every piece of that road in reach, so on a
+// climbing road the pieces a few metres back down the slope cut its own bank
+// into a retaining wall: a kerb raised well above the road.)
+window.__checkBanks = (all = false) => {
+  const d = globalThis.__osm;
+  const F = window.__finishIndex();
+  const REACH = 9; // a road's sealing reach past its edge (SEAL + 2 + a margin)
+  const shapes = [...d.JX.shapes, ...d.JX.fills];
+  const ringD = (ring, x, z) => {
+    let inside = false, best = Infinity;
+    for (let a = 0, b = ring.length - 1; a < ring.length; b = a++) {
+      const [xa, za] = ring[a], [xb, zb] = ring[b];
+      if ((za > z) !== (zb > z) && x < ((xb - xa) * (z - za)) / (zb - za) + xa) inside = !inside;
+      const dx = xb - xa, dz = zb - za, L = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - xa) * dx + (z - za) * dz) / L));
+      best = Math.min(best, Math.hypot(xa + dx * t - x, za + dz * t - z));
+    }
+    return inside ? 0 : best;
+  };
+  const pts = [];
+  let n = 0;
+  d.edges.forEach((e, i) => {
+    if (!d.hasProfile[i] || d.elevated[i] || d.isDeck[i] || d.JX.internal[i]) return;
+    const P = d.EP[i], cum = d.ECUM[i], len = cum[cum.length - 1];
+    const [ta, tb] = d.trims(i);
+    let k = 0;
+    for (let s = (ta || 0) + 1; s <= len - (tb || 0) - 1; s += 2) {
+      while (k < P.length - 2 && cum[k + 1] <= s) k++;
+      const L = cum[k + 1] - cum[k] || 1, u = (s - cum[k]) / L;
+      const tx = (P[k + 1][0] - P[k][0]) / L, tz = (P[k + 1][1] - P[k][1]) / L;
+      const cx = P[k][0] + (P[k + 1][0] - P[k][0]) * u, cz = P[k][1] + (P[k + 1][1] - P[k][1]) * u;
+      const half = d.halfAtE(i, k);
+      const Y = d.deckY(i);
+      for (const sg of [-1, 1]) {
+        for (const o of [1, 2]) {
+          const x = cx + tz * sg * (half + o), z = cz - tx * sg * (half + o);
+          // (Nothing else in reach: no other road, no junction.)
+          let other = false;
+          let near = null;
+          // (Another limb of the same road, further along it, counts as another road.)
+          d.roads.each(x, z, 30, (line, seg, uu, dd) => {
+            if (line === i && (!near || dd < near.dd)) near = { seg, uu, dd };
+            if (other || d.elevated[line] || dd >= d.halfAtE(line, seg) + REACH) return;
+            const C = d.ECUM[line];
+            if (line !== i || Math.abs(C[seg] + (C[seg + 1] - C[seg]) * uu - s) >= 2 * (half + REACH)) other = true;
+          });
+          if (other || !near) continue;
+          // (The road's own height as drawn at its edge, at its point nearest here.)
+          const A = P[near.seg], B = P[near.seg + 1];
+          const px = A[0] + (B[0] - A[0]) * near.uu, pz = A[1] + (B[1] - A[1]) * near.uu;
+          const hn = d.halfAtE(i, near.seg), ex = (x - px) / near.dd, ez = (z - pz) / near.dd;
+          const ye = F.asphaltAt(px + ex * (hn - 0.3), pz + ez * (hn - 0.3), Y[near.seg] + (Y[near.seg + 1] - Y[near.seg]) * near.uu + 0.09, 1);
+          if (ye !== ye) continue;
+          if (shapes.some((sh) => Math.hypot(x - sh.centre[0], z - sh.centre[1]) < sh.radius + REACH + 2 && ringD(sh.ring, x, z) < REACH)) continue;
+          n++;
+          // (The bank as planned, but never above the road: where the hills
+          // stand higher, the ground is cut down to the road on purpose.
+          // Sealed, it lies UNDER below the road's own height, 0.21 m below
+          // its drawn surface.)
+          const want = Math.min(d.surfaceAt(x, z), ye - 0.09) - 0.12;
+          const cut = want - d.heightAt(x, z);
+          if (cut > 0.1) pts.push({ road: e.name || e.cls, i, x: +x.toFixed(1), z: +z.toFixed(1), value: +cut.toFixed(2) });
+        }
+      }
+    }
+  });
+  const bad = F.places(pts, 6);
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm' };
+};

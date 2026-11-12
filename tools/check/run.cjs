@@ -80,6 +80,7 @@ const CHECKS = [
   // square stub. (Known: counted on today's map when these were written.)
   ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, 31],
   ['A wall beside a road never ends as a square stub on the verge', 'edges.js', '__checkWallEnds', 0, 97],
+  ['The ground beside a raised road keeps its bank: the road never cuts it away', 'edges.js', '__checkBanks', 0],
   // (Roads as one line: where the map marks a road as carrying straight on
   // past a side road, nothing of the joint may show. No marks, nothing to test.)
   ['A road is one strip past a side road: no cut, step, turn or break in its kerb and lines', 'finish.js', '__checkOneStrip', 0],
