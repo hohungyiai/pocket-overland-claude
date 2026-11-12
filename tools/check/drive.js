@@ -58,7 +58,10 @@ window.__driveScan = () => {
         // The road as designed here; the car rides on the highest surface
         // drawn near that (anything well above is a deck overhead).
         let want = Y ? Y[k] + (Y[k + 1] - Y[k]) * u : ground(x, z);
-        if (tk > 0) want += (ground(x, z) + rk - want) * tk;
+        // (On a redrawn map a road at the ground keeps its own height along
+        // its line and follows the ground's shape across from its middle:
+        // the builder's tiltY.)
+        if (tk > 0) want += d.oneLine ? tk * (ground(x, z) - ground(cx, cz)) : (ground(x, z) + rk - want) * tk;
         const y = topAt(x, z, want - 1.5, want + 1.2);
         // Nothing drawn here, at this level: the seam check's business.
         if (y !== y) {

@@ -1607,6 +1607,21 @@ export async function buildPasirRisCourse(
         ? 1 - smoothstep(0, 3, Math.min(foot[i][0] ? s : Infinity, foot[i][1] ? ELEN[i] - s : Infinity))
         : 1 - smoothstep(0.1, 1, relAlong(i, s));
   const dropAt = (x: number, z: number) => Math.max(rawHeight(x, z), WL + 0.15);
+  /**
+   * Road i's drawn height at (x, z), beside the point (cx, cz) of its line at
+   * s, where its own height is y. A road still down at the ground (tiltAt)
+   * lies on it. On a redrawn map it keeps its own height along its line and
+   * follows the ground's shape across from its middle: the ground under a
+   * ramp is already its bank, and adding the road's height above the ground
+   * on top of that stood a ramp up to 25 cm above its own line where it
+   * leaves the ground (a hump in every ramp, and a bend in its slope at any
+   * joint on it). Today's map as it was.
+   */
+  const tiltY = (i: number, s: number, y: number, x: number, z: number, cx: number, cz: number) => {
+    const t = tiltAt(i, s);
+    if (t <= 0) return y;
+    return oneLine ? y + t * (dropAt(x, z) - dropAt(cx, cz)) : lerp(y, dropAt(x, z) + relAlong(i, s), t);
+  };
   /** Deck height at a SegIndex hit on edge i. */
   const deckAtHit = (i: number, seg: number, u: number) => {
     const d = deckY(i);
@@ -1865,8 +1880,8 @@ export async function buildPasirRisCourse(
     let y = lerp(Y[seg], Y[Math.min(Y.length - 1, seg + 1)], u);
     if (!elevated[i]) {
       const sAt = ECUM[i][seg] + u * (ECUM[i][Math.min(ECUM[i].length - 1, seg + 1)] - ECUM[i][seg]);
-      const t = tiltAt(i, sAt);
-      if (t > 0) y = lerp(y, dropAt(x, z) + relAlong(i, sAt), t);
+      const P = EP[i][seg], Q = EP[i][Math.min(EP[i].length - 1, seg + 1)];
+      y = tiltY(i, sAt, y, x, z, lerp(P[0], Q[0], u), lerp(P[1], Q[1], u));
     }
     return y;
   };
@@ -1952,7 +1967,7 @@ export async function buildPasirRisCourse(
       // (A raised road is level across its mouth; a road on the ground
       // follows the ground.)
       const { y, t, r } = rels[q];
-      const h = y === y ? lerp(y, g + r, t) : g;
+      const h = y === y ? (oneLine ? y + t * (g - dropAt(m.q[0], m.q[1])) : lerp(y, g + r, t)) : g;
       if (dd < 1e-3) return h;
       const w = 1 / (dd * dd);
       sw += w;
@@ -2342,7 +2357,7 @@ export async function buildPasirRisCourse(
         if (tl > 0) {
           const t = d > half ? half / d : 1;
           const sa = lerp(ECUM[line][seg], ECUM[line][seg + 1], u);
-          yr = lerp(yr, dropAt(cx + (x - cx) * t, cz + (z - cz) * t) + relAlong(line, sa), tl);
+          yr = oneLine ? yr + tl * (dropAt(cx + (x - cx) * t, cz + (z - cz) * t) - dropAt(cx, cz)) : lerp(yr, dropAt(cx + (x - cx) * t, cz + (z - cz) * t) + relAlong(line, sa), tl);
         }
       } else {
         // A draped road's surface at its edge nearest this point.
@@ -2713,7 +2728,8 @@ export async function buildPasirRisCourse(
         let yk = o.yAt ? o.yAt(k) : NaN;
         if (yk === yk && o.tilt) {
           const [tk, rk] = o.tilt(k);
-          if (tk > 0) yk = lerp(yk, Math.max(rawHeight(x, z), WL + 0.15) + rk, tk);
+          // (As tiltY: from the middle of the road's line.)
+          if (tk > 0) yk = oneLine ? yk + tk * (dropAt(x, z) - dropAt(px, pz)) : lerp(yk, Math.max(rawHeight(x, z), WL + 0.15) + rk, tk);
         }
         acc.pos.push(x, (yk === yk ? yk : (o.y ?? Math.max((o.ground ?? rawHeight)(x, z) + rise, WL + 0.15))) + lift, z);
         acc.uv.push(((sgn + 1) / 2) * ((half * 2) / 6), cum[k] / 6);
@@ -3088,8 +3104,8 @@ export async function buildPasirRisCourse(
       const Y = deckY(i);
       let y = lerp(Y[k], Y[Math.min(Y.length - 1, k + 1)], u);
       if (!elevated[i]) {
-        const t = tiltAt(i, s);
-        if (t > 0) y = lerp(y, dropAt(x, z) + relAlong(i, s), t);
+        const P = EP[i][k], Q = EP[i][Math.min(EP[i].length - 1, k + 1)];
+        y = tiltY(i, s, y, x, z, lerp(P[0], Q[0], u), lerp(P[1], Q[1], u));
       }
       return y;
     };
@@ -4122,7 +4138,8 @@ export async function buildPasirRisCourse(
       }
       const y = deckY(i)[atA ? 0 : EP[i].length - 1];
       const t = elevated[i] ? 0 : tiltAt(i, s);
-      sum += lerp(y, dropAt(x, z) + relAlong(i, s), t);
+      // (At the joint, the middle of every road's line: on a redrawn map, each road's own height there.)
+      sum += oneLine ? y : lerp(y, dropAt(x, z) + relAlong(i, s), t);
     }
     return sum / jEdges[j].length;
   };
@@ -4139,6 +4156,10 @@ export async function buildPasirRisCourse(
     // through it. A flat pad there lay over a ramp as a second sheet, 0.2 m
     // proud a few metres down the slope.)
     if (jDegree[j] === 2 && thruJoint(jEdges[j][0], j) === jEdges[j][1]) return;
+    // (Nor a dead end on a raised or ramped road: there is no wedge to
+    // fill, and a flat pad over a road end that leans with the ground
+    // beside it stood up from it as a step.)
+    if (jDegree[j] === 1 && hasProfile[jEdges[j][0]]) return;
     const k = tileKey(x, z);
     const l = padsByTile.get(k);
     if (l) l.push(j);
@@ -6107,7 +6128,7 @@ export async function buildPasirRisCourse(
       jointWalls, jointDeck, onTeeOf, isDeckSplit: (j: number) => deckSplits.has(j), needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, relOwn, stripShape, landOver, trims: (i: number) => [trimA(i), trimB(i)], mates, jE, ELEN, tiltAt, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
       fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
-      edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads, jointsOf, drape, PCUM, pathDeck };
+      oneLine, edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads, jointsOf, drape, PCUM, pathDeck };
   return {
     name: opts.name ?? 'Pasir Ris & Tampines',
     styles: true,
