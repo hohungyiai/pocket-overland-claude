@@ -391,6 +391,17 @@ export function build(raw, origin) {
       return { name: el.tags.name, x: q(x), z: q(z) };
     });
 
+  // --- Traffic lights at junctions (signals.json.gz beside the roads' own
+  // data). A light for a pedestrian crossing alone is left out: it stops
+  // the road, it does not make a junction one with lights. ---
+  const signals = raw.elements
+    .filter((el) => el.type === 'node' && el.tags?.highway === 'traffic_signals' && !el.tags.crossing && el.tags.traffic_signals !== 'crossing')
+    .map((el) => {
+      nodes.set(el.id, [el.lat, el.lon]);
+      const [x, z] = proj(el.id);
+      return [q(x), q(z)];
+    });
+
   // --- Coastline: joined into long lines (land on the left in OSM) ---
   const coast = stitch(ways.filter((wy) => wy.tags?.natural === 'coastline').map((wy) => wy.nodes), true).map((ids) =>
     qp(simplify(ids.map(proj).filter(Boolean), 1)),
@@ -427,6 +438,7 @@ export function build(raw, origin) {
     waterways,
     coast,
     mask,
+    ...(signals.length ? { signals } : {}),
     rail,
     stations,
     buildings,

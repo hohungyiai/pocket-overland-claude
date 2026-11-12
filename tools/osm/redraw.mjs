@@ -1135,6 +1135,7 @@ const out = {
   rail: M.rail.filter(touches),
   stations: M.stations.filter(touches),
   buildings: M.buildings.filter(touches),
+  ...(M.signals ? { signals: M.signals.filter(near) } : {}),
 };
 fs.writeFileSync(OUT, JSON.stringify(out));
 const deg = new Map();
