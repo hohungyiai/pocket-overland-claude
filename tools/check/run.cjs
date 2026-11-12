@@ -7,7 +7,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
-const DEPS = { 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'] };
+const DEPS = { 'edges.js': ['finish.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
@@ -73,6 +73,11 @@ const CHECKS = [
   ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 198],
   ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 38],
   ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, 54],
+  // The sides of raised roads (edges.js): a parapet wherever the road's edge
+  // drops away, and walls that end by coming down to the ground, not as a
+  // square stub. (Known: counted on today's map when these were written.)
+  ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, 44],
+  ['A wall beside a road never ends as a square stub on the verge', 'edges.js', '__checkWallEnds', 0, 256],
   // (Roads as one line: where the map marks a road as carrying straight on
   // past a side road, nothing of the joint may show. No marks, nothing to test.)
   ['A road is one strip past a side road: no cut, step, turn or break in its kerb and lines', 'finish.js', '__checkOneStrip', 0],
