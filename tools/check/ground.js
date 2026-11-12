@@ -35,9 +35,19 @@ window.__checkGround = () => {
       // width is the straight line between them.
       // (A joined line is as wide as it is drawn at each point, not its widest.)
       const hk = (q) => d.halfNear(i, q, 0);
+      // (A raised road still down at its foot is drawn lying on the ground
+      // across its width, as the builder's tiltAt has it: measured level at
+      // its own height there, the check put the road up to 30 cm below where
+      // it is drawn, and a bank built up to its drawn edge looked like
+      // ground over the road.)
+      const drop = (x, z) => Math.max(d.surfaceAt(x, z), d.WL + 0.15);
       const edgeY = (q, sgn) => {
         const [px, pz] = P[q];
-        return Y ? Y[q] : (d.surfaceAt ?? d.heightAt)(px + nx * sgn * hk(q), pz + nz * sgn * hk(q));
+        const ex = px + nx * sgn * hk(q), ez = pz + nz * sgn * hk(q);
+        if (!Y) return (d.surfaceAt ?? d.heightAt)(ex, ez);
+        const s = d.ECUM[i][q], t = d.tiltAt(i, s);
+        if (!(t > 0)) return Y[q];
+        return d.oneLine ? Y[q] + t * (drop(ex, ez) - drop(px, pz)) : Y[q] + (drop(ex, ez) + d.relAlong(i, s) - Y[q]) * t;
       };
       const la = edgeY(k, -1), ra = edgeY(k, 1), lb = edgeY(k + 1, -1), rb = edgeY(k + 1, 1);
       // Across the full width and out to the kerbs (|f| > 1 holds the edge
