@@ -1651,12 +1651,25 @@ export async function buildPasirRisCourse(
       // (Tested a metre at a time: a long straight side has only its two
       // ends as points, and one end touching a road would take the whole
       // side's kerb with it.)
+      // (What is kept goes back to its own points, or one every 4 m along a
+      // long side: a point a metre keeps the kerb's drawing slow.)
       const F: XZ[] = [F0[0]];
+      const own = new Set<XZ>([F0[0]]);
       for (let q = 1; q < F0.length; q++) {
         const a = F0[q - 1], b = F0[q];
         const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1])));
-        for (let t = 1; t <= n; t++) F.push([a[0] + ((b[0] - a[0]) * t) / n, a[1] + ((b[1] - a[1]) * t) / n]);
+        for (let t = 1; t < n; t++) F.push([a[0] + ((b[0] - a[0]) * t) / n, a[1] + ((b[1] - a[1]) * t) / n]);
+        F.push(b);
+        own.add(b);
       }
+      const thin = (R: XZ[]) => {
+        const out: XZ[] = [R[0]];
+        for (let q = 1; q < R.length; q++) {
+          const l = out[out.length - 1];
+          if (q === R.length - 1 || own.has(R[q]) || Math.hypot(R[q][0] - l[0], R[q][1] - l[1]) >= 3.99) out.push(R[q]);
+        }
+        return out;
+      };
       let run: XZ[] = [];
       F.forEach((p, q) => {
         const a = F[Math.max(0, q - 1)];
@@ -1670,11 +1683,11 @@ export async function buildPasirRisCourse(
         });
         if (!hit) run.push(p);
         else {
-          if (run.length > 1) kept.push(run);
+          if (run.length > 1) kept.push(thin(run));
           run = [];
         }
       });
-      if (run.length > 1) kept.push(run);
+      if (run.length > 1) kept.push(thin(run));
     }
     sh.kerbs = kept;
   }
