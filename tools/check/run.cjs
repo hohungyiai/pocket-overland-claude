@@ -7,7 +7,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
-const DEPS = { 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'] };
+const DEPS = { 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
@@ -41,6 +41,7 @@ const CHECKS = [
   ['Crossings lie on their own road', 'crossings.js', '__checkCrossings', 0],
   ['No traffic light on a road or in a junction', 'crossings.js', '__checkLightPoles', 0],
   ['A junction\'s yellow box lies on its paving', 'crossings.js', '__checkYellowBoxes', 0],
+  ['A footpath lies on the grass, never under it or folded over itself', 'paths.js', '__checkPaths', 0],
   ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 23],
   ['No step where road pieces meet', 'seams.js', '__checkSteps', 0],
   ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
