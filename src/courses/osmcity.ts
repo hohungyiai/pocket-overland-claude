@@ -1651,25 +1651,12 @@ export async function buildPasirRisCourse(
       // (Tested a metre at a time: a long straight side has only its two
       // ends as points, and one end touching a road would take the whole
       // side's kerb with it.)
-      // (What is kept goes back to its own points, or one every 4 m along a
-      // long side: a point a metre keeps the kerb's drawing slow.)
       const F: XZ[] = [F0[0]];
-      const own = new Set<XZ>([F0[0]]);
       for (let q = 1; q < F0.length; q++) {
         const a = F0[q - 1], b = F0[q];
         const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1])));
-        for (let t = 1; t < n; t++) F.push([a[0] + ((b[0] - a[0]) * t) / n, a[1] + ((b[1] - a[1]) * t) / n]);
-        F.push(b);
-        own.add(b);
+        for (let t = 1; t <= n; t++) F.push([a[0] + ((b[0] - a[0]) * t) / n, a[1] + ((b[1] - a[1]) * t) / n]);
       }
-      const thin = (R: XZ[]) => {
-        const out: XZ[] = [R[0]];
-        for (let q = 1; q < R.length; q++) {
-          const l = out[out.length - 1];
-          if (q === R.length - 1 || own.has(R[q]) || Math.hypot(R[q][0] - l[0], R[q][1] - l[1]) >= 3.99) out.push(R[q]);
-        }
-        return out;
-      };
       let run: XZ[] = [];
       F.forEach((p, q) => {
         const a = F[Math.max(0, q - 1)];
@@ -1683,11 +1670,11 @@ export async function buildPasirRisCourse(
         });
         if (!hit) run.push(p);
         else {
-          if (run.length > 1) kept.push(thin(run));
+          if (run.length > 1) kept.push(run);
           run = [];
         }
       });
-      if (run.length > 1) kept.push(thin(run));
+      if (run.length > 1) kept.push(run);
     }
     sh.kerbs = kept;
   }
@@ -1878,17 +1865,18 @@ export async function buildPasirRisCourse(
     const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz || 1)));
     return Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t);
   };
-  const mouthRels = new Map<number, { y: number; t: number; r: number }[] | null>();
+  const mouthRels = new Map<number, { y: number; t: number; r: number; g: number }[] | null>();
   const relsOf = (id: number) => {
     let r = mouthRels.get(id);
     if (r === undefined) {
       const sh = JPOLY[id];
       r = sh.mouths.some((m) => hasProfile[m.line])
         ? sh.mouths.map((m) => {
-            if (!hasProfile[m.line]) return { y: NaN, t: 1, r: 0 };
+            if (!hasProfile[m.line]) return { y: NaN, t: 1, r: 0, g: 0 };
             const c = cutOf(m.line);
             const sc = m.end === 0 ? JX.trimA[m.line] || 0 : ELEN[m.line] - (JX.trimB[m.line] || 0);
-            return { y: m.end === 0 ? c.ylo : c.yhi, t: tiltAt(m.line, sc), r: relAlong(m.line, sc) };
+            // (g: the ground at the middle of its mouth, worked out once: see tiltY.)
+            return { y: m.end === 0 ? c.ylo : c.yhi, t: tiltAt(m.line, sc), r: relAlong(m.line, sc), g: oneLine ? dropAt(m.q[0], m.q[1]) : 0 };
           })
         : null;
       mouthRels.set(id, r);
@@ -1988,8 +1976,8 @@ export async function buildPasirRisCourse(
       const dd = segD(x, z, m.left, m.right);
       // (A raised road is level across its mouth; a road on the ground
       // follows the ground.)
-      const { y, t, r } = rels[q];
-      const h = y === y ? (oneLine ? y + t * (g - dropAt(m.q[0], m.q[1])) : lerp(y, g + r, t)) : g;
+      const { y, t, r, g: gm } = rels[q];
+      const h = y === y ? (oneLine ? y + t * (g - gm) : lerp(y, g + r, t)) : g;
       if (dd < 1e-3) return h;
       const w = 1 / (dd * dd);
       sw += w;
@@ -2743,6 +2731,8 @@ export async function buildPasirRisCourse(
         const gl = gAt(-1), gr = gAt(1);
         for (const f of [-0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75]) rise = Math.max(rise, gAt(f) - lerp(gl, gr, (f + 1) / 2));
       }
+      // (The ground at the middle of the road's line, for a road at the ground: see tiltY.)
+      const gMid = oneLine && o.tilt && o.yAt && o.tilt(k)[0] > 0 ? dropAt(px, pz) : 0;
       for (const sgn of [-1, 1]) {
         const x = px + nx * (off + sgn * half);
         const z = pz + nz * (off + sgn * half);
@@ -2751,7 +2741,7 @@ export async function buildPasirRisCourse(
         if (yk === yk && o.tilt) {
           const [tk, rk] = o.tilt(k);
           // (As tiltY: from the middle of the road's line.)
-          if (tk > 0) yk = oneLine ? yk + tk * (dropAt(x, z) - dropAt(px, pz)) : lerp(yk, Math.max(rawHeight(x, z), WL + 0.15) + rk, tk);
+          if (tk > 0) yk = oneLine ? yk + tk * (dropAt(x, z) - gMid) : lerp(yk, Math.max(rawHeight(x, z), WL + 0.15) + rk, tk);
         }
         acc.pos.push(x, (yk === yk ? yk : (o.y ?? Math.max((o.ground ?? rawHeight)(x, z) + rise, WL + 0.15))) + lift, z);
         acc.uv.push(((sgn + 1) / 2) * ((half * 2) / 6), cum[k] / 6);
@@ -4320,7 +4310,9 @@ export async function buildPasirRisCourse(
           if (JX.tee[j] && jE[j].every((i) => rankOf(edges[i].cls) >= 2)) {
             const parts = [id, ...JX.fills.map((f, q) => (f.tee === j ? JX.shapes.length + q : -1)).filter((q) => q >= 0)];
             const topAt = (x: number, z: number) => paveY(parts.find((q) => inRingXZ(JPOLY[q].ring, x, z)) ?? id, x, z);
-            for (const F of JPOLY[id].kerbs) {
+            for (const K of JPOLY[id].kerbs) {
+              // (A point every metre and a half or so is plenty for the line: the kerb's are a metre apart.)
+              const F: XZ[] = K.filter((p, q) => q === 0 || q === K.length - 1 || Math.hypot(p[0] - K[q - 1][0], p[1] - K[q - 1][1]) > 1.2 || q % 2 === 0);
               let run = 0;
               for (let q = 1; q < F.length; q++) run += Math.hypot(F[q][0] - F[q - 1][0], F[q][1] - F[q - 1][1]);
               if (F.length < 3 || run < 6) continue;
