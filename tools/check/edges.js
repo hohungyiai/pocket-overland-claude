@@ -10,7 +10,8 @@
 // __checkWallEnds: a wall or parapet beside a road on the ground (its bank)
 //   never begins or ends as a square stub standing on the verge: where it
 //   stops, it has come down to the ground (or carries straight on into
-//   another wall or a bridge's own side).
+//   another wall or a bridge's own side, or ends flush with a road's
+//   surface that carries on past it).
 
 /** Every upright sheet, bucketed on a 4 m grid: crosses(x0, z0, x1, z1, y) is there one whose top stands at least 0.6 m over y, across that segment? */
 window.__sheetIndex = () => {
@@ -115,18 +116,39 @@ window.__checkOpenEdges = (all = false) => {
 window.__checkWallEnds = (all = false) => {
   const d = globalThis.__osm;
   const F = window.__finishIndex();
-  // Every upright sheet's ends, and how many sheets share each.
+  // Every upright sheet's ends, and how many sheets share each. (Its top
+  // there from the triangle's own corners at that end: a long sheet's top
+  // can slope from one end to the other.)
   const key = (x, z) => `${Math.round(x * 20)},${Math.round(z * 20)}`;
   const ends = new Map();
-  for (const s of F.sheets) {
-    if (s.hi - s.lo < 0.02) continue;
-    for (const [x, z] of [[s.x0, s.z0], [s.x1, s.z1]]) {
-      const k = key(x, z);
-      const o = ends.get(k) ?? { x, z, lo: s.lo, hi: s.hi, n: 0 };
-      o.n++;
-      o.lo = Math.min(o.lo, s.lo);
-      o.hi = Math.max(o.hi, s.hi);
-      ends.set(k, o);
+  for (const k of d.farTiles()) {
+    const r = d.tileAccs(k).deck;
+    if (!r) continue;
+    const { pos, idx } = r;
+    for (let q = 0; q < idx.length; q += 3) {
+      const v = [idx[q] * 3, idx[q + 1] * 3, idx[q + 2] * 3];
+      const det = (pos[v[1] + 2] - pos[v[2] + 2]) * (pos[v[0]] - pos[v[2]]) + (pos[v[2]] - pos[v[1]]) * (pos[v[0] + 2] - pos[v[2] + 2]);
+      if (Math.abs(det) > 1e-4) continue;
+      let best = 0, e0 = 0;
+      for (let e = 0; e < 3; e++) {
+        const p = v[e], n = v[(e + 1) % 3];
+        const l = Math.hypot(pos[n] - pos[p], pos[n + 2] - pos[p + 2]);
+        if (l > best) (best = l), (e0 = e);
+      }
+      if (best < 0.3) continue;
+      const ys = v.map((p) => pos[p + 1]);
+      if (Math.max(...ys) - Math.min(...ys) < 0.02) continue;
+      for (const p of [v[e0], v[(e0 + 1) % 3]]) {
+        const x = pos[p], z = pos[p + 2];
+        // (The corners of this triangle standing at that end.)
+        const at = v.filter((u) => Math.abs(pos[u] - x) < 1e-3 && Math.abs(pos[u + 2] - z) < 1e-3).map((u) => pos[u + 1]);
+        const kk = key(x, z);
+        const o = ends.get(kk) ?? { x, z, lo: Infinity, hi: -Infinity, n: 0 };
+        o.n++;
+        o.lo = Math.min(o.lo, ...at);
+        o.hi = Math.max(o.hi, ...at);
+        ends.set(kk, o);
+      }
     }
   }
   // (A sheet's triangles meet at their shared corners: an end that only one
@@ -144,6 +166,14 @@ window.__checkWallEnds = (all = false) => {
     n++;
     const top = o.hi - d.heightAt(o.x, o.z);
     if (top < 0.3) continue;
+    // (Where it stops at a road's surface, flush with it: the wall's top is
+    // that road's edge, and the road carries on past its end.)
+    let flush = false;
+    for (const [dx, dz] of [[0, 0], [0.4, 0], [-0.4, 0], [0, 0.4], [0, -0.4]]) {
+      const h = F.asphaltAt(o.x + dx, o.z + dz, o.hi, 0.35);
+      if (h === h && o.hi - h < 0.25) flush = true;
+    }
+    if (flush) continue;
     let cont = false;
     for (const i of S.near(o.x - 0.7, o.z - 0.7, o.x + 0.7, o.z + 0.7)) {
       const s = F.sheets[i];

@@ -3135,6 +3135,10 @@ export async function buildPasirRisCourse(
     return hit;
   };
   const jointWallCache = new Map<number, JointWall[]>();
+  /** How far above the ground a deck joint's edge must stand to be drawn as a deck's (edge beam, full parapet). */
+  const JOINT_DECK_FROM = 2;
+  /** Is piece q of a joint's wall a deck's edge? */
+  const deckPiece = (w: JointWall, q: number) => Math.min(w.drop[q], w.drop[q + 1]) >= 99;
   const jointWalls = (id: number) => {
     let out = jointWallCache.get(id);
     if (out) return out;
@@ -3165,7 +3169,11 @@ export async function buildPasirRisCourse(
         W.push([p[0] + nx * sgn * 0.45, p[1] + nz * sgn * 0.45]);
         cum.push(q ? cum[q - 1] + Math.hypot(p[0] - F[q - 1][0], p[1] - F[q - 1][1]) : 0);
         y.push(jTop(id, p[0], p[1]) + 0.09);
-        drop.push(deck ? 99 : y[q] - heightAt(p[0] + nx * sgn * 1.05, p[1] + nz * sgn * 1.05));
+        // (On a deck, a deck's edge where it stands well up; where a deck
+        // road comes down to the ground at the joint, its edge is the
+        // ground's, as on any raised road.)
+        const real = y[q] - heightAt(p[0] + nx * sgn * 1.05, p[1] + nz * sgn * 1.05);
+        drop.push(deck && real >= JOINT_DECK_FROM ? 99 : real);
       });
       const keep: boolean[] = [];
       for (let q = 0; q + 1 < F.length; q++) {
@@ -3595,6 +3603,7 @@ export async function buildPasirRisCourse(
           // was cut short by a road below), a retaining wall, and a parapet
           // where the drop is more than a kerb.
           const deck = acc('deck');
+          const ext = runsOn(line, P);
           for (const sgn of [-1, 1]) {
             const off = (kk: number) => sgn * (halfAt(kk) + 0.45);
             const dr = new Float32Array(hi - lo + 1);
@@ -3606,16 +3615,17 @@ export async function buildPasirRisCourse(
               const a = P[Math.max(rlo, kk - 1)];
               const b = P[Math.min(rhi, kk + 1)];
               const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-              const o = off(kk) + sgn * 0.6;
-              dr[kk - lo] = dy[kk] + 0.09 - heightAt(P[kk][0] + ((b[1] - a[1]) / tl) * o, P[kk][1] - ((b[0] - a[0]) / tl) * o);
+              // (The ground just past the wall, or a metre further out if lower there: the fall a car would go over.)
+              const g = (o: number) => heightAt(P[kk][0] + ((b[1] - a[1]) / tl) * o, P[kk][1] - ((b[0] - a[0]) / tl) * o);
+              dr[kk - lo] = dy[kk] + 0.09 - Math.min(g(off(kk) + sgn * 0.6), g(off(kk) + sgn * 1.6));
             }
             const y = (kk: number) => dy[kk] + 0.09;
             // (Both grow with the drop: the wall comes out of the ground from
             // nothing, and the parapet rises to its full height as the drop
             // passes that of a kerb, as a crash barrier's end ramps up. Neither
             // begins or ends as a square stub standing on the verge.)
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)));
-            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && parapetClear(line, kk, off(kk)));
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn));
+            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && parapetClear(line, kk, off(kk)), ext(sgn));
           }
         }
         if (dy && isDeck[line]) {
@@ -3624,9 +3634,10 @@ export async function buildPasirRisCourse(
           const depth = elevated[line] ? 1.2 : 0.6;
           const side = (sgn: number) => (kk: number) => sgn * (halfAt(kk) + 0.45);
           const y = (kk: number) => dy[kk] + 0.09;
+          const ext = runsOn(line, pts);
           for (const sgn of [-1, 1]) {
-            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0.05, () => true);
-            band(deck, pts, cum, k0, k1, side(sgn), y, 0, 0.95, (kk) => parapetClear(line, kk, side(sgn)(kk)));
+            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0.05, () => true, ext(sgn));
+            band(deck, pts, cum, k0, k1, side(sgn), y, 0, 0.95, (kk) => parapetClear(line, kk, side(sgn)(kk)), ext(sgn));
           }
           strip(deck, pts, cum, k0, k1, (kk) => halfAt(kk) + 0.45, 0.09 - depth, { yAt });
         }
@@ -3943,11 +3954,10 @@ export async function buildPasirRisCourse(
   for (const [k, all] of shapesByTile)
     inChunks('near', k, 'joint barriers', all.filter((id) => jointDeck(id) >= 0 && JPOLY[id].kerbs.length), 4, (list, kit) => {
       for (const id of list) {
-        const dk = jointDeck(id);
         for (const w of jointWalls(id))
           for (let q = 0; q + 1 < w.W.length; q++) {
             if (!w.keep[q]) continue;
-            const h = dk > 0 ? PARAPET_H : (parapetTop(w.drop[q]) + parapetTop(w.drop[q + 1])) / 2;
+            const h = deckPiece(w, q) ? PARAPET_H : (parapetTop(Math.min(w.drop[q], 9)) + parapetTop(Math.min(w.drop[q + 1], 9))) / 2;
             if (h >= 0.3) barrierBox(tileBody(kit), w.W[q][0], w.W[q][1], w.W[q + 1][0], w.W[q + 1][1], (w.y[q] + w.y[q + 1]) / 2, h);
           }
       }
@@ -4087,12 +4097,13 @@ export async function buildPasirRisCourse(
             const last = w.W.length - 1;
             const yk = (q: number) => w.y[q];
             if (dk > 0) {
-              band(deck, w.W, w.cum, 0, last, 0, yk, dk, 0.05, (q) => w.keep[q]);
-              band(deck, w.W, w.cum, 0, last, 0, yk, 0, PARAPET_H, (q) => w.keep[q]);
-            } else {
-              band(deck, w.W, w.cum, 0, last, 0, yk, (q) => Math.max(0, w.drop[q]) + 0.3, (q) => wallTop(w.drop[q]), (q) => w.keep[q] && Math.max(w.drop[q], w.drop[q + 1]) > WALL_FROM);
-              band(deck, w.W, w.cum, 0, last, 0, yk, 0, (q) => parapetTop(w.drop[q]), (q) => w.keep[q] && Math.max(w.drop[q], w.drop[q + 1]) > PARAPET_FROM);
+              band(deck, w.W, w.cum, 0, last, 0, yk, dk, 0.05, (q) => w.keep[q] && deckPiece(w, q));
+              band(deck, w.W, w.cum, 0, last, 0, yk, 0, PARAPET_H, (q) => w.keep[q] && deckPiece(w, q));
             }
+            // (Elsewhere a wall down to the ground, growing with the drop beside it, and its parapet.)
+            const dr = (q: number) => Math.min(w.drop[q], 9);
+            band(deck, w.W, w.cum, 0, last, 0, yk, (q) => Math.max(0, dr(q)) + 0.3, (q) => wallTop(dr(q)), (q) => w.keep[q] && !deckPiece(w, q) && Math.max(dr(q), dr(q + 1)) > WALL_FROM);
+            band(deck, w.W, w.cum, 0, last, 0, yk, 0, (q) => parapetTop(dr(q)), (q) => w.keep[q] && !deckPiece(w, q) && Math.max(dr(q), dr(q + 1)) > PARAPET_FROM);
           }
         }
         if (part === 2) for (const F of sh.kerbs) {
@@ -4356,16 +4367,23 @@ export async function buildPasirRisCourse(
     deckCache.set(line, d);
     return d;
   };
-  /** A vertical band along pts at sideways offset `off`, from y(k) - below to y(k) + above. */
-  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), aboveIn: number | ((k: number) => number), keep: (k: number) => boolean) => {
+  /**
+   * A vertical band along pts at sideways offset `off`, from y(k) - below to
+   * y(k) + above. (ext: how far to carry it on past the first and the last
+   * of pts, where the road carries on into the next piece: the two pieces'
+   * walls overlap a little instead of leaving a hairline between them where
+   * the road bends at the joint.)
+   */
+  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), aboveIn: number | ((k: number) => number), keep: (k: number) => boolean, ext: [number, number] = [0, 0]) => {
     const base = acc.pos.length / 3;
     for (let k = k0; k <= k1; k++) {
       const a = pts[Math.max(0, k - 1)];
       const b = pts[Math.min(pts.length - 1, k + 1)];
       const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
       const off = typeof offIn === 'number' ? offIn : offIn(k);
-      const x = pts[k][0] + ((b[1] - a[1]) / tl) * off;
-      const z = pts[k][1] - ((b[0] - a[0]) / tl) * off;
+      const along = k === 0 ? -ext[0] : k === pts.length - 1 ? ext[1] : 0;
+      const x = pts[k][0] + ((b[1] - a[1]) / tl) * off + ((b[0] - a[0]) / tl) * along;
+      const z = pts[k][1] - ((b[0] - a[0]) / tl) * off + ((b[1] - a[1]) / tl) * along;
       const yk = y(k);
       const below = typeof belowIn === 'number' ? belowIn : belowIn(k);
       const above = typeof aboveIn === 'number' ? aboveIn : aboveIn(k);
@@ -4377,6 +4395,35 @@ export async function buildPasirRisCourse(
       const q = base + (k - k0) * 2;
       acc.idx.push(q, q + 2, q + 1, q + 1, q + 2, q + 3);
     }
+  };
+  /**
+   * For band(): 0.25 m at each end of road line's points where it carries
+   * straight on into the next piece (no junction there, nothing cut back),
+   * on side sgn (as band's offset) unless the wall carried on would stand
+   * on the next piece's road (the inside of a bend, where the two pieces'
+   * walls already cross).
+   */
+  const runsOn = (line: number, P: XZ[]) => (sgn: number): [number, number] => {
+    const e = edges[line];
+    const L = EP[line];
+    const n = P.length - 1;
+    const on = (j: number, trim: number, k: number, kIn: number) => {
+      const p = P[k];
+      if (trim > 0 || jDegree[j] !== 2 || Math.hypot(p[0] - L[k === 0 ? 0 : L.length - 1][0], p[1] - L[k === 0 ? 0 : L.length - 1][1]) > 0.01) return 0;
+      const o = jE[j].find((i) => i !== line);
+      if (o === undefined) return 0;
+      // (band's offset direction at this end, from the first or last piece of the line.)
+      const a = P[Math.min(k, kIn)], b = P[Math.max(k, kIn)];
+      const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const tx = (b[0] - a[0]) / tl, tz = (b[1] - a[1]) / tl;
+      const off = sgn * (halfAtE(line, k) + 0.45);
+      const along = k === 0 ? -0.25 : 0.25;
+      const x = p[0] + tz * off + tx * along, z = p[1] - tx * off + tz * along;
+      // (Carried on, does its foot stand on the next piece's road?)
+      const h = roads.nearest(x, z, 20, (i) => i === o);
+      return h && h.d < halfNear(o, h.seg, h.u) + 0.3 ? 0 : 0.25;
+    };
+    return [on(e.a, JX.trimA[line] || 0, 0, 1), on(e.b, JX.trimB[line] || 0, n, n - 1)];
   };
   // Footpaths sit just under cycle paths, so where they overlap the cycle
   // path shows cleanly instead of the two flickering.
