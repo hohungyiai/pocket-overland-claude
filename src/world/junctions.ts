@@ -21,6 +21,8 @@ export interface JunctionIn {
   /** Half width of road i at point k. */
   halfAt: (i: number, k: number) => number;
   rank: (i: number) => number;
+  /** Does road i have kerbs? (Without it, every road ranked 1 or above.) */
+  kerbed?: (i: number) => boolean;
   /** Can this road be cut back and joined to a shaped junction? (ground roads) */
   shapeable: (i: number) => boolean;
   /** Joints left unshaped whatever meets there (a slip road splitting off or merging: the roads just overlap). */
@@ -152,6 +154,7 @@ function along(pts: XZ[], cum: number[], s: number): { p: XZ; seg: number } {
 }
 
 export function shapeJunctions(I: JunctionIn): JunctionOut {
+  const hasKerb = (i: number) => (I.kerbed ? I.kerbed(i) : I.rank(i) >= 1);
   const { junctions, edges, EP, ECUM } = I;
   const NJ = junctions.length;
   const len = ECUM.map((c) => c[c.length - 1]);
@@ -878,7 +881,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         out.why[out.why.length - 1].ring = ring;
         return null;
       }
-      const kerbed = Math.max(I.rank(sLine), ...through.map((i) => I.rank(i))) >= 1;
+      const kerbed = [sLine, ...through].some(hasKerb);
       if (cutMid) {
         // The opening's middle: the line across it half way along.
         const at = along(sp, I.ECUM[sLine], sL / 2);
@@ -1062,7 +1065,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         curve = eased(A, B, curve, I.sideBySide?.(A.line, A.end, B.line, B.end));
         for (let k = 1; k < curve.length - 1; k++) ring.push(curve[k]);
         corners.push(curve);
-        if (Math.max(I.rank(A.line), I.rank(B.line)) >= 1) kerbs.push(curve);
+        if (hasKerb(A.line) || hasKerb(B.line)) kerbs.push(curve);
       }
       // Star-shaped around c: every outline step turns the same way.
       // (A curved corner can fold a hair as seen from the middle of the
@@ -1119,7 +1122,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         corners.push(edge);
         const Ma = ownerOf(a);
         const Mb = ownerOf(b);
-        if (Ma && Mb && Ma !== Mb && Math.max(I.rank(Ma.line), I.rank(Mb.line)) >= 1) kerbs.push(edge);
+        if (Ma && Mb && Ma !== Mb && (hasKerb(Ma.line) || hasKerb(Mb.line))) kerbs.push(edge);
       }
       if (spills(ring)) return 'spill';
       centre = mean(hull);

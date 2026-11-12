@@ -64,6 +64,14 @@ const NEAR_WET = 128; // in or beside a canal or pond
 const TREE_LINED = new Set(['trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'motorway']);
 const RANK: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3, tertiary: 2, unclassified: 1, residential: 1, living_street: 1, service: 0 };
 const rankOf = (cls: string) => RANK[cls] ?? (cls.endsWith('_link') ? 2 : 0);
+/**
+ * Has the road kerbs? Every street ranked 1 or above, and a service road with
+ * a street's name (OSM files some real streets, Simei Rise among them, as
+ * service roads). Not driveways, car park aisles, or the lanes of a bus
+ * interchange, depot or campus: those stay plain.
+ */
+const STREET = /\b(road|street|rise|lane|drive|avenue|way|walk|crescent|close|farmway|link|central|place|grove|view|terrace|loop|lorong|jalan)\b/i;
+const kerbedRoad = (e: { cls: string; name?: string }) => rankOf(e.cls) >= 1 || (e.cls === 'service' && STREET.test(e.name ?? ''));
 /** The two sides of a dual carriageway drawn as one road (two lanes or more each way: a narrower one is marked as any two-way street). */
 const paired = (e: { dual?: number; w: number }) => !!e.dual && e.w >= 12;
 
@@ -876,6 +884,7 @@ export async function buildPasirRisCourse(
     ECUM,
     halfAt: halfAtE,
     rank: (i) => rankOf(edges[i].cls),
+    kerbed: (i) => kerbedRoad(edges[i]),
     // Flyover decks keep plain pads; ramps and ground roads join shaped junctions.
     shapeable: (i) => !isDeck[i],
     // A split or a merge is no junction: the slip road runs into the road
@@ -3858,7 +3867,7 @@ export async function buildPasirRisCourse(
         const tilt = dy && !elevated[line] ? (kk: number): [number, number] => [tiltAt(line, cum[kk]), relAlong(line, cum[kk])] : undefined;
         const opt = { yAt, tilt, lo: cut.lo, hi: cut.hi, join: joinOf(line) };
         strip(road, P, cum, lo, hi, halfAt, 0.09, opt);
-        if ((rank >= 1 || dy) && !JX.internal[line])
+        if ((kerbedRoad(e) || dy) && !JX.internal[line])
           for (const sgn of [-1, 1]) {
             // Each side's kerb, except where it runs inside a paved island or
             // a junction (a road overlapping a junction past its mouth).
