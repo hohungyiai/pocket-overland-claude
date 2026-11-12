@@ -491,6 +491,67 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       if (Math.abs(A) < 1e-9) return null;
       return [cx / (3 * A), cz / (3 * A)];
     };
+    /**
+     * A simple outline (anticlockwise) that no one point sees all of, in
+     * parts that each have one: cut into triangles, then those joined
+     * again wherever two side by side still have a point that sees both.
+     * Null where the outline crosses itself.
+     */
+    const starParts = (ring: XZ[]): { ring: XZ[]; c: XZ }[] | null => {
+      const n = ring.length;
+      if (n < 3) return null;
+      const segX = (a: XZ, b: XZ, c: XZ, d: XZ) => {
+        const o = (p: XZ, q: XZ, r: XZ) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+        return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+      };
+      for (let i = 0; i < n; i++)
+        for (let k = i + 2; k < n; k++) if (!(i === 0 && k === n - 1) && segX(ring[i], ring[(i + 1) % n], ring[k], ring[(k + 1) % n])) return null;
+      // Ears, clipped one at a time.
+      const left = ring.map((_, i) => i);
+      const tris: number[][] = [];
+      const inTri = (p: XZ, a: XZ, b: XZ, c: XZ) => cross([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]) > 1e-9 && cross([c[0] - b[0], c[1] - b[1]], [p[0] - b[0], p[1] - b[1]]) > 1e-9 && cross([a[0] - c[0], a[1] - c[1]], [p[0] - c[0], p[1] - c[1]]) > 1e-9;
+      for (let guard = 0; left.length > 3 && guard < n * n; guard++) {
+        let cut = -1;
+        for (let q = 0; q < left.length && cut < 0; q++) {
+          const a = ring[left[(q + left.length - 1) % left.length]], b = ring[left[q]], c = ring[left[(q + 1) % left.length]];
+          if (cross([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]) <= 1e-9) continue;
+          if (left.some((v) => v !== left[q] && v !== left[(q + left.length - 1) % left.length] && v !== left[(q + 1) % left.length] && inTri(ring[v], a, b, c))) continue;
+          cut = q;
+        }
+        if (cut < 0) return null;
+        tris.push([left[(cut + left.length - 1) % left.length], left[cut], left[(cut + 1) % left.length]]);
+        left.splice(cut, 1);
+      }
+      if (left.length === 3) tris.push([...left]);
+      // Joined again: two pieces that share a side become one wherever a point still sees the whole.
+      let parts = tris.map((t) => [...t]);
+      for (let joined = true; joined; ) {
+        joined = false;
+        for (let a = 0; a < parts.length && !joined; a++)
+          for (let b = a + 1; b < parts.length && !joined; b++) {
+            const A = parts[a], B = parts[b];
+            for (let x = 0; x < A.length && !joined; x++) {
+              const u = A[x], v = A[(x + 1) % A.length];
+              const y = B.findIndex((w, k) => w === v && B[(k + 1) % B.length] === u);
+              if (y < 0) continue;
+              // (A from v round to u, then B's points between u and v.)
+              const m: number[] = [];
+              for (let k = 0; k < A.length; k++) m.push(A[(x + 1 + k) % A.length]);
+              for (let k = 2; k < B.length; k++) m.push(B[(y + k) % B.length]);
+              if (!kernelOf(m.map((i) => ring[i]))) continue;
+              parts[a] = m;
+              parts.splice(b, 1);
+              joined = true;
+            }
+          }
+      }
+      const got = parts.map((q) => {
+        const r = q.map((i) => ring[i]);
+        return { ring: r, c: kernelOf(r) };
+      });
+      if (got.some((q) => !q.c)) return null;
+      return got as { ring: XZ[]; c: XZ }[];
+    };
     // A side road meeting a road that carries straight on (a tee): the
     // through road is one strip, not cut back at the joint, so the junction
     // is only the side road's bell mouth: from its mouth, round a corner
@@ -569,7 +630,10 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // are one surface until they are GAP apart, and the slip road's own
       // strip starts there.
       const g = leaves[0].d >= leaves[1].d ? 0 : 1; // the wedge's side: 0 the side road's left as it leaves, 1 its right
-      const sharp = Math.abs(leaves[0].d - leaves[1].d) > 2.4 * hS;
+      // (Not an opening in a divider that crosses it on the slant: a few
+      // metres over to the other side of the road, itself a tee there.)
+      const opener = teeAt[farJ] && !thruAt(sLine, farJ) && sL < 30;
+      const sharp = !opener && Math.abs(leaves[0].d - leaves[1].d) > 2.4 * hS;
       const GAP = 1.8; // (a little more than the 1.5 m under which roads side by side are paved as one: that paving has nothing left to do here)
       let dG = -1;
       if (sharp) {
@@ -588,10 +652,15 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // half: as far as half way across the gap between the two roads' edges.
       const Rd = Math.max(2.5, Math.min(6, 1.5 + hS * 0.8));
       let openAt = -1;
+      // (Where the two roads' edges come within 0.3 m of each other across
+      // it, or overlap, the two pavings would too: each is cut back at the
+      // opening's middle, the line where the other's begins.)
+      let cutMid = false;
       if (!sharp && teeAt[farJ] && !thruAt(sLine, farJ)) {
         const F = teeGeom(farJ, sLine);
         const dF = F && F.leaves[0] && F.leaves[1] ? Math.max(F.leaves[0].d, F.leaves[1].d) : -1;
         if (dF >= 0 && sL - dMax - dF < 2 * Rd + 3) openAt = dMax + Math.max(0.15, (sL - dMax - dF) / 2);
+        cutMid = openAt >= 0 && sL - dMax - dF < 0.3;
       }
       // (A slip road's outside edge swings onto the road's over a longer curve.)
       const R = sharp ? Math.min(10, dG - leaves[1 - g]!.d) : Math.min(Rd, (openAt >= 0 ? openAt : room) - dMax);
@@ -752,7 +821,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
             cs = parts.map((r) => kernelOf(r));
           }
           if (cs.some((x) => !x)) {
-            no('outline folds');
+            no('outline folds: wedge');
             out.why[out.why.length - 1].ring = parts[cs.findIndex((x) => !x)];
             return null;
           }
@@ -783,15 +852,68 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         c = [mid[0] + (M.q[0] - mid[0]) * 0.3, mid[1] + (M.q[1] - mid[1]) * 0.3];
         if (sees(ring, c) <= 1e-6) c = seesBest(ring, c);
       }
+      // (Two points of the outline a hair apart, where a corner curve ends
+      // on the road's edge, make a side of no length pointing anywhere: no
+      // point would see round it.)
+      ring = ring.filter((p, k) => Math.hypot(p[0] - ring[(k + 1) % ring.length][0], p[1] - ring[(k + 1) % ring.length][1]) > 1e-3);
       // (A bell mouth's corners come in along the road's edge, so the points
       // that see the whole outline can be a strip a hand wide: found exactly.)
       if (sees(ring, c) <= 1e-6) c = kernelOf(ring) ?? c;
+      // (An outline that bends round the inside of a curving road may have
+      // no one point that sees all of it: it is paved in parts, the one
+      // with the side road's mouth the junction's own, the rest with it.)
+      if (sees(ring, c) <= 1e-6) {
+        const sp2 = starParts(ring);
+        if (sp2 && sp2.length > 1) {
+          const mid: XZ = [(M.left[0] + M.right[0]) / 2, (M.left[1] + M.right[1]) / 2];
+          const near = (r: XZ[]) => Math.min(...r.map((p) => Math.hypot(p[0] - mid[0], p[1] - mid[1])));
+          sp2.sort((p, q) => near(p.ring) - near(q.ring));
+          ring = sp2[0].ring;
+          c = sp2[0].c;
+          more = [...(more ?? []), ...sp2.slice(1).map((q) => ({ ring: q.ring, centre: q.c, radius: Math.max(...q.ring.map((p) => Math.hypot(p[0] - q.c[0], p[1] - q.c[1]))) }))];
+        }
+      }
       if (sees(ring, c) <= 1e-6) {
         no('outline folds');
         out.why[out.why.length - 1].ring = ring;
         return null;
       }
       const kerbed = Math.max(I.rank(sLine), ...through.map((i) => I.rank(i))) >= 1;
+      if (cutMid) {
+        // The opening's middle: the line across it half way along.
+        const at = along(sp, I.ECUM[sLine], sL / 2);
+        let tx = sp[at.seg + 1][0] - sp[at.seg][0], tz = sp[at.seg + 1][1] - sp[at.seg][1];
+        if (sEnd === 1) (tx = -tx), (tz = -tz);
+        const tl = Math.hypot(tx, tz) || 1;
+        // (Kept: this joint's side of it, signed distance below zero.)
+        const sd = (q: XZ) => ((q[0] - at.p[0]) * tx + (q[1] - at.p[1]) * tz) / tl;
+        const clip = (poly: XZ[], closed: boolean): XZ[] => {
+          const o: XZ[] = [];
+          const n = poly.length;
+          for (let k = 0; k < (closed ? n : n - 1); k++) {
+            const P = poly[k], Q = poly[(k + 1) % n];
+            const a = sd(P), b = sd(Q);
+            if (a <= 0) o.push(P);
+            if ((a < 0 && b > 0) || (a > 0 && b < 0)) {
+              const t = a / (a - b);
+              o.push([P[0] + (Q[0] - P[0]) * t, P[1] + (Q[1] - P[1]) * t]);
+            }
+          }
+          if (!closed && n && sd(poly[n - 1]) <= 0) o.push(poly[n - 1]);
+          return o;
+        };
+        ring = clip(ring, true);
+        if (ring.length < 3) return no('opening cut past its centre');
+        // (Its centre on this side too, where it sees the whole of what is left.)
+        if (sd(c) >= -0.05 || sees(ring, c) <= 1e-6) {
+          const k = kernelOf(ring);
+          if (!k || sd(k) >= -0.05) return no('opening cut past its centre');
+          c = k;
+        }
+        corners = corners.map((q) => clip(q, false)).filter((q) => q.length >= 2);
+        if (kerbLines) kerbLines = kerbLines.map((q) => clip(q, false)).filter((q) => q.length >= 2);
+        more = more?.map((f) => ({ ...f, ring: clip(f.ring, true) })).filter((f) => f.ring.length >= 3 && sd(f.centre) < 0);
+      }
       return { ring, corners, kerbs: kerbLines ?? corners, c, mouth: openAt >= 0 ? null : M, inside: openAt >= 0 ? sLine : null, more: (more ?? []).map((f) => ({ ...f, slip: sharp })), kerbed, flip: flipOf(legs[0]), sharp };
     };
     const teeShape = (j: number): Built | null => {

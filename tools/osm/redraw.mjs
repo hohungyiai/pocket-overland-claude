@@ -875,11 +875,16 @@ if (steps.has('roads')) {
         for (const [n, sd] of sides.entries()) {
           // The side road comes in across it, and is no wider.
           const cut = cuts[n];
+          // (An opening in a divider may cross it on the slant: a few metres
+          // of road over to the other side of the same road, which comes in
+          // at a narrow angle but is no slip road, and no side road either.)
+          const farL = at.get(sd.a === j ? sd.b : sd.a) ?? [];
+          const opening = !fast && sd.len < 30 && cut >= 15 && farL.length >= 3 && farL.some((e) => e !== sd && e !== p && e !== q && sameRoad(e, p));
           // (A link that comes in square is a side road like any other: the
           // few metres across a divider for turning back, not a slip road.)
-          const slip = cut < 40 && (FAST.test(sd.cls) || (parts && !!sd.one));
+          const slip = !opening && cut < 40 && (FAST.test(sd.cls) || (parts && !!sd.one));
           // (One side of a divided road is half of its road.)
-          if ((fast && !slip && !links) || cut < (slip ? 6 : 40) || widthAt(sd, j) > (fast ? 1 : p.one ? 2 : 1.5) * Math.max(wp, wq) + 0.5) ok = false;
+          if ((fast && !slip && !links) || cut < (slip ? 6 : opening ? 15 : 40) || widthAt(sd, j) > (fast ? 1 : p.one ? 2 : 1.5) * Math.max(wp, wq) + 0.5) ok = false;
           // (A slip road is narrower than the road it leaves at every point.
           // One as wide that leaves an expressway at a narrow angle is not a
           // side road: the expressway forks there, and neither branch
@@ -888,7 +893,7 @@ if (steps.has('roads')) {
           // the two is paved until they are 1.8 m apart.)
           else if (slip && (sd.len < Math.min(30, (Math.max(wp, wq) / 2 + sd.w / 2 + 1.8) / Math.sin((cut * Math.PI) / 180) + 4) || widthAt(sd, j) > narrow + 0.5 || (!links && !parts && sd.w > 0.8 * narrow && cut < 20) || clearsAt(sd, j, p, q) > roomOn(sd, j) + 3)) ok = false;
           // (A few metres of road: an opening in a divider, or a stub with just room for its corners. See below.)
-          else if (!slip && sd.len < 15) sd.len < 4 ? (ok = false) : short.push({ sd, room: sd.len >= Math.max(wp, wq) + 1 });
+          else if (!slip && sd.len < (opening ? 30 : 15)) sd.len < 4 ? (ok = false) : short.push({ sd, room: !opening && sd.len >= Math.max(wp, wq) + 1 });
           if (process.env.ROADS_J && Math.hypot(pos[j][0] - +process.env.ROADS_J.split(',')[0], pos[j][1] - +process.env.ROADS_J.split(',')[1]) < 3) console.error('j', pos[j].map(Math.round).join(','), 'pair', p.name ?? p.cls, q.name ?? q.cls, 'side', sd.name ?? sd.cls, { cut: Math.round(cut), slip, fast, links, parts, len: Math.round(sd.len), clears: clearsAt(sd, j, p, q), room: roomOn(sd, j), ok });
           if (!ok) break;
         }
