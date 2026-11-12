@@ -1091,13 +1091,18 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     }
     if (!got) {
       // Roads that part at a narrow angle and curve away (slip roads) can
-      // leave no clean outline: pave the hull of their mouths instead,
-      // without kerbs.
+      // leave no clean outline: pave the hull of their mouths instead. Its
+      // sides from one road's mouth to another's are the roads' sides and
+      // carry their kerb, as a shaped junction's corners do (the kerb is
+      // cut to fit where the side runs on into a road or a wedge); only
+      // the sides across a mouth are open.
       const pts: XZ[] = mouths.flatMap((m) => [m.right, m.left]);
       const hull = convexHull(pts);
       if (hull.length < 3) return 'star';
       const ring: XZ[] = [];
       const corners: XZ[][] = [];
+      const kerbs: XZ[][] = [];
+      const ownerOf = (p: XZ) => mouths.find((m) => Math.hypot(m.left[0] - p[0], m.left[1] - p[1]) < 1e-6 || Math.hypot(m.right[0] - p[0], m.right[1] - p[1]) < 1e-6);
       for (let k = 0; k < hull.length; k++) {
         const a = hull[k];
         const b = hull[(k + 1) % hull.length];
@@ -1112,6 +1117,9 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         if (A && B && A !== B) edge = eased(A, B, edge, I.sideBySide?.(A.line, A.end, B.line, B.end));
         ring.push(...edge.slice(0, -1));
         corners.push(edge);
+        const Ma = ownerOf(a);
+        const Mb = ownerOf(b);
+        if (Ma && Mb && Ma !== Mb && Math.max(I.rank(Ma.line), I.rank(Mb.line)) >= 1) kerbs.push(edge);
       }
       if (spills(ring)) return 'spill';
       centre = mean(hull);
@@ -1119,7 +1127,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // the middle of the hull, the paving is filled from the point that
       // sees it best instead.)
       if (sees(ring, centre) <= 1e-6) centre = seesBest(ring, centre);
-      got = { ms: mouths, ring, corners, kerbs: [], c: centre };
+      got = { ms: mouths, ring, corners, kerbs, c: centre };
       isHull = true;
     }
     const radius = Math.max(...got.ring.map((p) => Math.hypot(p[0] - centre[0], p[1] - centre[1])));

@@ -1623,7 +1623,16 @@ export async function buildPasirRisCourse(
   };
   for (const sh of JX.shapes) {
     const kept: XZ[][] = [];
-    for (const F of sh.kerbs) {
+    for (const F0 of sh.kerbs) {
+      // (Tested a metre at a time: a long straight side has only its two
+      // ends as points, and one end touching a road would take the whole
+      // side's kerb with it.)
+      const F: XZ[] = [F0[0]];
+      for (let q = 1; q < F0.length; q++) {
+        const a = F0[q - 1], b = F0[q];
+        const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1])));
+        for (let t = 1; t <= n; t++) F.push([a[0] + ((b[0] - a[0]) * t) / n, a[1] + ((b[1] - a[1]) * t) / n]);
+      }
       let run: XZ[] = [];
       F.forEach((p, q) => {
         const a = F[Math.max(0, q - 1)];
