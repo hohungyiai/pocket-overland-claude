@@ -831,7 +831,8 @@ if (steps.has('roads')) {
     if (l.length !== 3 || sd.len > 60) return false;
     const hs = head(sd, f, 10);
     return l.some((e) => {
-      if (e === sd) return false;
+      // (The other branch: the side road's other side, one way each.)
+      if (e === sd || !sameRoad(e, sd) || !e.one || !sd.one) return false;
       const he = head(e, f, 10);
       return deg(hs[0] * he[0] + hs[1] * he[1]) < 90 && clearsAt(sd, f, e, e) > sd.len - w / 2 - 3;
     });
