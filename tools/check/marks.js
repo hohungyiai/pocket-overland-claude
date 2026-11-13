@@ -58,12 +58,36 @@ window.__markRuns = (key) => {
   return { tris, ends: ends.filter((_, q) => !gone[q]) };
 };
 
-// Is (x, z) where a mark may rightly stop: a junction's paving, a crossing,
-// a yellow box, a gore's paving, an island, or under another road?
+// Is (x, z) within a zebra crossing's footprint, grown by `along` metres
+// each way along the road and `across` past its ends?
+let crossGrid = null;
+window.__atCrossing = (x, z, along, across) => {
+  const d = globalThis.__osm;
+  const CR = typeof d.crossings === 'function' ? d.crossings() : d.crossings;
+  if (!crossGrid) {
+    crossGrid = new Map();
+    CR.forEach((c, q) => {
+      const k = Math.floor(c.c[0] / 16) * 100003 + Math.floor(c.c[1] / 16);
+      if (!crossGrid.has(k)) crossGrid.set(k, []);
+      crossGrid.get(k).push(q);
+    });
+  }
+  for (let i = -1; i <= 1; i++)
+    for (let j = -1; j <= 1; j++)
+      for (const q of crossGrid.get((Math.floor(x / 16) + i) * 100003 + Math.floor(z / 16) + j) ?? []) {
+        const c = CR[q];
+        const vx = x - c.c[0], vz = z - c.c[1];
+        if (Math.abs(vx * c.t[0] + vz * c.t[1]) < (d.CROSS_W ?? 3) / 2 + along && Math.abs(vx * c.t[1] - vz * c.t[0]) < c.half + across) return true;
+      }
+  return false;
+};
+
+// Is (x, z) where a mark may rightly stop: a junction's paving, a zebra,
+// a gore's paving, an island, or under another road?
 window.__markStopOk = (x, z, y) => {
   const d = globalThis.__osm;
   const w = d.stopsAt(x, z, y);
-  return w.paving || w.island || w.gore;
+  return w.paving || w.island || w.gore || window.__atCrossing(x, z, 0.5, 1);
 };
 
 // An edge line never jumps sideways or breaks off and starts again: two of
@@ -157,24 +181,7 @@ window.__checkKerbLines = () => {
   };
   // (Nor at a crossing: the edge line stops at the zebra, and the kerb
   // round a divider's nose there has none. Up to 2 m either side of it.)
-  const CR = typeof d.crossings === 'function' ? d.crossings() : d.crossings;
-  const crossGrid = new Map();
-  CR.forEach((c, q) => {
-    const k = Math.floor(c.c[0] / 16) * 100003 + Math.floor(c.c[1] / 16);
-    if (!crossGrid.has(k)) crossGrid.set(k, []);
-    crossGrid.get(k).push(q);
-  });
-  const atCrossing = (x, z) => {
-    for (let i = -1; i <= 1; i++)
-      for (let j = -1; j <= 1; j++)
-        for (const q of crossGrid.get((Math.floor(x / 16) + i) * 100003 + Math.floor(z / 16) + j) ?? []) {
-          const c = CR[q];
-          const vx = x - c.c[0], vz = z - c.c[1];
-          const along = vx * c.t[0] + vz * c.t[1], across = vx * c.t[1] - vz * c.t[0];
-          if (Math.abs(along) < (d.CROSS_W ?? 3) / 2 + 2 && Math.abs(across) < c.half + 2.5) return true;
-        }
-    return false;
-  };
+  const atCrossing = (x, z) => window.__atCrossing(x, z, 2, 2.5);
   const bad = [];
   let n = 0;
   const seen = new Set();
