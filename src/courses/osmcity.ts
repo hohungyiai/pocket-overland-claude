@@ -4710,6 +4710,9 @@ export async function buildPasirRisCourse(
       if (s.x1 < bx0 || s.x0 > bx1 || s.z1 < bz0 || s.z0 > bz1) continue;
       const p = new Path64();
       for (const q of s.ring) p.push(new Point64(Math.round(q[0] * OUT_S), Math.round(q[1] * OUT_S)));
+      // (All one way round: where two pieces wound opposite ways overlap,
+      // their windings would cancel and leave a false hole.)
+      if (Clipper.area(p) < 0) p.reverse();
       paths.push(p);
     }
     const out: { pts: XZ[]; corner: XZ[]; edge: number[]; at: number[]; hole: boolean }[] = [];
@@ -4902,7 +4905,7 @@ export async function buildPasirRisCourse(
     const thru = lined < 0 && !wedge && thruYellowNear(mx + nx * 0.35, mz + nz * 0.35) < 0.4;
     // (An island's kerb, among lined roads: the edge line follows it all
     // the way round, as it does round a divider's nose.)
-    const island = lined < 0 && !wedge && !thru && hole && kerb && [...near].some(([i, h]) => rankOf(edges[i].cls) >= 2 && !isDeck[i] && h.d < drawnHalf(i, h.seg, h.u) + 6);
+    const island = lined < 0 && !wedge && !thru && hole && kerb && [...near].some(([i]) => rankOf(edges[i].cls) >= 2 && !isDeck[i]);
     why += ` lined ${lined} off ${off.toFixed(2)}${wedge ? ' wedge' : ''}${thru ? ' through' : ''}${island ? ' island' : ''}`;
     return { ...base, kerb, line: lined >= 0 || wedge || thru || island, stop: false, why, lr: lined, ls };
   };
@@ -6707,6 +6710,7 @@ export async function buildPasirRisCourse(
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       // Where any mark may stop (for the checks: no one road asked about).
       outlineAt,
+      outlineRingsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ hole: g.hole, corner: g.corner })),
       stopsAt: (x: number, z: number, y: number) => ({ paving: inPaving(x, z, y), island: onIsland(x, z), gore: inGore(x, z) }),
       whyClosed: (line: number, x: number, z: number, y: number) => ({ covered: coveredBy(line, x, z, y), island: onIsland(x, z), paving: inPaving(x, z, y), gore: inGore(x, z) }),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),
