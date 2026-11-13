@@ -995,7 +995,8 @@ if (steps.has('roads')) {
   for (const [j, l] of at) {
     if (l.length !== 2) continue;
     const [p, q] = l;
-    if ((p.lv ?? 0) === (q.lv ?? 0) || p.cls !== q.cls || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
+    // (Not into a tunnel: the game draws no road under the ground.)
+    if ((p.lv ?? 0) === (q.lv ?? 0) || (p.lv ?? 0) < 0 || (q.lv ?? 0) < 0 || p.cls !== q.cls || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
     // (Not a bridge a few metres long over a drain: the road either side of it follows the ground.)
     if (Math.min(p.len, q.len) < 20) continue;
     const hp = head(p, j, 20), hq = head(q, j, 20);
