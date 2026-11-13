@@ -4768,12 +4768,12 @@ export async function buildPasirRisCourse(
           at.push((ts[q - first] + ts[q - first + 1]) / 2);
         }
       }
-      // (An island's ring, a hole in the paving: paving outside it. Round
-      // paving, with the paving on its left, x east and z south, the ring's
-      // signed area comes out positive; round a hole, negative.)
+      // (An island's ring, a hole in the paving: paving outside it. Turned
+      // round as above, a ring round paving comes out with a negative signed
+      // area, x east and z south; round a hole, positive.)
       let area2 = 0;
       for (let q = 0; q < corner.length; q++) area2 += corner[q][0] * corner[(q + 1) % corner.length][1] - corner[(q + 1) % corner.length][0] * corner[q][1];
-      out.push({ pts, corner, edge, at, hole: area2 < 0 });
+      out.push({ pts, corner, edge, at, hole: area2 > 0 });
     }
     return out;
   };
@@ -5041,8 +5041,9 @@ export async function buildPasirRisCourse(
             const b = R[nx(q)];
             const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
             const cx = (a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * 0.35, cz = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * 0.35;
-            return lineStops(cx, cz) ? { ...m, line: false, stop: true } : m;
+            return lineStops(cx, cz) ? { ...m, line: false, stop: true, why: m.why + ' zebra' } : m;
           });
+          const zebra = (q: number) => !!marks[q]?.stop && marks[q]!.why.endsWith(' zebra');
           // Round a nose (a divider's end, a gore's tip) the edge line carries
           // on from one side to the other: a short stretch with no road's
           // edge, turning more than 120°, between two lined stretches. And
@@ -5050,16 +5051,30 @@ export async function buildPasirRisCourse(
           // next's (a merge, a split, a bend), turning less than 40°: the
           // paving there lies a little off both roads' edges. (A corner into
           // a side road, turning about 90°, is a mouth: the line stops.)
+          // (And round a nose from its lined side to a zebra just past its
+          // tip, either way round: the line follows the kerb to the zebra.)
           for (let q = 1; q < n; q++) {
-            if (!marks[q - 1]?.line || !marks[q] || marks[q]!.line) continue;
+            if (!(marks[q - 1]?.line || zebra(q - 1)) || !marks[q] || marks[q]!.line || marks[q]!.stop) continue;
             let e = q;
             let run = 0;
             while (e < n - 1 && marks[e] && !marks[e]!.line && !marks[e]!.stop && run < 12) run += len(e++);
-            if (!marks[e]?.line || run >= 12) continue;
-            const t0 = unit(R[q][0] - R[q - 1][0], R[q][1] - R[q - 1][1]), t1 = unit(R[nx(e)][0] - R[e][0], R[nx(e)][1] - R[e][1]);
+            if (!(marks[e]?.line || zebra(e)) || run >= 12) continue;
+            const toZebra = !marks[q - 1]!.line || !marks[e]!.line;
+            if (toZebra && !marks[q - 1]!.line && !marks[e]!.line) continue;
+            // (Its way in and out over 3 m either side: the line may already
+            // have turned some way round where it leaves off.)
+            let qb = q - 1;
+            while (qb > 0 && marks[qb - 1]?.line && Math.hypot(R[q][0] - R[qb][0], R[q][1] - R[qb][1]) < 3) qb--;
+            let ef = nx(e);
+            while (ef < n - 1 && marks[ef]?.line && Math.hypot(R[ef][0] - R[e][0], R[ef][1] - R[e][1]) < 3) ef++;
+            const t0 = unit(R[q][0] - R[qb][0], R[q][1] - R[qb][1]), t1 = unit(R[ef][0] - R[e][0], R[ef][1] - R[e][1]);
             const c = t0[0] * t1[0] + t0[1] * t1[1];
-            if (c > -0.5 && c < Math.cos((40 * Math.PI) / 180)) continue;
-            for (let v = q; v < e; v++) marks[v] = { ...marks[v]!, line: true, why: marks[v]!.why + (c < 0 ? ' nose' : ' on') };
+            // (A nose may be half rounded already where the line leaves off: a
+            // narrow one, under 8 m across, turning more than about 100°, is one too.)
+            const nose = c < -0.5 || (c < -0.2 && Math.hypot(R[e][0] - R[q][0], R[e][1] - R[q][1]) < 8);
+            if (!nose && (toZebra || c < Math.cos((40 * Math.PI) / 180))) continue;
+            if (toZebra && !marks.slice(q, e).every((m) => m!.kerb)) continue;
+            for (let v = q; v < e; v++) marks[v] = { ...marks[v]!, line: true, why: marks[v]!.why + (nose ? ' nose' : ' on') };
           }
           // Only the points where something changes are kept: the outline's
           // corners, and where a kerb or a line starts or stops (or the tile
