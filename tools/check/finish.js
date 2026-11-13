@@ -425,6 +425,31 @@ window.__checkSwitchedOff = (all = false) => {
 //          side away from the side road never breaks, and the road's slope
 //          changes no more sharply at the joint than just before and after it.
 // (A map with no such marks has nothing to test: today's map.)
+// (Used here and by marks.js.)
+// Is (x, z) within a zebra crossing's footprint, grown by `along` metres
+// each way along the road and `across` past its ends?
+let crossGrid = null;
+window.__atCrossing = (x, z, along, across) => {
+  const d = globalThis.__osm;
+  const CR = typeof d.crossings === 'function' ? d.crossings() : d.crossings;
+  if (!crossGrid) {
+    crossGrid = new Map();
+    CR.forEach((c, q) => {
+      const k = Math.floor(c.c[0] / 16) * 100003 + Math.floor(c.c[1] / 16);
+      if (!crossGrid.has(k)) crossGrid.set(k, []);
+      crossGrid.get(k).push(q);
+    });
+  }
+  for (let i = -1; i <= 1; i++)
+    for (let j = -1; j <= 1; j++)
+      for (const q of crossGrid.get((Math.floor(x / 16) + i) * 100003 + Math.floor(z / 16) + j) ?? []) {
+        const c = CR[q];
+        const vx = x - c.c[0], vz = z - c.c[1];
+        if (Math.abs(vx * c.t[0] + vz * c.t[1]) < (d.CROSS_W ?? 3) / 2 + along && Math.abs(vx * c.t[1] - vz * c.t[0]) < c.half + across) return true;
+      }
+  return false;
+};
+
 window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.01) => {
   const d = globalThis.__osm;
   const F = window.__finishIndex();
@@ -498,7 +523,10 @@ window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.01) => 
       const fx = s < 0 ? -A[2] : A[2], fz = s < 0 ? -A[3] : A[3];
       const rx = -fz, rz = fx;
       const y = F.asphaltAt(A[0], A[1], yj, 1.5);
-      const row = { s, x: A[0], z: A[1], y, half: A[4], hole: 0, kerbIn: 0, paint: new Set(), kerb: [false, false] };
+      // (A row on a zebra crossing or up to 2 m from it, as for kerb lines in marks.js: its stripes, and the stop
+      // line and the lines stopping short of it, are not lines along the road.)
+      const zebra = window.__atCrossing(A[0], A[1], 2, 0);
+      const row = { s, x: A[0], z: A[1], y, half: A[4], hole: 0, kerbIn: 0, paint: new Set(), kerb: [false, false], zebra };
       rows.push(row);
       if (Number.isNaN(y)) continue;
       for (let o = -A[4] - 0.8; o <= A[4] + 0.8001; o += 0.1) {
@@ -510,7 +538,7 @@ window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.01) => 
           if (f.kind === 'kerb') {
             if (inside) row.kerbIn++;
             else if (Math.abs(o) > A[4] - 0.5) row.kerb[o > 0 ? 1 : 0] = true;
-          } else if (f.kind !== 'road' && inside) row.paint.add(Math.round(o * 10));
+          } else if (f.kind !== 'road' && inside && !zebra) row.paint.add(Math.round(o * 10));
         }
       }
     }
@@ -521,11 +549,13 @@ window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.01) => 
     if (kerbIn) flag('kerb across', kerbIn / 10, P0[0], P0[1]);
     // A line that is solid on both approaches (at every row there, give or take 0.2 m sideways) is solid through.
     const has = (r, o) => r.paint.has(o) || r.paint.has(o - 1) || r.paint.has(o + 1) || r.paint.has(o - 2) || r.paint.has(o + 2);
-    const solid = [...far[0].paint].filter((o) => far.every((r) => has(r, o)));
+    // (Not counting rows at a zebra: where one covers a whole approach, there is no telling which lines run through.)
+    const lined = far.filter((r) => !r.zebra);
+    const solid = lined.some((r) => r.s < 0) && lined.some((r) => r.s > 0) ? [...lined[0].paint].filter((o) => lined.every((r) => has(r, o))) : [];
     // (Not the edge line on a side a road joins from: it stops at the mouth.)
     const edgeAt = (o) => Math.abs(o / 10) > Math.min(...rows.map((r) => r.half)) - 1;
     const joins = (o) => !side || both || Math.sign(o) === side;
-    const broken = solid.filter((o) => !near.every((r) => has(r, o)) && !(edgeAt(o) && joins(o)));
+    const broken = solid.filter((o) => !near.every((r) => r.zebra || has(r, o)) && !(edgeAt(o) && joins(o)));
     if (broken.length) flag('line stops', broken.length / 10, P0[0], P0[1]);
     // The kerb on the side away from the side road.
     for (const k of [0, 1]) {
