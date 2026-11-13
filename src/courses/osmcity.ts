@@ -5009,7 +5009,7 @@ export async function buildPasirRisCourse(
       onTile('far', k, 'outline lines', () => {
         const w = outWork.get(k);
         if (!w) return;
-        for (const { P, cum, n, drawn: drawnP, edge, at, samples } of w.rings) {
+        for (const { P, cum, n, drawn: drawnP, edge, at, samples, hole } of w.rings) {
           // (By the ring's own pieces: piece q runs from point q to q + 1, round.)
           const R = P.slice(1, n + 1);
           const nx = (q: number) => (q + 1) % n;
@@ -5027,6 +5027,9 @@ export async function buildPasirRisCourse(
             return lineStops(cx, cz) ? { ...m, line: false, stop: true, why: m.why + ' zebra' } : m;
           });
           const zebra = (q: number) => !!marks[q]?.stop && marks[q]!.why.endsWith(' zebra');
+          // (An island is lined all round or not at all: where any of its
+          // kerb has a line, all of it does, but at a zebra.)
+          if (hole && marks.some((m) => m?.line)) marks.forEach((m, q) => m && m.kerb && !m.line && !m.stop && (marks[q] = { ...m, line: true, why: m.why + ' island' }));
           // Round a nose (a divider's end, a gore's tip) the edge line carries
           // on from one side to the other: a short stretch with no road's
           // edge, turning more than 120°, between two lined stretches. And

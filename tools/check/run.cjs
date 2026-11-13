@@ -46,9 +46,7 @@ const CHECKS = [
   ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 23],
   ['No step where road pieces meet', 'seams.js', '__checkSteps', 0],
   ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
-  // (Known on the trial map, since its edge lines follow the finished
-  // surface: at three expressway exits the edge line follows the exit.)
-  ['A through road\'s lines carry on across its junctions', 'through.js', '__checkThroughLines', 0, { trial: 4 }],
+  ['A through road\'s lines carry on across its junctions', 'through.js', '__checkThroughLines', 0],
   ['A through road\'s lines meet the road\'s own at the junction\'s edge', 'through.js', '__checkThroughJoins', 0],
   ['A through road\'s edge runs on smoothly where nothing joins it', 'through.js', '__checkThroughEdges', 0],
   ['Every road joining a through road has its give-way line', 'through.js', '__checkGiveWays', 0],
