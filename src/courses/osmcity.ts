@@ -3349,7 +3349,8 @@ export async function buildPasirRisCourse(
   // verge between them begins.
   const GORE = 1.5;
   /** (deck: how deep the deck is where both roads are decks, 0 between raised roads on the ground, -1 between roads lying on the ground.) */
-  const gores: { ring: XZ[]; rows: { a: XZ; b: XZ; ya: number; yb: number }[]; deck: number }[] = [];
+  type GoreRow = { a: XZ; b: XZ; ya: number; yb: number };
+  const gores: { ring: XZ[]; rows: GoreRow[]; deck: number }[] = [];
   const goreDeck = (A: number, B: number) => (isDeck[A] && isDeck[B] ? (elevated[A] || elevated[B] ? 1.2 : 0.6) : hasProfile[A] || hasProfile[B] ? 0 : -1);
   const GCELL = 64;
   const goreGrid = new Map<number, number[]>();
@@ -3376,7 +3377,7 @@ export async function buildPasirRisCourse(
       }
       return y;
     };
-    /** Point, direction (away from j) and segment at s out from road i's end at j. */
+    /** Point, direction (away from j) and segment at s out from road i's end at j. (Its half width as its strip draws it: a step from one point's width to the next left a hairline of ground between the wedge and a tapering road, and a spike in the outline at the nose.) */
     const out = (i: number, j: number, s0: number) => {
       const P = EP[i];
       const cum = ECUM[i];
@@ -3388,7 +3389,7 @@ export async function buildPasirRisCourse(
       const sl = cum[k + 1] - cum[k] || 1;
       const u = (s - cum[k]) / sl;
       const sg = fromA ? 1 : -1;
-      return { x: lerp(P[k][0], P[k + 1][0], u), z: lerp(P[k][1], P[k + 1][1], u), tx: (sg * (P[k + 1][0] - P[k][0])) / sl, tz: (sg * (P[k + 1][1] - P[k][1])) / sl, k, u, s, h: halfAtE(i, u < 0.5 ? k : k + 1) };
+      return { x: lerp(P[k][0], P[k + 1][0], u), z: lerp(P[k][1], P[k + 1][1], u), tx: (sg * (P[k + 1][0] - P[k][0])) / sl, tz: (sg * (P[k + 1][1] - P[k][1])) / sl, k, u, s, h: halfAtS(i, s) };
     };
     const trimAt = (i: number, j: number) => (edges[i].a === j ? JX.trimA[i] || 0 : JX.trimB[i] || 0);
     const COS = Math.cos((35 * Math.PI) / 180);
@@ -3759,7 +3760,57 @@ export async function buildPasirRisCourse(
   // parapet carried across too (on a deck, its edge beam). So the kerbs and
   // walls of the two roads start from one nose, not each from its own
   // square end with a hole between them.
-  interface GoreCap { a: XZ; b: XZ; ya: number; yb: number; d: XZ; drop: number }
+  interface GoreCap { a: XZ; b: XZ; ya: number; yb: number; d: XZ; drop: number; nose: XZ[]; yAt: (p: XZ) => number }
+  // A nose: the island the two roads part round ends in a small rounded
+  // point, not square across the wedge. The paving runs on NOSE_L m along
+  // both roads' edges past the wedge's last row, and the island's end is a
+  // circle NOSE_R m round with straight sides back to those points: the
+  // kerb and edge line go round it as one line. (Square, its two corners
+  // turned the edge lines through two sharp corners each, with spikes and
+  // kerb pieces crossing.)
+  const NOSE_R = 0.5;
+  const NOSE_L = 4;
+  /** The nose's outline from A's edge round to B's, past the row r (q the row before it; d out of the wedge), and the paving's height there. */
+  const noseOf = (r: GoreRow, q: GoreRow, d: XZ): { nose: XZ[]; yAt: (p: XZ) => number } => {
+    const mx = (r.a[0] + r.b[0]) / 2, mz = (r.a[1] + r.b[1]) / 2;
+    const w = Math.hypot(r.a[0] - r.b[0], r.a[1] - r.b[1]);
+    const ua = unit(r.a[0] - mx, r.a[1] - mz);
+    // (Each road's edge carries on the way it was going.)
+    const la = Math.hypot(r.a[0] - q.a[0], r.a[1] - q.a[1]), lb = Math.hypot(r.b[0] - q.b[0], r.b[1] - q.b[1]);
+    const da = la > 0.05 ? unit(r.a[0] - q.a[0], r.a[1] - q.a[1]) : d, db = lb > 0.05 ? unit(r.b[0] - q.b[0], r.b[1] - q.b[1]) : d;
+    const aL: XZ = [r.a[0] + da[0] * NOSE_L, r.a[1] + da[1] * NOSE_L], bL: XZ = [r.b[0] + db[0] * NOSE_L, r.b[1] + db[1] * NOSE_L];
+    const R = Math.min(NOSE_R, w / 2 - 0.05);
+    const C: XZ = [mx + d[0] * R, mz + d[1] * R];
+    // Where the island's straight side from P touches the circle (on the side away from the other road).
+    const touch = (P: XZ, side: XZ): number => {
+      const vx = P[0] - C[0], vz = P[1] - C[1];
+      const D = Math.hypot(vx, vz);
+      const base = Math.atan2(vz, vx), off = Math.acos(Math.min(1, R / D));
+      const t1 = base + off, t2 = base - off;
+      return Math.cos(t1) * side[0] + Math.sin(t1) * side[1] >= Math.cos(t2) * side[0] + Math.sin(t2) * side[1] ? t1 : t2;
+    };
+    let tA = touch(aL, ua), tB = touch(bL, [-ua[0], -ua[1]]);
+    // (Round the front, past the point nearest the wedge.)
+    const front = Math.atan2(-d[1], -d[0]);
+    const wrap = (t: number) => ((t % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    let sweep = wrap(tB - tA);
+    if (wrap(front - tA) > sweep) sweep -= 2 * Math.PI;
+    const N = Math.max(3, Math.ceil((Math.abs(sweep) * R) / 0.3));
+    const nose: XZ[] = [aL];
+    for (let k = 0; k <= N; k++) {
+      const t = tA + (sweep * k) / N;
+      nose.push([C[0] + Math.cos(t) * R, C[1] + Math.sin(t) * R]);
+    }
+    nose.push(bL);
+    // (Each side's height carries on along it at the slope it had.)
+    const sa = la > 0.05 ? (r.ya - q.ya) / la : 0, sb = lb > 0.05 ? (r.yb - q.yb) / lb : 0;
+    const yAt = (p: XZ) => {
+      const t = Math.max(0, Math.min(1, ((p[0] - r.a[0]) * (r.b[0] - r.a[0]) + (p[1] - r.a[1]) * (r.b[1] - r.a[1])) / (w * w || 1)));
+      const s = Math.max(0, (p[0] - mx) * d[0] + (p[1] - mz) * d[1]);
+      return lerp(r.ya + sa * s, r.yb + sb * s, t);
+    };
+    return { nose, yAt };
+  };
   const goreCapCache = new Map<number, GoreCap[]>();
   const goreCaps = (id: number) => {
     let out = goreCapCache.get(id);
@@ -3777,7 +3828,7 @@ export async function buildPasirRisCourse(
       // (Only where the verge really begins: not where another road, a junction or the next wedge takes over.)
       const x = mx + d[0] * 0.8, z = mz + d[1] * 0.8;
       if (drawnRoadAt(x, z, y) || inGore(x, z) || inPaving(x, z, y) || onIsland(x, z, y) || jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL))?.some((k) => inRingXZ(JPOLY[k].ring, x, z) && Math.abs(jTop(k, x, z) - y) < 3)) continue;
-      out.push({ a: r.a, b: r.b, ya: r.ya, yb: r.yb, d, drop: deck > 0 ? 99 : deck < 0 ? 0 : y + 0.09 - heightAt(mx + d[0] * 1.05, mz + d[1] * 1.05) });
+      out.push({ a: r.a, b: r.b, ya: r.ya, yb: r.yb, d, drop: deck > 0 ? 99 : deck < 0 ? 0 : y + 0.09 - heightAt(mx + d[0] * 1.05, mz + d[1] * 1.05), ...noseOf(r, q, d) });
     }
     return out;
   };
@@ -3837,6 +3888,35 @@ export async function buildPasirRisCourse(
               if (up) road.idx.push(a + u, a + v, a + w);
               else road.idx.push(a + u, a + w, a + v);
             }
+          }
+          // Each nose's paving: a fan from each road's edge at the wedge's last row, round to the island's point.
+          for (const c of goreCaps(id)) {
+            const tip = c.nose.length >> 1;
+            for (const [from, lo, hi] of [[c.a, 0, tip], [c.b, tip, c.nose.length - 1]] as [XZ, number, number][]) {
+              const f0 = road.pos.length / 3;
+              road.pos.push(from[0], c.yAt(from) + 0.087, from[1]);
+              road.uv.push(from[0] / 6, from[1] / 6);
+              for (let k = lo; k <= hi; k++) {
+                road.pos.push(c.nose[k][0], c.yAt(c.nose[k]) + 0.087, c.nose[k][1]);
+                road.uv.push(c.nose[k][0] / 6, c.nose[k][1] / 6);
+              }
+              for (let k = 0; k < hi - lo; k++) {
+                const V = [from, c.nose[lo + k], c.nose[lo + k + 1]];
+                const up = (V[1][1] - V[0][1]) * (V[2][0] - V[0][0]) - (V[1][0] - V[0][0]) * (V[2][1] - V[0][1]) >= 0;
+                if (up) road.idx.push(f0, f0 + 1 + k, f0 + 2 + k);
+                else road.idx.push(f0, f0 + 2 + k, f0 + 1 + k);
+              }
+            }
+            // (And the triangle between the two fans, at the wedge's last row.)
+            const t0 = road.pos.length / 3;
+            for (const p of [c.a, c.nose[tip], c.b]) {
+              road.pos.push(p[0], c.yAt(p) + 0.087, p[1]);
+              road.uv.push(p[0] / 6, p[1] / 6);
+            }
+            const V = [c.a, c.nose[tip], c.b];
+            const up = (V[1][1] - V[0][1]) * (V[2][0] - V[0][0]) - (V[1][0] - V[0][0]) * (V[2][1] - V[0][1]) >= 0;
+            if (up) road.idx.push(t0, t0 + 1, t0 + 2);
+            else road.idx.push(t0, t0 + 2, t0 + 1);
           }
         }
       });
@@ -4937,7 +5017,19 @@ export async function buildPasirRisCourse(
     const rings: [XZ[], number][] = [];
     edges.forEach((_, i) => outlined[i] && rings.push([surfacePoly(i), lvlOf(i)]));
     JPOLY.forEach((sh, id) => rings.push([sh.ring, jLvl(id)]));
-    for (const g of gores) rings.push([g.ring, goreLvl(g)]);
+    gores.forEach((g, id) => {
+      // (With its noses: the island's rounded point is the outline's.)
+      const caps = oneLine ? goreCaps(id) : [];
+      if (!caps.length) return rings.push([g.ring, goreLvl(g)]);
+      const n = g.rows.length;
+      const at = (row: GoreRow) => caps.find((c) => c.a === row.a && c.b === row.b);
+      const head = at(g.rows[0]), tail = at(g.rows[n - 1]);
+      const ring: XZ[] = [...g.rows.map((r) => r.a)];
+      if (tail) ring.push(...tail.nose);
+      ring.push(...g.rows.map((r) => r.b).reverse());
+      if (head) ring.push(...[...head.nose].reverse());
+      rings.push([ring, goreLvl(g)]);
+    });
     outSrcs = rings
       .filter(([r]) => r.length >= 3)
       .map(([ring, lvl]) => {
