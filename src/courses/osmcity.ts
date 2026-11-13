@@ -3996,7 +3996,21 @@ export async function buildPasirRisCourse(
           const [dx, dz] = unit(B.q[0] - A.q[0], B.q[1] - A.q[1]);
           for (const side of [1, -1]) {
             const open = M.some((m, q) => q !== c.a && q !== c.b && ((m.q[0] - A.q[0]) * dz - (m.q[1] - A.q[1]) * dx) * side > 0);
-            if (!open) line(side * (A.half - 0.35), side * (B.half - 0.35), 'yellow', false);
+            // (Nor where, past either mouth, another road's paving lies against
+            // that side (on a redrawn map, or within a metre of it: the outline
+            // closes a gap that narrow, or lines it as a sliver): a short median
+            // that ends at the junction. The road has no edge there to carry
+            // across.)
+            const against = [A, B].some((m, w) => {
+              const nn = normal[w ? N : 0];
+              let hit = false;
+              for (const k of [1.5, 4])
+                roads.each(m.q[0] + m.t[0] * k + nn[0] * side * (m.half + 0.05), m.q[1] + m.t[1] * k + nn[1] * side * (m.half + 0.05), 16, (i, seg, u, d) => {
+                  if (!hit && i !== A.line && i !== B.line && !JX.internal[i] && drawnAt(i, seg, u) && d < halfNear(i, seg, u) + (oneLine ? 0.95 : -0.05)) hit = true;
+                });
+              return hit;
+            });
+            if (!open && !against) line(side * (A.half - 0.35), side * (B.half - 0.35), 'yellow', false);
           }
         }
       }
