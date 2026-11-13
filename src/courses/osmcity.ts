@@ -5271,8 +5271,12 @@ export async function buildPasirRisCourse(
     const under = edgeRoadOf(near, () => true);
     const y = flat ? NaN : outlineY(mx, mz, near, lvl);
     const base = { flat, joint, road: under && hasProfile[under.i] ? under.i : -1, seg: under?.seg ?? 0, lr: -1, ls: 0, lvl };
-    // The road whose edge this is.
-    const r = edgeRoadOf(near, (i) => !JX.internal[i]);
+    // The road whose edge this is. (Not a road's by its end, where it joins
+    // others: there the outline runs round the end of it, across the road
+    // it meets, and that road's edge it is. A side road drawn a little
+    // across the road it meets took the far side's kerb away.)
+    const offEnd = (i: number, h: { seg: number; u: number }) => (h.seg === 0 && h.u <= 0 && jDegree[edges[i].a] >= 2) || (h.seg === EP[i].length - 2 && h.u >= 1 && jDegree[edges[i].b] >= 2);
+    const r = edgeRoadOf(new Map([...near].filter(([i, h]) => !offEnd(i, h))), (i) => !JX.internal[i]) ?? edgeRoadOf(near, (i) => !JX.internal[i]);
     // (Across a road's very end, where it stops at the map's edge or a dead end: no kerb, no line.
     // Not where another road carries on from it: a step there between the two is no end.)
     if (r && r.past < 0.1) {
