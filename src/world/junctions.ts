@@ -840,6 +840,15 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
               parts.push(part);
             }
             cs = parts.map((r) => kernelOf(r));
+            // (A length that has come to nothing, its two sides on one
+            // another, has nothing to pave: no centre sees into it, and none
+            // needs to. Not the one at the mouth.)
+            const nil = (r: XZ[]) => Math.abs(r.reduce((t, p, k) => t + cross(p, r[(k + 1) % r.length]), 0)) / 2 < 0.02;
+            if (cs.some((x, q) => !x && q > 0 && nil(parts[q]))) {
+              const keep = parts.map((r, q) => !!cs[q] || q === 0 || !nil(r));
+              parts = parts.filter((_, q) => keep[q]);
+              cs = cs.filter((_, q) => keep[q]);
+            }
           }
           if (cs.some((x) => !x)) return no('outline folds: wedge', parts[cs.findIndex((x) => !x)]);
           ring = parts[0];
