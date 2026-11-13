@@ -115,6 +115,8 @@ export interface JunctionOut {
   trimA: Float32Array;
   trimB: Float32Array;
   internal: Uint8Array;
+  /** Openings in a divider with nothing paved: the road's two sides overlap across them, so marks stop over them. */
+  bare: Uint8Array;
   /** Junctions that could not be shaped cleanly and keep a plain pad. */
   fallback: number[];
   /** Islands inside big crossings (between slip lanes and the main roads), paved over. */
@@ -235,6 +237,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     trimA: new Float32Array(edges.length),
     trimB: new Float32Array(edges.length),
     internal: new Uint8Array(edges.length),
+    bare: new Uint8Array(edges.length),
     fallback: [],
     fills: [],
     hulls: 0,
@@ -615,7 +618,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       });
       return { through, sEnd, legs, offRoad, sp, sL, sideAt, leaves };
     };
-    type TeePart = { ring: XZ[]; corners: XZ[][]; kerbs: XZ[][]; c: XZ; mouth: Mouth | null; inside: number | null; more: NonNullable<Built['more']>; kerbed: boolean; flip: number; sharp: boolean };
+    type TeePart = { ring: XZ[]; corners: XZ[][]; kerbs: XZ[][]; c: XZ; mouth: Mouth | null; inside: number | null; more: NonNullable<Built['more']>; kerbed: boolean; flip: number; sharp: boolean; empty?: boolean };
     /** The paving where side road sLine meets the road running through joint j. */
     const teePart = (j: number, sLine: number, no: (why: string) => null): TeePart | null => {
       const G = teeGeom(j, sLine);
@@ -659,9 +662,11 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // it, or overlap, the two pavings would too: each is cut back at the
       // opening's middle, the line where the other's begins.)
       let cutMid = false;
+      let dF0 = -1;
       if (!sharp && teeAt[farJ] && !thruAt(sLine, farJ)) {
         const F = teeGeom(farJ, sLine);
         const dF = F && F.leaves[0] && F.leaves[1] ? Math.max(F.leaves[0].d, F.leaves[1].d) : -1;
+        dF0 = dF;
         if (dF >= 0 && sL - dMax - dF < 2 * Rd + 3) openAt = dMax + Math.max(0.15, (sL - dMax - dF) / 2);
         cutMid = openAt >= 0 && sL - dMax - dF < 0.3;
       }
@@ -906,12 +911,20 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           return o;
         };
         ring = clip(ring, true);
-        if (ring.length < 3) return no('opening cut past its centre');
-        // (Its centre on this side too, where it sees the whole of what is left.)
-        if (sd(c) >= -0.05 || sees(ring, c) <= 1e-6) {
+        // (Where the two sides of the road overlap across the opening, this
+        // side's edge is already past the opening's middle: the other side's
+        // own strip covers all of it, and there is nothing left to pave
+        // here. It was a fall-back to an old-style junction box, the road's
+        // lines cut at every such crossing.)
+        let empty = ring.length < 3;
+        if (!empty && (sd(c) >= -0.05 || sees(ring, c) <= 1e-6)) {
           const k = kernelOf(ring);
-          if (!k || sd(k) >= -0.05) return no('opening cut past its centre');
-          c = k;
+          if (!k || sd(k) >= -0.05) empty = true;
+          else c = k;
+        }
+        if (empty) {
+          if (sL - dMax - dF0 > 0) return no('opening cut past its centre');
+          return { ring: [], corners: [], kerbs: [], c: junctions[j], mouth: null, inside: sLine, more: [], kerbed: false, flip: flipOf(legs[0]), sharp: false, empty: true };
         }
         corners = corners.map((q) => clip(q, false)).filter((q) => q.length >= 2);
         if (kerbLines) kerbLines = kerbLines.map((q) => clip(q, false)).filter((q) => q.length >= 2);
@@ -935,7 +948,17 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // (Two side roads: one from each side of the road, so each has its own paving.)
       if (parts.length === 2 && parts[0].flip === parts[1].flip) return no('two side roads on one side');
       const reach = (ring: XZ[], c: XZ) => Math.max(...ring.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
-      const [first, ...rest] = parts;
+      // (An opening with nothing to pave: its line is still the junction's own.)
+      const internal = parts.flatMap((q) => (q.inside !== null ? [q.inside] : []));
+      const paved = parts.filter((q) => !q.empty);
+      const bare = parts.flatMap((q) => (q.empty && q.inside !== null ? [q.inside] : []));
+      if (!paved.length) {
+        // (A speck under the road's middle at the joint: nothing to see, but the joint is still a junction.)
+        const [x, z] = junctions[j];
+        const ring: XZ[] = [[x - 0.05, z - 0.05], [x + 0.05, z - 0.05], [x, z + 0.05]];
+        return { nodes: [j], centre: [x, z - 0.02], radius: 0.1, ring, kerbs: [], corners: [], mouths: [], internal, bare, hull: false, tee: true, slip: false, more: [] };
+      }
+      const [first, ...rest] = paved;
       const more = [...first.more, ...rest.flatMap((q) => [{ ring: q.ring, centre: q.c, radius: reach(q.ring, q.c), slip: q.sharp }, ...q.more])];
       return {
         nodes: [j],
@@ -945,7 +968,8 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         kerbs: parts.flatMap((q) => (q.kerbed ? q.kerbs : [])),
         corners: parts.flatMap((q) => q.corners),
         mouths: parts.flatMap((q) => (q.mouth ? [q.mouth] : [])),
-        internal: parts.flatMap((q) => (q.inside !== null ? [q.inside] : [])),
+        internal,
+        bare,
         hull: false,
         tee: true,
         slip: first.sharp,
@@ -1367,6 +1391,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     for (const j of nodes) out.shapeOf[j] = id;
     if (b.tee) for (const j of nodes) out.tee[j] = 1;
     for (const i of b.internal) out.internal[i] = 1;
+    for (const i of b.bare ?? []) out.bare[i] = 1;
     for (const m of b.mouths) (m.end === 0 ? out.trimA : out.trimB)[m.line] = m.s;
   });
   // ---- Islands in big crossings ----
@@ -1481,6 +1506,8 @@ interface Built {
   internal: number[];
   hull: boolean;
   tee?: boolean;
+  /** Openings at this joint with nothing to pave (see JX.bare). */
+  bare?: number[];
   /** More paving that belongs to this junction, each part filled from its own centre. */
   more?: { ring: XZ[]; centre: XZ; radius: number; slip?: boolean }[];
   slip?: boolean;

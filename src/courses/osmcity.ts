@@ -3100,8 +3100,25 @@ export async function buildPasirRisCourse(
       // and the side road is not drawn inside the through road, only from
       // its mouth.)
       if (thruMate(line, edges[line].a) === i || thruMate(line, edges[line].b) === i) return;
-      // (Nor is an opening in a divider a road of its own: it is paved from the two roads' joints.)
-      if (openingLink(i)) return;
+      // (Nor is an opening in a divider a road of its own: it is paved from
+      // the two roads' joints. Unless nothing is paved there, the road's two
+      // sides overlapping across it: then the crossing road runs over the
+      // marks just the same.)
+      if (openingLink(i)) {
+        if (!JX.bare[i]) return;
+        // (Over it, only this road's side towards the other: its lane lines
+        // carry on past the opening as past any side road's mouth.)
+        const ea = edges[i].a, eb = edges[i].b;
+        const own = edges[line].a === ea || edges[line].b === ea ? ea : edges[line].a === eb || edges[line].b === eb ? eb : -1;
+        if (own < 0) return;
+        // (Where the side road carries on across both sides, a crossing, it
+        // runs over all of them.)
+        const sideBeyond = (j: number) => jE[j].some((k) => k !== i && !thruEnd(k, j));
+        if (!(sideBeyond(ea) && sideBeyond(eb))) {
+          const far = M.junctions[own === ea ? eb : ea], o = M.junctions[own];
+          if (Math.hypot(x - far[0], z - far[1]) > Math.hypot(o[0] - far[0], o[1] - far[1]) - 0.5 * halfAtE(line, 0)) return;
+        }
+      }
       if (JX.tee[edges[i].a] || JX.tee[edges[i].b]) {
         const at = ECUM[i][seg] + u * (ECUM[i][seg + 1] - ECUM[i][seg]);
         if ((JX.tee[edges[i].a] && at < JX.trimA[i]) || (JX.tee[edges[i].b] && at > ELEN[i] - JX.trimB[i])) return;
