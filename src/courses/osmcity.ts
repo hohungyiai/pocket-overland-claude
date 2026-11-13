@@ -4876,6 +4876,24 @@ export async function buildPasirRisCourse(
       // area, x east and z south; round a hole, positive.)
       let area2 = 0;
       for (let q = 0; q < corner.length; q++) area2 += corner[q][0] * corner[(q + 1) % corner.length][1] - corner[(q + 1) % corner.length][0] * corner[q][1];
+      // (A hole where a road's drawn surface lies is no island: the union
+      // missed a little of the paving there, between pieces that do not
+      // quite meet. Nothing is drawn round it. Asked just inside its sides.)
+      if (area2 > 0) {
+        let paved = false;
+        for (let q = 0; q < corner.length && !paved; q++) {
+          const a = corner[q], b = corner[(q + 1) % corner.length];
+          const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          if (l < 1) continue;
+          // (The paving on the left, the hole on the right: x east, z south.)
+          const x = (a[0] + b[0]) / 2 - ((b[1] - a[1]) / l) * 0.3, z = (a[1] + b[1]) / 2 + ((b[0] - a[0]) / l) * 0.3;
+          if (!inRingXZ(corner, x, z)) continue;
+          const near: Near = new Map([...nearRoads(x, z)].filter(([i]) => lvlOf(i) === lvl));
+          const r = edgeRoadOf(near, (i) => !JX.internal[i]);
+          if (r && r.past < -0.1) paved = true;
+        }
+        if (paved) continue;
+      }
       out.push({ pts, corner, edge, at, hole: area2 > 0, lvl });
     }
     return out;
@@ -5173,6 +5191,9 @@ export async function buildPasirRisCourse(
           const zebra = (q: number) => !!marks[q]?.stop && marks[q]!.why.endsWith(' zebra');
           // (An island is lined all round or not at all: where any of its
           // kerb has a line, all of it does, but at a zebra.)
+          // (A hole with no kerb anywhere round it is no island: paving the
+          // union missed, inside a junction. Nothing is drawn round it.)
+          if (hole && !marks.some((m) => m?.kerb)) marks.forEach((m, q) => m && m.line && (marks[q] = { ...m, line: false, why: m.why + ' bare hole' }));
           if (hole && marks.some((m) => m?.line)) marks.forEach((m, q) => m && m.kerb && !m.line && !m.stop && (marks[q] = { ...m, line: true, why: m.why + ' island' }));
           // Round a nose (a divider's end, a gore's tip) the edge line carries
           // on from one side to the other: a short stretch with no road's
