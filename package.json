@@ -22,6 +22,7 @@
   "homepage": "https://github.com/hohungyiai/pocket-overland-claude#readme",
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",
+    "clipper2-js": "^1.2.4",
     "three": "^0.187.0"
   },
   "devDependencies": {
