@@ -3552,6 +3552,11 @@ export async function buildPasirRisCourse(
             const vx = Q[seg + 1][0] - Q[seg][0], vz = Q[seg + 1][1] - Q[seg][1];
             const sl2 = vx * vx + vz * vz || 1;
             const u = Math.max(0, Math.min(1, ((ea[0] - Q[seg][0]) * vx + (ea[1] - Q[seg][1]) * vz) / sl2));
+            // (Not past B's end: the next piece of the same road, carrying on
+            // from A's end, is ahead of A's edge there, not beside it. Its
+            // end's corner put a strip of paving 1 m wide over the
+            // expressway's edge, and a bump in its kerb, at a slip road.)
+            if ((seg === 0 && u <= 0) || (seg === Q.length - 2 && u >= 1)) continue;
             const x = Q[seg][0] + vx * u, z = Q[seg][1] + vz * u;
             const dB2 = (ea[0] - x) * (ea[0] - x) + (ea[1] - z) * (ea[1] - z);
             // (Most are nowhere near: no need to ask how wide they are.)
