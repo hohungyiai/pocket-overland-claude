@@ -1116,7 +1116,7 @@ const idFor = (j) => {
   }
   return idOf.get(j);
 };
-const outEdges = edges.map(({ len, len0, spans, ...e }) => {
+const outEdges = edges.flatMap(({ len, len0, spans, ...e }) => {
   const o = { ...e, a: idFor(e.a), b: idFor(e.b) };
   if (spans) {
     const all = spans.reduce((t, sp) => t + sp[0], 0);
@@ -1127,7 +1127,28 @@ const outEdges = edges.map(({ len, len0, spans, ...e }) => {
       return [f, w];
     });
   }
-  return o;
+  if (o.a !== o.b || o.pts.length < 3) return [o];
+  // A road that comes back to where it began (a turning loop, joined into
+  // one) is cut in two at its middle: a road's two ends at one joint would
+  // count as one road there, and the joint as a plain one (no junction).
+  const P = o.pts;
+  const cum = [0];
+  for (let k = 1; k < P.length; k++) cum.push(cum[k - 1] + Math.hypot(P[k][0] - P[k - 1][0], P[k][1] - P[k - 1][1]));
+  const L = cum[cum.length - 1];
+  let m = 1;
+  while (m < P.length - 2 && cum[m] < L / 2) m++;
+  const fm = cum[m] / L;
+  const mid = junctions.length;
+  junctions.push(P[m].map((v) => +(+v).toFixed(1)));
+  const A = { ...o, b: mid, pts: P.slice(0, m + 1) };
+  const B = { ...o, a: mid, pts: P.slice(m) };
+  if (o.ws) {
+    let wm = o.ws[0][1];
+    for (const [f, w] of o.ws) if (f <= fm) wm = w;
+    A.ws = o.ws.filter(([f]) => f < fm).map(([f, w]) => [+(f / fm).toFixed(4), w]);
+    B.ws = [[0, wm], ...o.ws.filter(([f]) => f > fm).map(([f, w]) => [+((f - fm) / (1 - fm)).toFixed(4), w])];
+  }
+  return [A, B];
 });
 const touches = (o) => (o.pts ? o.pts.some(near) : near([o.x, o.z]));
 const out = {
