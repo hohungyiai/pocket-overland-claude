@@ -1700,8 +1700,9 @@ export async function buildPasirRisCourse(
         const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1])));
         for (let t = 1; t <= n; t++) F.push([a[0] + ((b[0] - a[0]) * t) / n, a[1] + ((b[1] - a[1]) * t) / n]);
       }
-      let run: XZ[] = [];
-      F.forEach((p, q) => {
+      /** Is point q of F on a road (tested just outside it, along F as it runs there)? */
+      const onRoad = (F: XZ[], q: number) => {
+        const p = F[q];
         const a = F[Math.max(0, q - 1)];
         const b = F[Math.min(F.length - 1, q + 1)];
         const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
@@ -1711,13 +1712,25 @@ export async function buildPasirRisCourse(
         roads.each(x, z, 16, (line, seg, u, d) => {
           if (!hit && d < halfNear(line, seg, u) - 0.3 && drawnAt(line, seg, u)) hit = true;
         });
-        if (!hit) run.push(p);
+        return hit;
+      };
+      const runs: XZ[][] = [];
+      let run: XZ[] = [];
+      F.forEach((p, q) => {
+        if (!onRoad(F, q)) run.push(p);
         else {
-          if (run.length > 1) kept.push(run);
+          if (run.length > 1) runs.push(run);
           run = [];
         }
       });
-      if (run.length > 1) kept.push(run);
+      if (run.length > 1) runs.push(run);
+      // (A run's end looks out along the run alone, not on to the point cut
+      // after it: tried again that way, it may touch the road after all.)
+      for (const R of runs) {
+        while (R.length > 1 && onRoad(R, 0)) R.shift();
+        while (R.length > 1 && onRoad(R, R.length - 1)) R.pop();
+        if (R.length > 1) kept.push(R);
+      }
     }
     sh.kerbs = kept;
   }
@@ -2246,7 +2259,9 @@ export async function buildPasirRisCourse(
         }
         for (const [K, R] of [[Kp, A], [Kn, B]] as [XZ, BArm][]) {
           const n: XZ = R === A ? [-R.t[1], R.t[0]] : [R.t[1], -R.t[0]];
-          const e: XZ = [R.p[0] + n[0] * (R.h - 0.5), R.p[1] + n[1] * (R.h - 0.5)];
+          // (0.7 m in from the edge: the edge line is 0.28 to 0.42 m in, the
+          // box's line 0.2 m wide, and the two stay apart.)
+          const e: XZ = [R.p[0] + n[0] * (R.h - 0.7), R.p[1] + n[1] * (R.h - 0.7)];
           const u = (K[0] - e[0]) * R.t[0] + (K[1] - e[1]) * R.t[1];
           ring.push([e[0] + R.t[0] * u, e[1] + R.t[1] * u]);
         }
@@ -2267,20 +2282,22 @@ export async function buildPasirRisCourse(
         for (let s = 0; s <= L; s += 0.5) {
           const f = L ? s / L : 0;
           const x = lerp(p[0], q[0], f), z = lerp(p[1], q[1], f);
-          // (Clear of the kerbs: a line 0.2 m wide, a kerb 0.25 m.)
-          if (!clear(x, z, 0.4) || onOther(x, z, own, 0.3) || crossings.some((o) => onCross(o, x, z, 0.3))) return true;
+          // (Clear of the kerbs and the edge lines along them: a box's line is
+          // 0.2 m wide, an edge line 0.28 to 0.42 m in from the kerb.)
+          if (!clear(x, z, 0.55) || onOther(x, z, own, 0.3) || crossings.some((o) => onCross(o, x, z, 0.3))) return true;
           // (Out on a road past its mouth, well clear of its edge lines.)
           if (!at.rings.some((r) => inRingXZ(r, x, z)) && nearEdgeLine(x, z)) return true;
         }
         return false;
       });
-      // (Not under a flyover: there the roads below weave between its piers and slip roads, no plain crossing.)
+      // (Not under a flyover: there the roads below weave between its piers and slip roads, no plain crossing.
+      // Nor over a ramp's foot, where the ramp's paving cuts in among the junction's.)
       let under = false;
       for (const [p, q] of lines)
         for (let t = 0; t <= 1 && !under; t += 0.25)
-          roads.each(lerp(p[0], q[0], t), lerp(p[1], q[1], t), 16, (i, seg, u, dd) => void (!under && elevated[i] && dd < halfNear(i, seg, u) + 1 && (under = true)));
+          roads.each(lerp(p[0], q[0], t), lerp(p[1], q[1], t), 16, (i, seg, u, dd) => void (!under && (elevated[i] || isDeck[i]) && dd < halfNear(i, seg, u) + 1 && (under = true)));
       if (under) {
-        why('under a flyover');
+        why('under a flyover or on a ramp');
         continue;
       }
       if (off) {
@@ -4129,7 +4146,8 @@ export async function buildPasirRisCourse(
           return Math.hypot(x - P[m][0], z - P[m][1]) < halfAt(m) + 0.5 && Math.abs((x - P[m][0]) * dx + (z - P[m][1]) * dz) < 0.3 * Math.hypot(dx, dz);
         };
         const atMouth = (x: number, z: number) => (thA && onMouth(x, z, cut.lo, cut.lo + 1)) || (thB && onMouth(x, z, cut.hi, cut.hi - 1));
-        const lineClear = (x: number, y: number, z: number) => atMouth(x, z) || (!inPaving(x, z, dy ? y : NaN) && !coveredBy(line, x, z, dy ? y : NaN));
+        // (Nor into a yellow box: the lines stop short of its edge.)
+        const lineClear = (x: number, y: number, z: number) => !nearBox(x, z, 0.3) && (atMouth(x, z) || (!inPaving(x, z, dy ? y : NaN) && !coveredBy(line, x, z, dy ? y : NaN)));
         const mp = thA || thB ? P : pts;
         const mo = thA || thB ? { lo: cut.lo, hi: cut.hi } : {};
         const clearM = thA || thB ? clearOn(P) : clear;
@@ -4157,7 +4175,7 @@ export async function buildPasirRisCourse(
           span,
           sub: 0.5,
           clearAt: lineClear,
-          clearInner: (x: number, y: number, z: number) => !inPaving(x, z, dy ? y : NaN) && !coveredBy(line, x, z, dy ? y : NaN),
+          clearInner: (x: number, y: number, z: number) => !nearBox(x, z, 0.3) && !inPaving(x, z, dy ? y : NaN) && !coveredBy(line, x, z, dy ? y : NaN),
           clearMid: (x: number, y: number, z: number, cx: number, cz: number) => !onIsland(x, z, dy ? y : NaN) && !(solidLine && openXZ(x + cx * side * 0.8, z + cz * side * 0.8)),
         });
         const solid = (_off: (kk: number) => number) => drawn;
@@ -5258,12 +5276,20 @@ export async function buildPasirRisCourse(
   };
   /** Does an edge line stop at (x, z): a zebra, or a yellow box? */
   let outGrids = false;
-  const lineStops = (x: number, z: number) => {
+  const outGridsOnce = () => {
     if (!outGrids) {
       outGrids = true;
       for (const c of crossings) for (const kk of new Set([tileKey(c.c[0] - 8, c.c[1] - 8), tileKey(c.c[0] + 8, c.c[1] - 8), tileKey(c.c[0] - 8, c.c[1] + 8), tileKey(c.c[0] + 8, c.c[1] + 8)])) (crossTiles.get(kk) ?? crossTiles.set(kk, []).get(kk)!).push(c);
       for (const bx of yBoxes) for (const kk of new Set(bx.ring.map((p) => tileKey(p[0], p[1])))) (boxTiles.get(kk) ?? boxTiles.set(kk, []).get(kk)!).push(bx);
     }
+  };
+  /** In a yellow box, or within pad of its edge? */
+  const nearBox = (x: number, z: number, pad: number) => {
+    outGridsOnce();
+    return (boxTiles.get(tileKey(x, z)) ?? []).some((bx) => inRingXZ(bx.ring, x, z) || ringDist(bx.ring, x, z)[0] < pad);
+  };
+  const lineStops = (x: number, z: number) => {
+    outGridsOnce();
     const k = tileKey(x, z);
     return (
       (crossTiles.get(k) ?? []).some((c) => {
@@ -6255,7 +6281,9 @@ export async function buildPasirRisCourse(
     return m;
   };
   const plainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
-  interface VegKind { geo: THREE.BufferGeometry; mat: THREE.Material | THREE.Material[]; shadow: boolean; collide?: number; hues: [number, number, number, number] }
+  // far: the same tree with fewer faces, drawn beyond FAR_TREE m (a wood seen
+  // across a field was 6,000 trees of 184 triangles each: 1.1 million).
+  interface VegKind { geo: THREE.BufferGeometry; far?: THREE.BufferGeometry; mat: THREE.Material | THREE.Material[]; shadow: boolean; collide?: number; hues: [number, number, number, number] }
   const frond = (a: number) => tint(new THREE.BoxGeometry(3.4, 0.08, 0.7).translate(1.7, 0, 0).rotateZ(-0.45).rotateY(a).translate(0, 8, 0), 0xffffff);
   const kinds: Record<string, VegKind> = {
     rain: {
@@ -6263,6 +6291,11 @@ export async function buildPasirRisCourse(
         tint(new THREE.CylinderGeometry(0.28, 0.45, 5, 6).translate(0, 2.5, 0), 0x5b4636),
         tint(new THREE.IcosahedronGeometry(1, 1).scale(4.6, 1.5, 4.6).translate(0, 6, 0), 0xffffff),
         tint(new THREE.IcosahedronGeometry(1, 1).scale(3.2, 1.2, 3.2).translate(1.6, 6.9, 0.8), 0xffffff),
+      ]),
+      far: merge([
+        tint(new THREE.CylinderGeometry(0.28, 0.45, 5, 4, 1, true).translate(0, 2.5, 0), 0x5b4636),
+        tint(new THREE.IcosahedronGeometry(1, 0).scale(4.6, 1.5, 4.6).translate(0, 6, 0), 0xffffff),
+        tint(new THREE.IcosahedronGeometry(1, 0).scale(3.2, 1.2, 3.2).translate(1.6, 6.9, 0.8), 0xffffff),
       ]),
       mat: swayMat(0.012),
       shadow: true,
@@ -6297,17 +6330,24 @@ export async function buildPasirRisCourse(
         tint(new THREE.CylinderGeometry(2.6, 2.8, 0.6, 8).translate(0, 5.4, 0), 0xffffff),
         tint(new THREE.CylinderGeometry(1.5, 1.7, 0.6, 8).translate(0, 6.5, 0), 0xffffff),
       ]),
+      far: merge([
+        tint(new THREE.CylinderGeometry(0.22, 0.35, 6, 4, 1, true).translate(0, 3, 0), 0x5b4636),
+        tint(new THREE.CylinderGeometry(3.6, 3.8, 0.6, 5).translate(0, 4.2, 0), 0xffffff),
+        tint(new THREE.CylinderGeometry(2.6, 2.8, 0.6, 5).translate(0, 5.4, 0), 0xffffff),
+        tint(new THREE.CylinderGeometry(1.5, 1.7, 0.6, 5).translate(0, 6.5, 0), 0xffffff),
+      ]),
       mat: swayMat(0.01),
       shadow: true,
       collide: 0.35,
       hues: [0.25, 0.45, 0.36, 0.06],
     },
-    shrub: { geo: tint(new THREE.IcosahedronGeometry(1, 1), 0xffffff), mat: swayMat(0.02), shadow: false, hues: [0.27, 0.45, 0.3, 0.05] },
+    shrub: { geo: tint(new THREE.IcosahedronGeometry(1, 1), 0xffffff), far: tint(new THREE.IcosahedronGeometry(1, 0), 0xffffff), mat: swayMat(0.02), shadow: false, hues: [0.27, 0.45, 0.3, 0.05] },
     mangrove: {
       geo: merge([
         ...[0, 2.1, 4.2].map((a) => tint(new THREE.CylinderGeometry(0.06, 0.1, 1.6, 4).rotateZ(0.5).rotateY(a).translate(Math.cos(a) * 0.5, 0.6, -Math.sin(a) * 0.5), 0x5b4a3a)),
         tint(new THREE.IcosahedronGeometry(1, 1).scale(2.4, 1.3, 2.4).translate(0, 2.4, 0), 0xffffff),
       ]),
+      far: merge([tint(new THREE.IcosahedronGeometry(1, 0).scale(2.4, 1.3, 2.4).translate(0, 2.4, 0), 0xffffff)]),
       mat: swayMat(0.01),
       shadow: true,
       collide: 0.6,
@@ -6316,6 +6356,8 @@ export async function buildPasirRisCourse(
     grass: { geo: tint(new THREE.ConeGeometry(0.16, 0.6, 4), 0x7a9a40), mat: plainMat, shadow: false, hues: [0.23, 0.32, 0.6, 0.04] },
   };
   if (detailed && D.DETAILED_FOLIAGE) {
+    // (These trees have no far version yet: drawn as they are.)
+    for (const k of Object.values(kinds)) delete k.far;
     const atlas = D.foliageAtlas();
     const leafOpts = { map: atlas, alphaTest: 0.45, side: THREE.DoubleSide, flatShading: false, roughness: 0.8 };
     const foliage = (s: number) => [swayMat(s, { map: atlas, flatShading: false, roughness: 0.85 }), swayMat(s, leafOpts)];
@@ -6346,6 +6388,9 @@ export async function buildPasirRisCourse(
   };
   type Plant = { kind: string; x: number; z: number; s: number };
   const nearOnly = new Set<{ mesh: THREE.InstancedMesh; x: number; z: number }>();
+  /** Trees drawn with their far version beyond FAR_TREE m of the camera. */
+  const FAR_TREE = 220;
+  const farTrees = new Set<{ mesh: THREE.InstancedMesh; near: THREE.BufferGeometry; far: THREE.BufferGeometry; x: number; z: number }>();
   const dummy = new THREE.Object3D();
   const vcol = new THREE.Color();
   function* plantTile(ti: number, tj: number, kit: TileKit): Generator<void, void, void> {
@@ -6446,6 +6491,7 @@ export async function buildPasirRisCourse(
       im.computeBoundingSphere();
       kit.add(im);
       if (name === 'grass') nearOnly.add({ mesh: im, x: (ti + 0.5) * TILE, z: (tj + 0.5) * TILE });
+      else if (kind.far) farTrees.add({ mesh: im, near: kind.geo, far: kind.far, x: (ti + 0.5) * TILE, z: (tj + 0.5) * TILE });
     }
   }
 
@@ -7313,6 +7359,18 @@ export async function buildPasirRisCourse(
         for (const g of nearOnly) {
           if (!g.mesh.parent) nearOnly.delete(g);
           else g.mesh.visible = Math.hypot(g.x - cam.x, g.z - cam.z) < 260;
+        }
+      // A tile's trees go to their far version when the nearest of the
+      // tile is past FAR_TREE m (the tile is 200 m across).
+      const eye = cam ?? focus;
+      if (eye)
+        for (const g of farTrees) {
+          if (!g.mesh.parent) farTrees.delete(g);
+          else {
+            const far = Math.max(Math.abs(g.x - eye.x), Math.abs(g.z - eye.z)) - TILE / 2 > FAR_TREE;
+            const geo = far ? g.far : g.near;
+            if (g.mesh.geometry !== geo) g.mesh.geometry = geo;
+          }
         }
     },
   };
