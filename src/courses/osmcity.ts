@@ -4748,12 +4748,19 @@ export async function buildPasirRisCourse(
       const n = r.length;
       for (let i = 0; i < n && !again; i++) {
         let path = 0;
+        // (Twice the area out and back, from r[i]: a crack, a thin wedge
+        // where two pieces' square ends meet at an angle, is cut off too,
+        // however deep, where it is under 0.3 m wide on average.)
+        let a2 = 0;
         for (let k = 1; k < Math.min(40, n - 2); k++) {
-          path += d(r[(i + k - 1) % n], r[(i + k) % n]);
-          if (path > 3 * OUT_S) break;
+          const p0 = r[(i + k - 1) % n], p1 = r[(i + k) % n];
+          path += d(p0, p1);
+          if (path > 12 * OUT_S) break;
+          a2 += (p0.x - r[i].x) * (p1.y - r[i].y) - (p1.x - r[i].x) * (p0.y - r[i].y);
           if (k < 2) continue;
           const gap = d(r[i], r[(i + k) % n]);
-          if (gap < 0.4 * OUT_S && path > 3 * gap + 0.5 * OUT_S) {
+          const crack = Math.abs(a2) / path < 0.3 * OUT_S;
+          if (gap < 0.4 * OUT_S && ((path <= 3 * OUT_S && path > 3 * gap + 0.5 * OUT_S) || (crack && path > 3 * gap + 0.5 * OUT_S))) {
             // (Cut out the points between, from the far end back.)
             const cut = new Set<number>();
             for (let v = 1; v < k; v++) cut.add((i + v) % n);
