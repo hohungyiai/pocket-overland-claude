@@ -1667,10 +1667,8 @@ export async function buildPasirRisCourse(
    * middle. (Beside an embankment the ground's shape across a slip road could
    * tilt it 0.58 in 1, past what the car can take.)
    */
-  const crossDrop = (x: number, z: number, cx: number, cz: number) => {
-    const lim = 0.3 * Math.hypot(x - cx, z - cz);
-    return Math.max(-lim, Math.min(lim, dropAt(x, z) - dropAt(cx, cz)));
-  };
+  const clampDrop = (dy: number, dist: number) => Math.max(-0.3 * dist, Math.min(0.3 * dist, dy));
+  const crossDrop = (x: number, z: number, cx: number, cz: number) => clampDrop(dropAt(x, z) - dropAt(cx, cz), Math.hypot(x - cx, z - cz));
   const tiltY = (i: number, s: number, y: number, x: number, z: number, cx: number, cz: number) => {
     const t = tiltAt(i, s);
     if (t <= 0) return y;
@@ -2021,8 +2019,8 @@ export async function buildPasirRisCourse(
       const dd = segD(x, z, m.left, m.right);
       // (A raised road is level across its mouth; a road on the ground
       // follows the ground.)
-      const { y, t, r } = rels[q];
-      const h = y === y ? (oneLine ? y + t * crossDrop(x, z, m.q[0], m.q[1]) : lerp(y, g + r, t)) : g;
+      const { y, t, r, g: gm } = rels[q];
+      const h = y === y ? (oneLine ? y + t * clampDrop(g - gm, Math.hypot(x - m.q[0], z - m.q[1])) : lerp(y, g + r, t)) : g;
       if (dd < 1e-3) return h;
       const w = 1 / (dd * dd);
       sw += w;
@@ -2405,6 +2403,8 @@ export async function buildPasirRisCourse(
   const UNDER = 0.12;
   const ROAD_LIFT = 0.09;
   const sealHits: { line: number; seg: number; u: number; d: number; half: number; s: number; used?: boolean }[] = [];
+  /** (Each road piece's edge heights as drawn, for heightAt: worked out once. By road, point, side and the piece whose normal it is.) */
+  const edgeHMemo = new Map<number, number>();
   function heightAt(x: number, z: number): number {
     let h = rawHeight(x, z);
     if (!(cell(x, z) & NEAR_ROAD)) return h;
@@ -2452,7 +2452,12 @@ export async function buildPasirRisCourse(
             const vx = pts[seg + 1][0] - pts[seg][0], vz = pts[seg + 1][1] - pts[seg][1];
             const vl = Math.hypot(vx, vz) || 1;
             const nx = vz / vl, nz = -vx / vl;
-            const sideAt = (k: number, sgn: number) => tiltY(line, ECUM[line][k], Y[k], pts[k][0] + nx * sgn * halfNear(line, k, 0), pts[k][1] + nz * sgn * halfNear(line, k, 0), pts[k][0], pts[k][1]);
+            const sideAt = (k: number, sgn: number) => {
+              const key = -1 - (((line * 4096 + k) * 2 + (sgn > 0 ? 1 : 0)) * 4096 + seg);
+              let v = edgeHMemo.get(key);
+              if (v === undefined) edgeHMemo.set(key, (v = tiltY(line, ECUM[line][k], Y[k], pts[k][0] + nx * sgn * halfNear(line, k, 0), pts[k][1] + nz * sgn * halfNear(line, k, 0), pts[k][0], pts[k][1])));
+              return v;
+            };
             const h0 = lerp(halfNear(line, seg, 0), halfNear(line, seg + 1, 0), u);
             const o = Math.max(-h0, Math.min(h0, (x - cx) * nx + (z - cz) * nz));
             const ya = lerp(sideAt(seg, -1), sideAt(seg + 1, -1), u), yb = lerp(sideAt(seg, 1), sideAt(seg + 1, 1), u);
@@ -2472,7 +2477,12 @@ export async function buildPasirRisCourse(
           const vl = Math.hypot(vx, vz) || 1;
           const nx = vz / vl, nz = -vx / vl;
           // (Each edge's height at the piece's own two points, straight between.)
-          const edgeH = (k: number, sgn: number) => Math.max(rawHeight(pts[k][0] + nx * sgn * halfNear(line, k, 0), pts[k][1] + nz * sgn * halfNear(line, k, 0)), WL + 0.15);
+          const edgeH = (k: number, sgn: number) => {
+            const key = ((line * 4096 + k) * 2 + (sgn > 0 ? 1 : 0)) * 4096 + seg;
+            let v = edgeHMemo.get(key);
+            if (v === undefined) edgeHMemo.set(key, (v = Math.max(rawHeight(pts[k][0] + nx * sgn * halfNear(line, k, 0), pts[k][1] + nz * sgn * halfNear(line, k, 0)), WL + 0.15)));
+            return v;
+          };
           const h0 = lerp(halfNear(line, seg, 0), halfNear(line, seg + 1, 0), u);
           const o = Math.max(-h0, Math.min(h0, (x - cx) * nx + (z - cz) * nz));
           const ya = lerp(edgeH(seg, -1), edgeH(seg + 1, -1), u), yb = lerp(edgeH(seg, 1), edgeH(seg + 1, 1), u);
