@@ -2308,8 +2308,16 @@ export async function buildPasirRisCourse(
     // beaches they run on an embankment (bridges and culverts in real life).
     // (Bridge decks span the water instead.)
     if (h < hb - 0.02) {
-      const r = roads.nearest(x, z, 24, (i) => !isDeck[i]);
-      if (r) h = lerp(h, hb, smoothstep(EHALF[r.line] + 8, EHALF[r.line] + 1.5, r.d));
+      if (oneLine) {
+        // (Each road by how far its own edge is: the nearest centre line may
+        // be a narrow road's while a wide one's edge is right here.)
+        let k = 0;
+        roads.each(x, z, 24, (i, _seg, _u, d) => void (!isDeck[i] && (k = Math.max(k, smoothstep(EHALF[i] + 8, EHALF[i] + 1.5, d)))));
+        h = lerp(h, hb, k);
+      } else {
+        const r = roads.nearest(x, z, 24, (i) => !isDeck[i]);
+        if (r) h = lerp(h, hb, smoothstep(EHALF[r.line] + 8, EHALF[r.line] + 1.5, r.d));
+      }
     }
     // Embankments carry the roads up to the flyovers.
     // Where several meet or run side by side, the highest wins.
@@ -2428,11 +2436,38 @@ export async function buildPasirRisCourse(
           const Y = deckY(line);
           const edgeAt = (k: number) => tiltY(line, ECUM[line][k], Y[k], pts[k][0] + ox, pts[k][1] + oz, pts[k][0], pts[k][1]);
           yr = lerp(edgeAt(seg), edgeAt(seg + 1), u);
+          // (Within its width, as it is drawn: straight across from one
+          // edge to the other, not following the ground's shape between.)
+          if (oneLine && d < half) {
+            const vx = pts[seg + 1][0] - pts[seg][0], vz = pts[seg + 1][1] - pts[seg][1];
+            const vl = Math.hypot(vx, vz) || 1;
+            const nx = vz / vl, nz = -vx / vl;
+            const sideAt = (k: number, sgn: number) => tiltY(line, ECUM[line][k], Y[k], pts[k][0] + nx * sgn * halfNear(line, k, 0), pts[k][1] + nz * sgn * halfNear(line, k, 0), pts[k][0], pts[k][1]);
+            const h0 = lerp(halfNear(line, seg, 0), halfNear(line, seg + 1, 0), u);
+            const o = Math.max(-h0, Math.min(h0, (x - cx) * nx + (z - cz) * nz));
+            const ya = lerp(sideAt(seg, -1), sideAt(seg + 1, -1), u), yb = lerp(sideAt(seg, 1), sideAt(seg + 1, 1), u);
+            yr = Math.min(yr, lerp(ya, yb, (o / (h0 || 1) + 1) / 2));
+          }
         }
       } else {
         // A draped road's surface at its edge nearest this point.
         const t = d > half ? half / d : 1;
         yr = Math.max(rawHeight(cx + (x - cx) * t, cz + (z - cz) * t), WL + 0.15);
+        // (Within its width, as it is drawn: straight across from one edge's
+        // height to the other's. Under a wide road whose one edge dips, by a
+        // pond's bank, the ground held only to the height right here stood
+        // up through the middle of it.)
+        if (oneLine && d < half) {
+          const vx = pts[seg + 1][0] - pts[seg][0], vz = pts[seg + 1][1] - pts[seg][1];
+          const vl = Math.hypot(vx, vz) || 1;
+          const nx = vz / vl, nz = -vx / vl;
+          // (Each edge's height at the piece's own two points, straight between.)
+          const edgeH = (k: number, sgn: number) => Math.max(rawHeight(pts[k][0] + nx * sgn * halfNear(line, k, 0), pts[k][1] + nz * sgn * halfNear(line, k, 0)), WL + 0.15);
+          const h0 = lerp(halfNear(line, seg, 0), halfNear(line, seg + 1, 0), u);
+          const o = Math.max(-h0, Math.min(h0, (x - cx) * nx + (z - cz) * nz));
+          const ya = lerp(edgeH(seg, -1), edgeH(seg + 1, -1), u), yb = lerp(edgeH(seg, 1), edgeH(seg + 1, 1), u);
+          yr = Math.min(yr, lerp(ya, yb, (o / (h0 || 1) + 1) / 2));
+        }
       }
       const cap = yr - UNDER + Math.max(0, d - half - SEAL);
       if (cap < h) h = cap;
