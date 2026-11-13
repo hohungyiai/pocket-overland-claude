@@ -25,7 +25,9 @@
   const marks = () => {
     const d = globalThis.__osm;
     if (marks.grid) return marks.grid;
-    // Every painted piece (a triangle's middle), on a 2 m grid.
+    // Every painted piece (a triangle's middle, and points along its sides
+    // every half metre: a long straight run of line may be drawn as a few
+    // long triangles), on a 2 m grid.
     const grid = { white: new Map(), yellow: new Map() };
     for (const k of d.farTiles()) {
       const accs = d.tileAccs(k);
@@ -33,13 +35,17 @@
         const r = accs[kind];
         if (!r) continue;
         const { pos, idx } = r;
-        for (let q = 0; q < idx.length; q += 3) {
-          const a = idx[q] * 3, b = idx[q + 1] * 3, c = idx[q + 2] * 3;
-          const x = (pos[a] + pos[b] + pos[c]) / 3;
-          const y = (pos[a + 1] + pos[b + 1] + pos[c + 1]) / 3;
-          const z = (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3;
+        const put = (x, y, z) => {
           const key = Math.floor(x / 2) * 100003 + Math.floor(z / 2);
           (grid[kind].get(key) ?? grid[kind].set(key, []).get(key)).push([x, y, z]);
+        };
+        for (let q = 0; q < idx.length; q += 3) {
+          const a = idx[q] * 3, b = idx[q + 1] * 3, c = idx[q + 2] * 3;
+          put((pos[a] + pos[b] + pos[c]) / 3, (pos[a + 1] + pos[b + 1] + pos[c + 1]) / 3, (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3);
+          for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+            const n = Math.floor(Math.hypot(pos[v] - pos[u], pos[v + 2] - pos[u + 2]) / 0.5);
+            for (let t = 1; t < n; t++) put(pos[u] + ((pos[v] - pos[u]) * t) / n, pos[u + 1] + ((pos[v + 1] - pos[u + 1]) * t) / n, pos[u + 2] + ((pos[v + 2] - pos[u + 2]) * t) / n);
+          }
         }
       }
     }

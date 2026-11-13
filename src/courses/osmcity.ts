@@ -4732,6 +4732,11 @@ export async function buildPasirRisCourse(
           q--;
         }
       }
+      // (Nor a sliver, paved or not, where two pieces of paving all but
+      // meet: under 0.6 m wide on average, area against length round.)
+      let round = 0;
+      for (let q = 0; q < r.length; q++) round += Math.hypot(r[q].x - r[(q + 1) % r.length].x, r[q].y - r[(q + 1) % r.length].y);
+      if ((2 * Math.abs(Clipper.area(r))) / (round || 1) < 0.6 * OUT_S) continue;
       const pts: XZ[] = [];
       /** The outline's own corners; and each piece's side (from corner[e] to the next), and where along it its middle is (0..1). */
       const corner: XZ[] = [];
@@ -4884,8 +4889,33 @@ export async function buildPasirRisCourse(
     // (A slip road's wedge between lined roads: its outside carries the
     // edge line from the road it leaves to the slip road's own.)
     const wedge = lined < 0 && jointSide !== undefined && slipLined(jointSide);
-    why += ` lined ${lined} off ${off.toFixed(2)}${wedge ? ' wedge' : ''}`;
-    return { ...base, kerb, line: lined >= 0 || wedge, stop: false, why, lr: lined, ls };
+    // (Across a junction the through road wins, on a side nothing joins
+    // from: its edge line carries on where the way across puts it, even
+    // where the road's own piece there lies hidden under the junction.)
+    const thru = lined < 0 && !wedge && thruYellowNear(mx + nx * 0.35, mz + nz * 0.35) < 0.4;
+    why += ` lined ${lined} off ${off.toFixed(2)}${wedge ? ' wedge' : ''}${thru ? ' through' : ''}`;
+    return { ...base, kerb, line: lined >= 0 || wedge || thru, stop: false, why, lr: lined, ls };
+  };
+  /** How far is (x, z) from the nearest through road's edge line across a junction (on the ground)? */
+  let thruGrid: Map<number, [XZ, XZ][]> | null = null;
+  const thruYellowNear = (x: number, z: number) => {
+    if (!thruGrid) {
+      thruGrid = new Map();
+      for (const [id, lines] of throughLines) {
+        if (jointDeck(id) > 0) continue;
+        for (const ln of lines) {
+          if (ln.kind !== 'yellow') continue;
+          for (let k = 1; k < ln.pts.length; k++) {
+            const a = ln.pts[k - 1], b = ln.pts[k];
+            for (const c of new Set([Math.floor(a[0] / 8) * 100003 + Math.floor(a[1] / 8), Math.floor(b[0] / 8) * 100003 + Math.floor(b[1] / 8)])) (thruGrid.get(c) ?? thruGrid.set(c, []).get(c)!).push([a, b]);
+          }
+        }
+      }
+    }
+    let best = Infinity;
+    const ci = Math.floor(x / 8), cj = Math.floor(z / 8);
+    for (let i = ci - 1; i <= ci + 1; i++) for (let j = cj - 1; j <= cj + 1; j++) for (const [a, b] of thruGrid.get(i * 100003 + j) ?? []) best = Math.min(best, segDist(a, b, x, z));
+    return best;
   };
   /** Is joint id a slip road's wedge (or a far part of one) where every road is lined? */
   const slipLined = (id: number) => {

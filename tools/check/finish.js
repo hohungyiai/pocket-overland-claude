@@ -522,7 +522,10 @@ window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.01) => 
     // A line that is solid on both approaches (at every row there, give or take 0.2 m sideways) is solid through.
     const has = (r, o) => r.paint.has(o) || r.paint.has(o - 1) || r.paint.has(o + 1) || r.paint.has(o - 2) || r.paint.has(o + 2);
     const solid = [...far[0].paint].filter((o) => far.every((r) => has(r, o)));
-    const broken = solid.filter((o) => !near.every((r) => has(r, o)));
+    // (Not the edge line on a side a road joins from: it stops at the mouth.)
+    const edgeAt = (o) => Math.abs(o / 10) > Math.min(...rows.map((r) => r.half)) - 1;
+    const joins = (o) => !side || both || Math.sign(o) === side;
+    const broken = solid.filter((o) => !near.every((r) => has(r, o)) && !(edgeAt(o) && joins(o)));
     if (broken.length) flag('line stops', broken.length / 10, P0[0], P0[1]);
     // The kerb on the side away from the side road.
     for (const k of [0, 1]) {
