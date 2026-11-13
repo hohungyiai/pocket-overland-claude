@@ -550,10 +550,12 @@ export async function buildPasirRisCourse(
     // (Blurred: the distance has a crease along every line midway between
     // two waters, the ridge of a hill, and a road crossing it went from
     // climbing to falling within a metre or two. Two passes of a 5-cell
-    // box each way round it off over 30 m or so.)
+    // box each way round it off over 30 m or so. Redrawn maps only: today's
+    // map keeps its hills to the centimetre.)
+    const redrawn = M.edges.some((e) => e.ta || e.tb);
     for (let q = 0; q < d.length; q++) d[q] = Math.min(d[q], 400);
     const t = new Float32Array(d.length);
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < (redrawn ? 2 : 0); pass++) {
       for (let j = 0; j < DH; j++)
         for (let i = 0; i < DW; i++) {
           let sum = 0;
