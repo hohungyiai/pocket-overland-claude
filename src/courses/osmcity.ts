@@ -3595,7 +3595,7 @@ export async function buildPasirRisCourse(
           const { rows } = gores[id];
           for (const c of goreCaps(id)) {
             // (A nose on the ground has its kerb from the outline on a redrawn map.)
-            if (!(oneLine && gores[id].deck <= 0)) {
+            if (!oneLine) {
               const kerb = acc('kerb');
               const kb = kerb.pos.length / 3;
               for (const [p, y] of [[c.a, c.ya], [c.b, c.yb]] as [XZ, number][])
@@ -4354,7 +4354,7 @@ export async function buildPasirRisCourse(
         // The through road's lines, on the paving.
         if (part === 0) for (const ln of throughLines.get(id) ?? []) {
           // (An edge line across the paving comes from the outline on a redrawn map.)
-          if (oneLine && ln.kind === 'yellow' && jointDeck(id) <= 0) continue;
+          if (oneLine && ln.kind === 'yellow') continue;
           const into = acc(ln.kind);
           const ring = JPOLY[id].ring;
           const base = into.pos.length / 3;
@@ -4380,7 +4380,7 @@ export async function buildPasirRisCourse(
         // A slip road's wedge has an edge line along its outside, from where
         // the road it leaves stops its own (across the opening) to the slip
         // road's mouth, where the slip road's own line carries on.
-        if (part === 0 && id < JX.shapes.length && JX.shapes[id].slip && JX.shapes[id].nodes.length === 1 && !(oneLine && jointDeck(id) <= 0)) {
+        if (part === 0 && id < JX.shapes.length && JX.shapes[id].slip && JX.shapes[id].nodes.length === 1 && !oneLine) {
           const j = JX.shapes[id].nodes[0];
           const ring = JPOLY[id].ring;
           if (JX.tee[j] && jE[j].every((i) => rankOf(edges[i].cls) >= 2)) {
@@ -4491,7 +4491,7 @@ export async function buildPasirRisCourse(
             band(deck, w.W, w.cum, 0, last, 0, yk, 0, (q) => parapetTop(dr(q)), (q) => w.keep[q] && !deckPiece(w, q) && Math.max(dr(q), dr(q + 1)) > PARAPET_FROM);
           }
         }
-        if (part === 2 && !(oneLine && jointDeck(id) <= 0)) for (const F of sh.kerbs) {
+        if (part === 2 && !oneLine) for (const F of sh.kerbs) {
           const kb = kerb.pos.length / 3;
           for (let q = 0; q < F.length; q++) {
             const a = F[Math.max(0, q - 1)];
@@ -4635,7 +4635,21 @@ export async function buildPasirRisCourse(
   // edge (a side road's mouth, a divider's nose), at a zebra or a yellow box.
   // (Decks keep their own kerbs and lines: the outline stops at them.)
   const OUT_S = 1000; // (traced in whole millimetres)
-  const outlined = edges.map((_, i) => oneLine && !isDeck[i] && !(JX.internal[i] && internalHidden[i]) && EP[i].length > 1);
+  const outlined = edges.map((_, i) => oneLine && !(JX.internal[i] && internalHidden[i]) && EP[i].length > 1);
+  // The decks, each flyover (its pieces joined end to end) a level of its
+  // own: its outline is traced apart from the ground's and other decks'.
+  const deckGrp = new Int32Array(edges.length).fill(-1);
+  {
+    const up = edges.map((_, i) => i);
+    const find = (i: number): number => (up[i] === i ? i : (up[i] = find(up[i])));
+    for (let j = 0; j < (jE as number[][]).length; j++) {
+      const ds = (jE[j] ?? []).filter((i) => isDeck[i]);
+      for (let k = 1; k < ds.length; k++) up[find(ds[k])] = find(ds[0]);
+    }
+    edges.forEach((_, i) => isDeck[i] && (deckGrp[i] = find(i)));
+  }
+  /** The level a road's surface is traced in: -1 the ground, else its flyover. */
+  const lvlOf = (i: number) => deckGrp[i];
   /** Road i's drawn surface as a polygon: its two sides from mouth to mouth, as the road's strip draws them. */
   const surfacePoly = (i: number): XZ[] => {
     const cut = cutOf(i);
@@ -4663,19 +4677,34 @@ export async function buildPasirRisCourse(
     }
     return [...L, ...R.reverse()];
   };
-  type OutSrc = { ring: XZ[]; x0: number; z0: number; x1: number; z1: number };
+  type OutSrc = { ring: XZ[]; lvl: number; x0: number; z0: number; x1: number; z1: number };
   let outSrcs: OutSrc[] | null = null;
+  /** A joint's level: the ground, or the flyover its deck pieces belong to. */
+  const jLvl = (id: number) => {
+    if (jointDeck(id) <= 0) return -1;
+    const fill = id < JX.shapes.length ? undefined : JX.fills[id - JX.shapes.length];
+    const es = (fill ? (fill.tee !== undefined ? [fill.tee] : []) : JX.shapes[id].nodes).flatMap((j) => jE[j]);
+    const d = es.find((i) => isDeck[i]);
+    return d === undefined ? -1 : lvlOf(d);
+  };
+  /** A gore's level: the ground, or the flyover whose deck lies nearest its first row. */
+  const goreLvl = (g: (typeof gores)[number]) => {
+    if (g.deck <= 0) return -1;
+    const r = g.rows[0];
+    const hit = roads.nearest((r.a[0] + r.b[0]) / 2, (r.a[1] + r.b[1]) / 2, 30, (i) => isDeck[i]);
+    return hit ? lvlOf(hit.line) : -1;
+  };
   const outSources = () => {
     if (outSrcs) return outSrcs;
-    const rings: XZ[][] = [];
-    edges.forEach((_, i) => outlined[i] && rings.push(surfacePoly(i)));
-    JPOLY.forEach((sh, id) => jointDeck(id) <= 0 && rings.push(sh.ring));
-    for (const g of gores) if (g.deck <= 0) rings.push(g.ring);
+    const rings: [XZ[], number][] = [];
+    edges.forEach((_, i) => outlined[i] && rings.push([surfacePoly(i), lvlOf(i)]));
+    JPOLY.forEach((sh, id) => rings.push([sh.ring, jLvl(id)]));
+    for (const g of gores) rings.push([g.ring, goreLvl(g)]);
     outSrcs = rings
-      .filter((r) => r.length >= 3)
-      .map((ring) => {
+      .filter(([r]) => r.length >= 3)
+      .map(([ring, lvl]) => {
         const xs = ring.map((p) => p[0]), zs = ring.map((p) => p[1]);
-        return { ring, x0: Math.min(...xs), z0: Math.min(...zs), x1: Math.max(...xs), z1: Math.max(...zs) };
+        return { ring, lvl, x0: Math.min(...xs), z0: Math.min(...zs), x1: Math.max(...xs), z1: Math.max(...zs) };
       });
     return outSrcs;
   };
@@ -4752,7 +4781,8 @@ export async function buildPasirRisCourse(
   const outlineRings = (ix: number, iz: number) => {
     const M = 30;
     const bx0 = ix * TILE - M, bz0 = iz * TILE - M, bx1 = (ix + 1) * TILE + M, bz1 = (iz + 1) * TILE + M;
-    const paths = new Paths64();
+    // (Each level by itself: the ground, and each flyover.)
+    const byLvl = new Map<number, Paths64>();
     for (const s of outSources()) {
       if (s.x1 < bx0 || s.x0 > bx1 || s.z1 < bz0 || s.z0 > bz1) continue;
       const p = new Path64();
@@ -4760,9 +4790,10 @@ export async function buildPasirRisCourse(
       // (All one way round: where two pieces wound opposite ways overlap,
       // their windings would cancel and leave a false hole.)
       if (Clipper.area(p) < 0) p.reverse();
-      paths.push(p);
+      (byLvl.get(s.lvl) ?? byLvl.set(s.lvl, new Paths64()).get(s.lvl)!).push(p);
     }
-    const out: { pts: XZ[]; corner: XZ[]; edge: number[]; at: number[]; hole: boolean }[] = [];
+    const out: { pts: XZ[]; corner: XZ[]; edge: number[]; at: number[]; hole: boolean; lvl: number }[] = [];
+    for (const [lvl, paths] of [...byLvl].sort((p, q) => p[0] - q[0]))
     for (const r of Clipper.Union(paths, undefined, FillRule.NonZero)) {
       // (Slivers and specks, where two pieces of paving all but touch: no surface.)
       if (Math.abs(Clipper.area(r)) < 1e6) continue;
@@ -4821,7 +4852,7 @@ export async function buildPasirRisCourse(
       // area, x east and z south; round a hole, positive.)
       let area2 = 0;
       for (let q = 0; q < corner.length; q++) area2 += corner[q][0] * corner[(q + 1) % corner.length][1] - corner[(q + 1) % corner.length][0] * corner[q][1];
-      out.push({ pts, corner, edge, at, hole: area2 > 0 });
+      out.push({ pts, corner, edge, at, hole: area2 > 0, lvl });
     }
     return out;
   };
@@ -4850,12 +4881,14 @@ export async function buildPasirRisCourse(
   };
   const jointDeckOf = new Map<number, number>();
   const jDeck = (id: number) => jointDeckOf.get(id) ?? jointDeckOf.set(id, jointDeck(id)).get(id)!;
+  const jLvlOf = new Map<number, number>();
+  const jLvlM = (id: number) => jLvlOf.get(id) ?? jLvlOf.set(id, jLvl(id)).get(id)!;
   /** The joints whose paving may hold (x, z) (its cell's, close enough to its centre). */
   const jointsNear = (x: number, z: number, pad = 1) => (jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL)) ?? []).filter((q) => Math.hypot(x - JPOLY[q].centre[0], z - JPOLY[q].centre[1]) < JPOLY[q].radius + pad);
   /** The drawn surface's height at (x, z) on the outline (NaN: lying on the ground, as the strips drape it). */
-  const outlineY = (x: number, z: number, near = nearRoads(x, z)) => {
-    // (A joint between raised roads on the ground: its own paving.)
-    const id = jointsNear(x, z).find((q) => jDeck(q) === 0 && ringDist(JPOLY[q].ring, x, z)[0] < 0.3);
+  const outlineY = (x: number, z: number, near = nearRoads(x, z), lvl = -1) => {
+    // (A joint between raised roads on the ground, or on a flyover: its own paving.)
+    const id = jointsNear(x, z).find((q) => (lvl < 0 ? jDeck(q) === 0 : jLvlM(q) === lvl) && ringDist(JPOLY[q].ring, x, z)[0] < 0.3);
     if (id !== undefined) return paveY(id, x, z);
     const r = edgeRoadOf(near, () => true);
     if (!r || !hasProfile[r.i]) return NaN;
@@ -4878,6 +4911,16 @@ export async function buildPasirRisCourse(
     if (jointsNear(x, z).some((q) => jDeck(q) > 0 && inRingXZ(JPOLY[q].ring, x, z) && Math.abs(jTop(q, x, z) - g) < 1.5)) return true;
     return !!goreGrid.get(Math.floor(x / GCELL) * 100003 + Math.floor(z / GCELL))?.some((q) => gores[q].deck > 0 && inRingXZ(gores[q].ring, x, z));
   };
+  /** Is (x, z), near height y, on paving of another level than lvl (a flyover's end on the ground, or the ground's under its end)? */
+  const otherAt = (x: number, z: number, y: number, lvl: number) => {
+    if (y !== y) return false;
+    let hit = false;
+    roads.each(x, z, 16, (i, seg, u, d) => {
+      if (hit || lvlOf(i) === lvl || !outlined[i] || d > drawnHalf(i, seg, u) + 0.05) return;
+      hit = Math.abs((hasProfile[i] ? deckAtHit(i, seg, u) : dropAt(x, z)) - y) < 1.5;
+    });
+    return hit || jointsNear(x, z).some((q) => jLvlM(q) !== lvl && inRingXZ(JPOLY[q].ring, x, z) && Math.abs(jTop(q, x, z) - y) < 1.5);
+  };
   const segDist = (a: XZ, b: XZ, x: number, z: number) => {
     const vx = b[0] - a[0], vz = b[1] - a[1];
     const u = Math.max(0, Math.min(1, ((x - a[0]) * vx + (z - a[1]) * vz) / (vx * vx + vz * vz || 1)));
@@ -4885,24 +4928,26 @@ export async function buildPasirRisCourse(
   };
   const crossTiles = new Map<string, Crossing[]>();
   const boxTiles = new Map<string, YBox[]>();
-  type OutMark = { kerb: boolean; line: boolean; stop: boolean; flat: boolean; why: string; road: number; seg: number; joint: number; lr: number; ls: number };
+  type OutMark = { kerb: boolean; line: boolean; stop: boolean; flat: boolean; why: string; road: number; seg: number; joint: number; lr: number; ls: number; lvl: number };
   /**
    * Does the outline's side a -> b (paving on its left, as the strip has
    * it) get a kerb, and an edge line inside it, at (mx, mz) on it? (why:
    * what decided; flat: the ground here lies as the strips drape it; road
    * and seg, or joint: whose surface it bounds, for its height.)
    */
-  const outlineMarks = (a: XZ, b: XZ, mx: number, mz: number, hole = false): OutMark => {
+  const outlineMarks = (a: XZ, b: XZ, mx: number, mz: number, hole = false, lvl = -1): OutMark => {
     const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
     const tx = (b[0] - a[0]) / tl, tz = (b[1] - a[1]) / tl;
     // (Into the paving: + the strip's normal.)
     const nx = tz, nz = -tx;
-    const near = nearRoads(mx, mz);
-    const flat = flatNear(mx, mz, near);
-    const joint = flat ? -1 : jointsNear(mx, mz).find((q) => jDeck(q) === 0 && ringDist(JPOLY[q].ring, mx, mz)[0] < 0.3) ?? -1;
+    // (The roads of this outline's own level: the ground's, or this flyover's.)
+    const all = nearRoads(mx, mz);
+    const near: Near = new Map([...all].filter(([i]) => lvlOf(i) === lvl));
+    const flat = lvl < 0 && flatNear(mx, mz, near);
+    const joint = flat ? -1 : jointsNear(mx, mz).find((q) => (lvl < 0 ? jDeck(q) === 0 : jLvlM(q) === lvl) && ringDist(JPOLY[q].ring, mx, mz)[0] < 0.3) ?? -1;
     const under = edgeRoadOf(near, () => true);
-    const y = flat ? NaN : outlineY(mx, mz, near);
-    const base = { flat, joint, road: under && hasProfile[under.i] ? under.i : -1, seg: under?.seg ?? 0, lr: -1, ls: 0 };
+    const y = flat ? NaN : outlineY(mx, mz, near, lvl);
+    const base = { flat, joint, road: under && hasProfile[under.i] ? under.i : -1, seg: under?.seg ?? 0, lr: -1, ls: 0, lvl };
     // The road whose edge this is.
     const r = edgeRoadOf(near, (i) => !JX.internal[i]);
     // (Across a road's very end, where it stops at the map's edge or a dead end: no kerb, no line.
@@ -4915,14 +4960,15 @@ export async function buildPasirRisCourse(
       if ((s < 0.5 || s > ELEN[r.i] - 0.5) && jDegree[endJ] <= 1 && Math.abs((tx * (pb[0] - pa[0]) + tz * (pb[1] - pa[1])) / dl) < 0.5) return { ...base, kerb: false, line: false, stop: true, why: 'road end' };
     }
     // (Where a deck carries on from it: the deck's own kerbs and lines.)
-    const deckNear = [...near].some(([i, h]) => isDeck[i] && h.d < drawnHalf(i, h.seg, h.u) + 1) || jointsNear(mx, mz).some((q) => jDeck(q) > 0) || !!goreGrid.get(Math.floor(mx / GCELL) * 100003 + Math.floor(mz / GCELL))?.some((q) => gores[q].deck > 0);
-    if (deckNear && onDeckAt(mx - nx * 0.4, mz - nz * 0.4, y)) return { ...base, kerb: false, line: false, stop: true, why: 'deck beyond' };
+    // (And where a flyover's end lands on the ground: the ground's.)
+    if (lvl >= 0 ? otherAt(mx - nx * 0.4, mz - nz * 0.4, y, lvl) : ([...all].some(([i, h]) => isDeck[i] && h.d < drawnHalf(i, h.seg, h.u) + 1) || jointsNear(mx, mz).some((q) => jDeck(q) > 0) || !!goreGrid.get(Math.floor(mx / GCELL) * 100003 + Math.floor(mz / GCELL))?.some((q) => gores[q].deck > 0)) && onDeckAt(mx - nx * 0.4, mz - nz * 0.4, y))
+      return { ...base, kerb: false, line: false, stop: true, why: lvl >= 0 ? 'ground beyond' : 'deck beyond' };
     // A kerb, but beside a road that has none (a lane, a drive), or round
     // a junction's corner that has none.
     let kerb = !!r && (kerbedRoad(edges[r.i]) || hasProfile[r.i]);
     let why = r ? `road ${r.i} past ${r.past.toFixed(2)}` : 'no road';
     /** The joint whose paving's side this is (not a road's). */
-    const jointSide = r && Math.abs(r.past) > 0.2 ? jointsNear(mx, mz).find((q) => jDeck(q) <= 0 && inRingXZ(JPOLY[q].ring, mx + nx * 0.05, mz + nz * 0.05) && !inRingXZ(JPOLY[q].ring, mx - nx * 0.05, mz - nz * 0.05)) : undefined;
+    const jointSide = r && Math.abs(r.past) > 0.2 ? jointsNear(mx, mz).find((q) => jLvlM(q) === lvl && inRingXZ(JPOLY[q].ring, mx + nx * 0.05, mz + nz * 0.05) && !inRingXZ(JPOLY[q].ring, mx - nx * 0.05, mz - nz * 0.05)) : undefined;
     if (jointSide !== undefined) {
       if (kerb) kerb = JPOLY[jointSide].kerbs.some((F) => F.some((p, w) => w > 0 && segDist(F[w - 1], p, mx, mz) < 0.6));
       why += ` joint ${jointSide}`;
@@ -4950,32 +4996,32 @@ export async function buildPasirRisCourse(
     // (Across a junction the through road wins, on a side nothing joins
     // from: its edge line carries on where the way across puts it, even
     // where the road's own piece there lies hidden under the junction.)
-    const thru = lined < 0 && !wedge && thruYellowNear(mx + nx * 0.35, mz + nz * 0.35) < 0.4;
+    const thru = lined < 0 && !wedge && thruYellowNear(mx + nx * 0.35, mz + nz * 0.35, lvl) < 0.4;
     // (An island's kerb, among lined roads: the edge line follows it all
     // the way round, as it does round a divider's nose.)
-    const island = lined < 0 && !wedge && !thru && hole && kerb && [...near].some(([i]) => rankOf(edges[i].cls) >= 2 && !isDeck[i]);
+    const island = lined < 0 && !wedge && !thru && hole && kerb && [...near].some(([i]) => rankOf(edges[i].cls) >= 2);
     why += ` lined ${lined} off ${off.toFixed(2)}${wedge ? ' wedge' : ''}${thru ? ' through' : ''}${island ? ' island' : ''}`;
     return { ...base, kerb, line: lined >= 0 || wedge || thru || island, stop: false, why, lr: lined, ls };
   };
   /** How far is (x, z) from the nearest through road's edge line across a junction (on the ground)? */
-  let thruGrid: Map<number, [XZ, XZ][]> | null = null;
-  const thruYellowNear = (x: number, z: number) => {
+  let thruGrid: Map<number, [XZ, XZ, number][]> | null = null;
+  const thruYellowNear = (x: number, z: number, lvl: number) => {
     if (!thruGrid) {
       thruGrid = new Map();
       for (const [id, lines] of throughLines) {
-        if (jointDeck(id) > 0) continue;
+        const lv = jLvlM(id);
         for (const ln of lines) {
           if (ln.kind !== 'yellow') continue;
           for (let k = 1; k < ln.pts.length; k++) {
             const a = ln.pts[k - 1], b = ln.pts[k];
-            for (const c of new Set([Math.floor(a[0] / 8) * 100003 + Math.floor(a[1] / 8), Math.floor(b[0] / 8) * 100003 + Math.floor(b[1] / 8)])) (thruGrid.get(c) ?? thruGrid.set(c, []).get(c)!).push([a, b]);
+            for (const c of new Set([Math.floor(a[0] / 8) * 100003 + Math.floor(a[1] / 8), Math.floor(b[0] / 8) * 100003 + Math.floor(b[1] / 8)])) (thruGrid.get(c) ?? thruGrid.set(c, []).get(c)!).push([a, b, lv]);
           }
         }
       }
     }
     let best = Infinity;
     const ci = Math.floor(x / 8), cj = Math.floor(z / 8);
-    for (let i = ci - 1; i <= ci + 1; i++) for (let j = cj - 1; j <= cj + 1; j++) for (const [a, b] of thruGrid.get(i * 100003 + j) ?? []) best = Math.min(best, segDist(a, b, x, z));
+    for (let i = ci - 1; i <= ci + 1; i++) for (let j = cj - 1; j <= cj + 1; j++) for (const [a, b, lv] of thruGrid.get(i * 100003 + j) ?? []) if (lv === lvl) best = Math.min(best, segDist(a, b, x, z));
     return best;
   };
   /** Is joint id a slip road's wedge (or a far part of one) where every road is lined? */
@@ -5004,24 +5050,33 @@ export async function buildPasirRisCourse(
   const yOn = (m: OutMark, x: number, z: number) => {
     if (m.flat) return NaN;
     if (m.joint >= 0) return paveY(m.joint, x, z);
-    const i = m.road;
-    if (i < 0) return NaN;
-    // (Its nearest point, a few pieces either side of where the side was asked.)
-    const P = EP[i];
-    let best = Infinity, bs = 0, bu = 0;
-    for (let s = Math.max(0, m.seg - 4); s <= Math.min(P.length - 2, m.seg + 4); s++) {
-      const vx = P[s + 1][0] - P[s][0], vz = P[s + 1][1] - P[s][1];
-      const u = Math.max(0, Math.min(1, ((x - P[s][0]) * vx + (z - P[s][1]) * vz) / (vx * vx + vz * vz || 1)));
-      const d = Math.hypot(P[s][0] + vx * u - x, P[s][1] + vz * u - z);
-      if (d < best) (best = d), (bs = s), (bu = u);
-    }
-    const sa = lerp(ECUM[i][bs], ECUM[i][bs + 1], bu);
-    return tiltY(i, sa, deckAtHit(i, bs, bu), x, z, lerp(P[bs][0], P[bs + 1][0], bu), lerp(P[bs][1], P[bs + 1][1], bu));
+    /** Road o's drawn height at (x, z), by its nearest point among pieces lo..hi. */
+    const at = (o: number, lo: number, hi: number) => {
+      const P = EP[o];
+      let best = Infinity, bs = 0, bu = 0;
+      for (let s = Math.max(0, lo); s <= Math.min(P.length - 2, hi); s++) {
+        const vx = P[s + 1][0] - P[s][0], vz = P[s + 1][1] - P[s][1];
+        const u = Math.max(0, Math.min(1, ((x - P[s][0]) * vx + (z - P[s][1]) * vz) / (vx * vx + vz * vz || 1)));
+        const d = Math.hypot(P[s][0] + vx * u - x, P[s][1] + vz * u - z);
+        if (d < best) (best = d), (bs = s), (bu = u);
+      }
+      return tiltY(o, lerp(ECUM[o][bs], ECUM[o][bs + 1], bu), deckAtHit(o, bs, bu), x, z, lerp(P[bs][0], P[bs + 1][0], bu), lerp(P[bs][1], P[bs + 1][1], bu));
+    };
+    // (Its own road's, a few pieces either side of where the side was asked.)
+    let y = m.road >= 0 ? at(m.road, m.seg - 4, m.seg + 4) : NaN;
+    // (Where raised pieces of the same level overlap, as a ramp leaves a
+    // road, the one on top is what shows: the mark lies on it.)
+    roads.each(x, z, 12, (o, seg, u, d) => {
+      if (o === m.road || !hasProfile[o] || lvlOf(o) !== m.lvl || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
+      const h = at(o, seg, seg);
+      if (y !== y || (h > y && h - y < 1.5)) y = h;
+    });
+    return y;
   };
   // (A tile's outline is worked out over several build slices, each short:
   // first the outline itself, then its sides a share at a time, asked
   // every 4 m or so along each, then the kerbs and lines drawn.)
-  type OutRing = { P: XZ[]; cum: number[]; n: number; drawn: boolean[]; corner: XZ[]; edge: number[]; at: number[]; samples: (OutMark | null)[][]; hole: boolean };
+  type OutRing = { P: XZ[]; cum: number[]; n: number; drawn: boolean[]; corner: XZ[]; edge: number[]; at: number[]; samples: (OutMark | null)[][]; hole: boolean; lvl: number };
   const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[] }>();
   const OUT_PARTS = 6;
   const OUT_DRAW = 3;
@@ -5034,7 +5089,7 @@ export async function buildPasirRisCourse(
       onTile('far', k, 'outline', () => {
         const rings: OutRing[] = [];
         const todo: [number, number, number][] = [];
-        for (const { pts: R, corner, edge, at, hole } of outlineRings(ix, iz)) {
+        for (const { pts: R, corner, edge, at, hole, lvl } of outlineRings(ix, iz)) {
           const n = R.length;
           // (Closed: one point before the start and two past it, for the cross-sections there. Piece q is R's q - 1.)
           const P: XZ[] = [R[n - 1], ...R, R[0], R[1]];
@@ -5055,7 +5110,7 @@ export async function buildPasirRisCourse(
             if (x > ix * TILE - 15 && x < (ix + 1) * TILE + 15 && z > iz * TILE - 15 && z < (iz + 1) * TILE + 15) want.add(edge[q - 1]);
           }
           for (const e of want) for (let j = 0; j < samples[e].length; j++) todo.push([id, e, j]);
-          rings.push({ P, cum, n, drawn, corner, edge, at, samples, hole });
+          rings.push({ P, cum, n, drawn, corner, edge, at, samples, hole, lvl });
         }
         outWork.set(k, { rings, todo, draws: [] });
       });
@@ -5068,13 +5123,13 @@ export async function buildPasirRisCourse(
             const R = w.rings[id];
             const a = R.corner[e], b = R.corner[(e + 1) % R.corner.length];
             const t = (j + 0.5) / R.samples[e].length;
-            R.samples[e][j] = outlineMarks(a, b, lerp(a[0], b[0], t), lerp(a[1], b[1], t), R.hole);
+            R.samples[e][j] = outlineMarks(a, b, lerp(a[0], b[0], t), lerp(a[1], b[1], t), R.hole, R.lvl);
           }
         });
       onTile('far', k, 'outline lines', () => {
         const w = outWork.get(k);
         if (!w) return;
-        for (const { P, cum, n, drawn: drawnP, edge, at, samples, hole } of w.rings) {
+        for (const { P, cum, n, drawn: drawnP, edge, at, samples, hole, lvl } of w.rings) {
           // (By the ring's own pieces: piece q runs from point q to q + 1, round.)
           const R = P.slice(1, n + 1);
           const nx = (q: number) => (q + 1) % n;
@@ -5089,7 +5144,7 @@ export async function buildPasirRisCourse(
             const b = R[nx(q)];
             const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
             const cx = (a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * 0.35, cz = (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * 0.35;
-            return lineStops(cx, cz) ? { ...m, line: false, stop: true, why: m.why + ' zebra' } : m;
+            return lvl < 0 && lineStops(cx, cz) ? { ...m, line: false, stop: true, why: m.why + ' zebra' } : m;
           });
           const zebra = (q: number) => !!marks[q]?.stop && marks[q]!.why.endsWith(' zebra');
           // (An island is lined all round or not at all: where any of its
@@ -5154,7 +5209,13 @@ export async function buildPasirRisCourse(
           // and the marks lie on them the same way.
           const same = (p: number, q: number) => edge[p] === edge[q] && drawn[p] === drawn[q] && !!marks[p]?.kerb === !!marks[q]?.kerb && !!marks[p]?.line === !!marks[q]?.line;
           const K: number[] = [];
-          for (let q = 0; q < n; q++) if (!same((q - 1 + n) % n, q)) K.push(q);
+          // (And on a raised road, a point every 3 m or so: the heights
+          // between kept points are straight, and a road's rise is curved.)
+          let since = 0;
+          for (let q = 0; q < n; q++) {
+            since += len((q - 1 + n) % n);
+            if (!same((q - 1 + n) % n, q) || (since >= 3 && marks[q] && !marks[q]!.flat)) K.push(q), (since = 0);
+          }
           const m = K.length;
           if (m < 2) continue;
           const Q: XZ[] = [R[K[m - 1]], ...K.map((q) => R[q]), R[K[0]], R[K[1]]];
@@ -5221,14 +5282,14 @@ export async function buildPasirRisCourse(
   /** (For the checks: the outline's sides within r of (x, z), and what each gets at its nearest point.) */
   const outlineAt = (x: number, z: number, r = 3) => {
     const out: { a: XZ; b: XZ; kerb: boolean; line: boolean; why: string }[] = [];
-    for (const { corner: R, hole } of outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)))
+    for (const { corner: R, hole, lvl } of outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)))
       R.forEach((a, q) => {
         const b = R[(q + 1) % R.length];
         if (segDist(a, b, x, z) >= r) return;
         const vx = b[0] - a[0], vz = b[1] - a[1];
         const u = Math.max(0, Math.min(1, ((x - a[0]) * vx + (z - a[1]) * vz) / (vx * vx + vz * vz || 1)));
-        const m = outlineMarks(a, b, a[0] + vx * u, a[1] + vz * u, hole);
-        out.push({ a, b, kerb: m.kerb, line: m.line && !lineStops(a[0] + vx * u, a[1] + vz * u), why: m.why + (hole ? ' (hole)' : '') });
+        const m = outlineMarks(a, b, a[0] + vx * u, a[1] + vz * u, hole, lvl);
+        out.push({ a, b, kerb: m.kerb, line: m.line && !lineStops(a[0] + vx * u, a[1] + vz * u), why: m.why + (hole ? ' (hole)' : '') + (lvl >= 0 ? ` (deck ${lvl})` : '') });
       });
     return out;
   };
