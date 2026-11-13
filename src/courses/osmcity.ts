@@ -266,6 +266,13 @@ export async function buildPasirRisCourse(
   // right edge, and each eases back onto its own line as the two part.
   /** Joints (junction ids) where three roads on one level meet as a split, with [single road, left branch, right branch]. */
   const deckSplits = new Map<number, [number, number, number]>();
+  /**
+   * Where a road carries straight on (one strip) and a third leaves it at a
+   * split's narrow angle: [the single road, the branch, its side (1 left,
+   * -1 right)]. The branch moves out to the road's edge, as a lane peels
+   * off; the road itself is left as it is.
+   */
+  const thruSplits = new Map<number, [number, number, number]>();
   /** At each, the single road's heading into the split. */
   const splitDir = new Map<number, XZ>();
   {
@@ -273,8 +280,8 @@ export async function buildPasirRisCourse(
     edges.forEach((e, i) => {
       for (const j of [e.a, e.b]) (byNode.get(j) ?? byNode.set(j, []).get(j)!).push(i);
     });
-    /** Road i's points, running away from joint j. */
-    const from = (i: number, j: number) => (edges[i].a === j ? EP[i] : [...EP[i]].reverse());
+    /** Road i's points, running away from joint j (as the map has them: which roads split is read from these). */
+    const from = (i: number, j: number) => (edges[i].a === j ? edges[i].pts : [...edges[i].pts].reverse());
     /** The point s metres along P. */
     const along = (P: XZ[], s: number): XZ => {
       let run = 0;
@@ -288,10 +295,17 @@ export async function buildPasirRisCourse(
     const COS35 = Math.cos((35 * Math.PI) / 180);
     for (const [j, list] of byNode) {
       if (list.length !== 3 || new Set(list).size !== 3) continue;
-      // (Not where the map marks one road as carrying straight on: that road is one strip, and the third meets its edge.)
-      if (list.some((i) => (edges[i].a === j ? edges[i].ta : edges[i].tb))) continue;
-      const lv = edges[list[0]].lv ?? 0;
-      if (list.some((i) => (edges[i].lv ?? 0) !== lv)) continue;
+      // (Where the map marks one road as carrying straight on, that road is
+      // one strip, and the third meets its edge: no split, unless the third
+      // leaves it at a split's narrow angle (see thruSplits).)
+      const thru = list.filter((i) => (edges[i].a === j ? edges[i].ta : edges[i].tb));
+      if (thru.length && thru.length !== 2) continue;
+      // (All at one level; or a low bridge's end, where the road splits as it
+      // comes off the bridge: kept unless the bridge proves to be a flyover,
+      // below.)
+      const lvs = list.map((i) => edges[i].lv ?? 0);
+      const lv = Math.min(...lvs);
+      if (lvs.some((v) => v !== lv) && (lvs.some((v) => v >= 2) || list.some((i) => edges[i].vd))) continue;
       const P = list.map((i) => from(i, j));
       // (On the ground, not the short pieces inside a knot of slip roads: a junction's shape joins those.)
       if (lv <= 0 && list.every((i) => /^(motorway|trunk)|_link$/.test(edges[i].cls)) && P.some((Q) => along(Q, 30) === Q[Q.length - 1])) continue;
@@ -310,6 +324,16 @@ export async function buildPasirRisCourse(
         const qa = along(P[a], 30), qb = along(P[b], 30);
         const aLeft = (qa[0] - qb[0]) * u[1] - (qa[1] - qb[1]) * u[0] > 0;
         const [L, R] = aLeft ? [a, b] : [b, a];
+        if (thru.length) {
+          // (The road carrying straight on is the single road and one branch;
+          // the other branch alone moves out.)
+          const side = [L, R].find((q) => !thru.includes(list[q]));
+          if (thru.includes(list[c]) && side !== undefined) {
+            thruSplits.set(j, [list[c], list[side], side === L ? 1 : -1]);
+            splitDir.set(j, u);
+          }
+          break;
+        }
         deckSplits.set(j, [list[c], list[L], list[R]]);
         splitDir.set(j, u);
         break;
@@ -580,6 +604,13 @@ export async function buildPasirRisCourse(
       }
     });
   }
+  // (A split at a bridge's end where the bridge is a flyover is no split on the ground.)
+  for (const S of [deckSplits, thruSplits])
+    for (const [j, l] of S)
+      if (l.slice(0, S === thruSplits ? 2 : 3).some((i) => elevated[i] !== elevated[l[0]])) {
+        S.delete(j);
+        splitDir.delete(j);
+      }
   // Where two flyovers cross, the slip road (or the higher OSM layer) goes over.
   const deckLevel = edges.map((e, i) => (elevated[i] ? Math.max(1, e.lv ?? 1) : 0));
   let elevIdx = new SegIndex(EP, 24, false, (i) => !elevated[i]);
@@ -860,12 +891,18 @@ export async function buildPasirRisCourse(
     const SPLIT_RATE = 20; // metres along for each metre a branch moves sideways
     const endHalf = (i: number, j: number) => halfAtE(i, edges[i].a === j ? 0 : EP[i].length - 1);
     const dirty = new Set<number>();
+    const caps: [number, number, number, number][] = [];
     for (const [j, [c, L, R]] of deckSplits) {
       if (isDeck[c]) continue;
       const hc = endHalf(c, j), hl = endHalf(L, j), hr = endHalf(R, j);
       const capL = Math.min(hl, hc), capR = Math.min(hr, hc);
       const capC = Math.min(hc, capL + capR - 0.1);
-      for (const [i, cap, h] of [[c, capC, hc], [L, capL, hl], [R, capR, hr]]) {
+      caps.push([j, c, capC, hc], [j, L, capL, hl], [j, R, capR, hr]);
+    }
+    // (A branch peeling off a road that carries on starts no wider than that road.)
+    for (const [j, [c, q]] of thruSplits) if (!isDeck[c]) caps.push([j, q, Math.min(endHalf(q, j), endHalf(c, j)), endHalf(q, j)]);
+    {
+      for (const [j, i, cap, h] of caps) {
         if (cap > h - 0.02) continue;
         const { run, at, fwd } = runOf[i];
         const Rn = runs[run];
@@ -878,6 +915,7 @@ export async function buildPasirRisCourse(
       }
     }
     for (const r of dirty) runs[r].settle();
+    const moves: [number, number, number, number][] = [];
     for (const [j, [c, L, R]] of deckSplits) {
       // (On the ground beside a flyover the roads are on ramps, their
       // heights worked out from where they lie side by side: left as drawn.)
@@ -892,12 +930,19 @@ export async function buildPasirRisCourse(
         sl *= f;
         sr *= f;
       }
-      for (const [q, shift, side] of [[L, sl, 1], [R, sr, -1]]) {
-        if (shift < 0.15) continue;
+      moves.push([j, L, sl, 1], [j, R, sr, -1]);
+    }
+    // (A branch peeling off a road that carries on: its outside edge on that
+    // road's edge. A branch wider than the road, where it was not narrowed
+    // to start as wide, moves in instead: the road's surface is there.)
+    for (const [j, [c, q, side]] of thruSplits) moves.push([j, q, endHalf(c, j) - endHalf(q, j), side]);
+    {
+      for (const [j, q, shift, side] of moves) {
+        if (Math.abs(shift) < 0.15) continue;
         const Q = edges[q].a === j ? EP[q] : [...EP[q]].reverse();
         let len = 0;
         const cum = Q.map((p, k) => (k ? (len += Math.hypot(p[0] - Q[k - 1][0], p[1] - Q[k - 1][1])) : 0));
-        const D = Math.min(shift * SPLIT_RATE * 1.5, len * 0.5);
+        const D = Math.min(Math.abs(shift) * SPLIT_RATE * 1.5, len * 0.5);
         // (Sideways as the single road has it. Left of travel: (tz, -tx).)
         const u = splitDir.get(j)!;
         const moved = Q.map((p, k) => {
@@ -7279,7 +7324,7 @@ export async function buildPasirRisCourse(
       surfaceAt: rawHeight,
       // Every pier's foot and top, rail and road.
       footTop, footPiers, footStairs, pathIdx,
-      blds, rankOf, deckSplits, nearDeck, WB, GORE, throughLines, throughPairs, paveY, giveWays, bldRoads, pairedLines: (i: number, f = 0.5) => (paired(edges[i]) ? pairedLines(i, f) : null), laneWOf,
+      blds, rankOf, deckSplits, thruSplits, nearDeck, WB, GORE, throughLines, throughPairs, paveY, giveWays, bldRoads, pairedLines: (i: number, f = 0.5) => (paired(edges[i]) ? pairedLines(i, f) : null), laneWOf,
       // May road `line` carry a marking at (x, z)? Not under another road, on an island or in a junction.
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       // Where any mark may stop (for the checks: no one road asked about).
