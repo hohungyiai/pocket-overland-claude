@@ -563,7 +563,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     // is only the side road's bell mouth: from its mouth, round a corner
     // curve either side, to the through road's edge.
     const INSET = 0.1; // the paving tucks this far under the through road's edge
-    const REACH = 90;
+    const REACH = 120; // (A slip road off an expressway may run beside it this far before it is clear: the map tool asks the same.)
     /** Where side road sLine's two edges leave the road running through joint j (null: they never do). */
     const teeGeom = (j: number, sLine: number) => {
       const through = jE[j].filter((i) => thruAt(i, j));

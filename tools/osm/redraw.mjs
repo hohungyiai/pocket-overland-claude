@@ -787,7 +787,7 @@ if (steps.has('roads')) {
   // How far along a slip road (from joint j) its near edge has come 1.8 m
   // clear of the road it leaves (pieces p and q): the builder paves the
   // wedge between the two as far as that, and needs the slip road to go on
-  // beyond it. Infinity where it never does within 90 m: two sides of a
+  // beyond it. Infinity where it never does within 120 m (as the builder looks): two sides of a
   // road with a divider thinner than that run on as one surface.
   const clearsAt = (sd, j, p, q) => {
     const segs = [];
@@ -803,11 +803,11 @@ if (steps.has('roads')) {
     };
     const pts = sd.a === j ? sd.pts : [...sd.pts].reverse();
     let run = 0;
-    for (let k = 0; k + 1 < pts.length && run <= 90; k++) {
+    for (let k = 0; k + 1 < pts.length && run <= 120; k++) {
       const sl = Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
       const nx = -(pts[k + 1][1] - pts[k][1]) / (sl || 1), nz = (pts[k + 1][0] - pts[k][0]) / (sl || 1);
       const hw = widthAt(sd, j) / 2;
-      for (let t = 0; t < sl; t += 1) {
+      for (let t = 0; t < sl && run + t <= 120; t += 1) {
         const u = t / (sl || 1);
         const x = pts[k][0] + (pts[k + 1][0] - pts[k][0]) * u, z = pts[k][1] + (pts[k + 1][1] - pts[k][1]) * u;
         // (Its edge nearer the road.)
