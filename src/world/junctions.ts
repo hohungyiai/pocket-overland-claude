@@ -33,6 +33,8 @@ export interface JunctionIn {
   slip?: (j: number) => boolean;
   /** Does this road end carry straight on into another road end at its joint, as one road? (Where a side road meets such a road, the road is not cut back: see `tee`.) */
   thru?: (line: number, end: 0 | 1) => boolean;
+  /** Does this road, leaving joint j, climb to a flyover at its far end? (A slip road beside it parts from it as soon as the two are clear, not GAP apart: see teePart.) */
+  ramp?: (line: number, j: number) => boolean;
   roads: SegIndex;
 }
 
@@ -653,7 +655,11 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // metres over to the other side of the road, itself a tee there.)
       const opener = teeAt[farJ] && !thruAt(sLine, farJ) && sL < 30;
       const sharp = !opener && (asSlip || Math.abs(leaves[0].d - leaves[1].d) > 2.4 * hS);
-      const GAP = 1.8; // (a little more than the 1.5 m under which roads side by side are paved as one: that paving has nothing left to do here)
+      // (Beside a road climbing to a flyover, only until the two are clear
+      // of each other: one climbs, the other does not, and paving between
+      // them would be a slope across from one to the other. Bartley Road
+      // East's slip road ran 117 m beside its ramp, under 1.8 m apart.)
+      const GAP = through.some((i) => I.ramp?.(i, j)) ? 0.3 : 1.8; // (a little more than the 1.5 m under which roads side by side are paved as one: that paving has nothing left to do here)
       let dG = -1;
       if (sharp) {
         for (let d = leaves[g]!.d; d <= Math.min(sL, REACH); d += 0.5) {

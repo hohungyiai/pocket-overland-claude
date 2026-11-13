@@ -1003,6 +1003,7 @@ export async function buildPasirRisCourse(
     plain: (j) => splitAt.has(j) && !nearDeck[j] && (jE[j] ?? []).every((i) => /^(motorway|trunk)|_link$/.test(edges[i].cls)),
     slip: (j) => (jE[j] ?? []).length === 3 && jE[j].every((i) => /^(motorway|trunk)|_link$/.test(edges[i].cls)),
     thru: (i, end) => thruMate(i, end ? edges[i].b : edges[i].a) !== undefined,
+    ramp: (i, j) => (jE[edges[i].a === j ? edges[i].b : edges[i].a] ?? []).some((o) => elevated[o]),
     roads,
   });
   // Junction heights above the ground: full height at a flyover's ends, then
