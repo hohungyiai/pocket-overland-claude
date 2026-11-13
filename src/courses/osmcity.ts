@@ -5199,11 +5199,32 @@ export async function buildPasirRisCourse(
             if (toZebra && !marks.slice(q, e).every((m) => m!.kerb)) continue;
             for (let v = q; v < e; v++) marks[v] = { ...marks[v]!, line: true, why: marks[v]!.why + (nose ? ' nose' : ' on') };
           }
+          // Round a junction's kerbed corner from a lined road the edge line
+          // follows the kerb all the way round, as a kerb line does: into a
+          // lined road it carries on, into an unlined one it stops where the
+          // corner ends. (It used to stop where the corner left the road's
+          // own edge, part way round the curve.)
+          const corner = (q: number) => !!marks[q] && marks[q]!.kerb && !marks[q]!.line && !marks[q]!.stop && marks[q]!.why.includes(' joint ');
+          const corners = () => {
+            for (let q = 0; q < n; ) {
+              if (!corner(q)) {
+                q++;
+                continue;
+              }
+              let e = q;
+              let run = 0;
+              while (e < n && corner(e)) run += len(e++);
+              const before = marks[(q - 1 + n) % n], after = marks[e % n];
+              // (Or from a zebra on a lined road, where the road's line stops.)
+              if (run < 30 && (before?.line || after?.line || zebra((q - 1 + n) % n) || zebra(e % n)) && !(q === 0 && e === n)) for (let v = q; v < e; v++) marks[v] = { ...marks[v]!, line: true, why: marks[v]!.why + ' corner' };
+              q = e;
+            }
+          };
           // (No kerb or line on or off for under 3 m between two stretches
           // the other way: where pieces hand over, the outline may run back
           // and forth across a road's edge or a deck's end. A gap at a zebra
           // or a deck stays.)
-          for (const key of ['kerb', 'line'] as const) {
+          const flicker = (key: 'kerb' | 'line') => {
             const runs: { s: number; e: number; on: boolean; L: number }[] = [];
             for (let q = 0; q < n; ) {
               const on = !!marks[q]?.[key];
@@ -5216,8 +5237,22 @@ export async function buildPasirRisCourse(
               const R = runs[i];
               if (R.L >= 3 || runs[i - 1].on !== runs[i + 1].on || runs[i - 1].on === R.on) continue;
               if (marks.slice(R.s, R.e).some((m) => !m || (!R.on && m.stop))) continue;
+              // (Nor a short line from a zebra: it runs from the zebra to where the kerb turns away.)
+              if (R.on && (marks[(R.s - 1 + n) % n]?.stop || marks[R.e % n]?.stop)) continue;
               for (let v = R.s; v < R.e; v++) marks[v] = { ...marks[v]!, [key]: !R.on };
               R.on = !R.on;
+            }
+          };
+          // (The kerbs first: a corner's kerb may be one such stretch, and
+          // its line follows from the kerb.)
+          flicker('kerb');
+          corners();
+          flicker('line');
+          {
+            const D = (globalThis as unknown as { __outDbg?: [number, number, number] }).__outDbg;
+            if (D) {
+              const out = ((globalThis as unknown as { __outDbgOut?: string[] }).__outDbgOut ??= []);
+              R.forEach((a, q) => Math.hypot(a[0] - D[0], a[1] - D[1]) < D[2] && out.push(`${a[0].toFixed(1)},${a[1].toFixed(1)} ${marks[q] ? (marks[q]!.kerb ? 'K' : '-') + (marks[q]!.line ? 'L' : '-') + (marks[q]!.stop ? 'S' : '') + ' ' + marks[q]!.why : 'null'}`));
             }
           }
           // Only the points where something changes are kept: the outline's
