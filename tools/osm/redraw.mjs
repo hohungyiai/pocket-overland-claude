@@ -824,6 +824,18 @@ if (steps.has('roads')) {
     const far = at.get(sd.a === j ? sd.b : sd.a) ?? [];
     return far.length >= 3 ? Math.max(sd.len * 0.5, sd.len - Math.max(...far.map((e) => e.w / 2)) - 4) : sd.len * 0.8;
   };
+  /** Does side road sd fork, at its far end from j, too near the road it meets at j (as wide as w) for a bell mouth between the two? */
+  const forkIn = (sd, j, w) => {
+    const f = sd.a === j ? sd.b : sd.a;
+    const l = at.get(f) ?? [];
+    if (l.length !== 3 || sd.len > 60) return false;
+    const hs = head(sd, f, 10);
+    return l.some((e) => {
+      if (e === sd) return false;
+      const he = head(e, f, 10);
+      return deg(hs[0] * he[0] + hs[1] * he[1]) < 90 && clearsAt(sd, f, e, e) > sd.len - w / 2 - 3;
+    });
+  };
   const sameRoad = (p, q) => (p.name ? p.name === q.name : !q.name && p.cls === q.cls);
   const deg = (c) => (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI;
   let tees = 0;
@@ -912,6 +924,12 @@ if (steps.has('roads')) {
           // (And long enough to have come clear of the road: the wedge between
           // the two is paved until they are 1.8 m apart.)
           else if (slip && (sd.len < Math.min(30, (Math.max(wp, wq) / 2 + sd.w / 2 + 1.8) / Math.sin((cut * Math.PI) / 180) + 4) || widthAt(sd, j) > narrow + 0.5 || (!links && !parts && sd.w > 0.8 * narrow && cut < 20) || clearsAt(sd, j, p, q) > roomOn(sd, j) + 3)) ok = false;
+          // (A side road that forks in two a few metres from the road, its
+          // two branches still overlapping where they reach it: the junction
+          // at the fork reaches back to the road, and leaves the bell mouth
+          // no room. Measured as for a slip road: how far from the fork the
+          // side road comes clear of the other branch.)
+          else if (!slip && !opening && forkIn(sd, j, Math.max(wp, wq))) ok = false;
           // (A few metres of road: an opening in a divider, or a stub with just room for its corners. See below.)
           else if (!slip && sd.len < (opening ? 30 : 15)) sd.len < 4 ? (ok = false) : short.push({ sd, room: !opening && sd.len >= Math.max(wp, wq) + 1 });
           if (process.env.ROADS_J && Math.hypot(pos[j][0] - +process.env.ROADS_J.split(',')[0], pos[j][1] - +process.env.ROADS_J.split(',')[1]) < 3) console.error('j', pos[j].map(Math.round).join(','), 'pair', p.name ?? p.cls, q.name ?? q.cls, 'side', sd.name ?? sd.cls, { cut: Math.round(cut), slip, fast, links, parts, len: Math.round(sd.len), clears: clearsAt(sd, j, p, q), room: roomOn(sd, j), ok });
