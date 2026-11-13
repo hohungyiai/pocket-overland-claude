@@ -603,11 +603,31 @@ if (steps.has('pair')) {
   // roads or more where the map had three, two of them side by side: no
   // form the builder draws well. And a joint with no paired road at all
   // is a pinch. Both are held open on the next go.
+  // And a joint drawn together into more than four ways to go (the
+  // builder's limit: a pair ending on a crossing with another dual road,
+  // whose two sides cross that road's median apart): held open too, so
+  // the crossing stays as the map has it.
+  const ways = (g) => {
+    const h = [];
+    for (const e of edges)
+      for (const end of [0, 1]) {
+        if ((end ? e.b : e.a) !== g) continue;
+        const P = end ? [...e.pts].reverse() : e.pts;
+        let s = 0, k = 1;
+        while (k < P.length - 1 && s + Math.hypot(P[k][0] - P[k - 1][0], P[k][1] - P[k - 1][1]) < 12) s += Math.hypot(P[k][0] - P[k - 1][0], P[k][1] - P[k - 1][1]), k++;
+        h.push(Math.atan2(P[k][1] - P[0][1], P[k][0] - P[0][0]));
+      }
+    if (h.length < 5) return h.length;
+    h.sort((x, y) => x - y);
+    let n = 0;
+    for (let k = 0; k < h.length; k++) if ((k ? h[k] - h[k - 1] : h[0] + 2 * Math.PI - h[h.length - 1]) > (25 * Math.PI) / 180) n++;
+    return Math.max(1, n);
+  };
   const bad = new Map();
   for (const [g, set] of groups) {
     const arms = armsAt(g);
     const twoWay = arms.filter(([e]) => e.dual);
-    if (!((arms.length >= 4 && arms.some(([e]) => side(e)) && [...set].some((j) => wasSplit.has(j))) || !twoWay.length)) continue;
+    if (!((arms.length >= 4 && arms.some(([e]) => side(e)) && [...set].some((j) => wasSplit.has(j))) || !twoWay.length || ways(g) > 4)) continue;
     // (Only the map's own joints: a cut's number is not the same joint on the next go.)
     for (const j of set) if (j < pos0.length) bad.set(j, twoWay.map(([, d]) => d));
   }
