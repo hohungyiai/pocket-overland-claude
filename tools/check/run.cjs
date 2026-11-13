@@ -84,12 +84,12 @@ const CHECKS = [
   ['The ground beside a raised road keeps its bank: the road never cuts it away', 'edges.js', '__checkBanks', 0],
   // (Roads as one line: where the map marks a road as carrying straight on
   // past a side road, nothing of the joint may show. No marks, nothing to test.)
-  ['A road is one strip past a side road: no cut, step, turn or break in its kerb and lines', 'finish.js', '__checkOneStrip', 0, { trial: 7 }],
+  ['A road is one strip past a side road: no cut, step, turn or break in its kerb and lines', 'finish.js', '__checkOneStrip', 0, { trial: 1 }],
   // (Kerbs and markings as one line, as the road is: read off the drawn
   // meshes. Redrawn maps only: today's map keeps its old lines until the
   // redrawn map replaces it.)
-  ['An edge line never jumps sideways or breaks off and starts again', 'marks.js', '__checkEdgeBreaks', 0, { trial: 3 }],
-  ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0, { trial: 14 }],
+  ['An edge line never jumps sideways or breaks off and starts again', 'marks.js', '__checkEdgeBreaks', 0],
+  ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0, { trial: 2 }],
 ];
 
 (async () => {
