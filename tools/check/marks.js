@@ -30,6 +30,9 @@ window.__markRuns = (key) => {
           // Out of the run: away from the triangle's third corner, square to the end.
           let ax = P[v * 3] - P[u * 3], az = P[v * 3 + 2] - P[u * 3 + 2];
           const al = Math.hypot(ax, az) || 1;
+          // (A strip's end is as wide as the mark: a run of one piece, two
+          // triangles, would otherwise show its long sides as ends too.)
+          if (al > (key === 'yellow' ? 0.3 : 0.8)) continue;
           let ox = -az / al, oz = ax / al;
           if ((P[w * 3] - mx) * ox + (P[w * 3 + 2] - mz) * oz > 0) (ox = -ox), (oz = -oz);
           ends.push({ x: mx, z: mz, y: (P[u * 3 + 1] + P[v * 3 + 1]) / 2, ox, oz, w: al });
@@ -93,7 +96,7 @@ window.__markStopOk = (x, z, y) => {
 // An edge line never jumps sideways or breaks off and starts again: two of
 // its ends facing each other within 4 m are one line broken (unless
 // something it rightly stops for lies between them).
-window.__checkEdgeBreaks = () => {
+window.__checkEdgeBreaks = (all = false) => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [] };
   const { ends } = window.__markRuns('yellow');
@@ -130,13 +133,13 @@ window.__checkEdgeBreaks = () => {
         }
   });
   const pl = window.__finishIndex().places(bad.map((b) => ({ ...b, value: b.over })), 4);
-  return { samples: ends.length, bad: pl.length, worst: pl.slice(0, 40), unit: 'm' };
+  return { samples: ends.length, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
 
 // Every metre of kerb has its edge line beside it, 0.2 to 0.6 m in from
 // it, except where a mark rightly stops (a junction's mouth, a crossing, a
 // gore) and beside roads with no lines.
-window.__checkKerbLines = () => {
+window.__checkKerbLines = (all = false) => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [] };
   const kerb = window.__markRuns('kerb').tris;
@@ -190,8 +193,12 @@ window.__checkKerbLines = () => {
     const key = Math.round(x) + ',' + Math.round(z);
     if (seen.has(key)) continue;
     seen.add(key);
-    // (A kerb lies outside the paving: a junction's corner is asked a metre in from it, all round.)
-    if (window.__markStopOk(x, z, y) || atCrossing(x, z) || [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([ax, az]) => d.stopsAt(x + ax, z + az, y).paving)) continue;
+    // (A kerb lies outside the paving: a junction's corner is asked a little
+    // over a metre in from it, square across the kerb, either side.)
+    const L = [[t[0], t[1], t[2], t[3]], [t[2], t[3], t[4], t[5]], [t[4], t[5], t[0], t[1]]].reduce((m, e) => (Math.hypot(e[2] - e[0], e[3] - e[1]) > Math.hypot(m[2] - m[0], m[3] - m[1]) ? e : m));
+    const ll = Math.hypot(L[2] - L[0], L[3] - L[1]) || 1;
+    const sx = -(L[3] - L[1]) / ll, sz = (L[2] - L[0]) / ll;
+    if (window.__markStopOk(x, z, y) || atCrossing(x, z) || [1.2, -1.2].some((o) => d.stopsAt(x + sx * o, z + sz * o, y).paving)) continue;
     n++;
     const g = near(x, z, y);
     if (g <= 0.75) continue;
@@ -199,5 +206,5 @@ window.__checkKerbLines = () => {
     bad.push({ x: +x.toFixed(1), z: +z.toFixed(1), over: g === Infinity ? 1 : +g.toFixed(2) });
   }
   const pl = window.__finishIndex().places(bad.map((b) => ({ ...b, value: b.over })), 4);
-  return { samples: n, bad: pl.length, worst: pl.slice(0, 40), unit: 'm' };
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
