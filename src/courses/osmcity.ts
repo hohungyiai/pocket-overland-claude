@@ -2663,6 +2663,46 @@ export async function buildPasirRisCourse(
     idx: number[] = [];
   }
   /**
+   * A strip's cross-section at pts[k] (drawn part lo..hi): the unit vector
+   * across it (left of travel), and how far its sides stand out along the
+   * mitre at a bend.
+   */
+  const section = (pts: XZ[], k: number, lo: number, hi: number, join?: (k: number) => { d: XZ; m: number } | null, bisect?: boolean) => {
+    const jn = join?.(k) ?? null;
+    // At a bend the sides stand out along the mitre, so the road keeps its
+    // full width round the outside of a sharp corner (more than 20°; a
+    // gentle curve loses next to nothing).
+    let mm = 1;
+    if (jn) mm = jn.m;
+    else if (k > lo && k < hi) {
+      const p = pts[k - 1], q = pts[k], r = pts[k + 1];
+      const l1 = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      const l2 = Math.hypot(r[0] - q[0], r[1] - q[1]);
+      // (A cut road repeats its mouth point: no bend there.)
+      const c = l1 < 1e-3 || l2 < 1e-3 ? 1 : ((q[0] - p[0]) * (r[0] - q[0]) + (q[1] - p[1]) * (r[1] - q[1])) / (l1 * l2);
+      // cos of half the turn; capped at twice the width (a turn of 120°).
+      const ch = Math.sqrt(Math.max(0, (1 + c) / 2));
+      if (ch < Math.cos((10 * Math.PI) / 180)) mm = 1 / Math.max(0.5, ch);
+    }
+    const a = pts[Math.max(lo, k - 1)];
+    const b = pts[Math.min(hi, k + 1)];
+    const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    let nx = (b[1] - a[1]) / tl;
+    let nz = -(b[0] - a[0]) / tl;
+    if (bisect && k > lo && k < hi) {
+      const p = pts[k - 1], q = pts[k], r = pts[k + 1];
+      const l1 = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1, l2 = Math.hypot(r[0] - q[0], r[1] - q[1]) || 1;
+      const dx = (q[0] - p[0]) / l1 + (r[0] - q[0]) / l2, dz = (q[1] - p[1]) / l1 + (r[1] - q[1]) / l2;
+      const dl = Math.hypot(dx, dz);
+      if (dl > 1e-6) (nx = dz / dl), (nz = -dx / dl);
+    }
+    if (jn) {
+      nx = jn.d[1];
+      nz = -jn.d[0];
+    }
+    return { nx, nz, mm };
+  };
+  /**
    * A strip along pts[k0..k1], draped on the ground (or at a fixed height).
    * `off` shifts it sideways (positive = left of travel). `keep` can drop
    * segments (dashes, gaps at junctions).
@@ -2713,40 +2753,9 @@ export async function buildPasirRisCourse(
     const lo = o.lo ?? 0;
     const hi = o.hi ?? pts.length - 1;
     for (let k = k0; k <= k1; k++) {
-      const jn = o.join?.(k) ?? null;
-      // At a bend the sides stand out along the mitre, so the road keeps its
-      // full width round the outside of a sharp corner (more than 20°; a
-      // gentle curve loses next to nothing).
-      let mm = 1;
-      if (jn) mm = jn.m;
-      else if (k > lo && k < hi) {
-        const p = pts[k - 1], q = pts[k], r = pts[k + 1];
-        const l1 = Math.hypot(q[0] - p[0], q[1] - p[1]);
-        const l2 = Math.hypot(r[0] - q[0], r[1] - q[1]);
-        // (A cut road repeats its mouth point: no bend there.)
-        const c = l1 < 1e-3 || l2 < 1e-3 ? 1 : ((q[0] - p[0]) * (r[0] - q[0]) + (q[1] - p[1]) * (r[1] - q[1])) / (l1 * l2);
-        // cos of half the turn; capped at twice the width (a turn of 120°).
-        const ch = Math.sqrt(Math.max(0, (1 + c) / 2));
-        if (ch < Math.cos((10 * Math.PI) / 180)) mm = 1 / Math.max(0.5, ch);
-      }
+      const { nx, nz, mm } = section(pts, k, lo, hi, o.join, o.bisect);
       const half = (typeof halfIn === 'number' ? halfIn : halfIn(k)) * mm;
       const off = (o.off === undefined ? 0 : typeof o.off === 'number' ? o.off : o.off(k)) * mm;
-      const a = pts[Math.max(lo, k - 1)];
-      const b = pts[Math.min(hi, k + 1)];
-      const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-      let nx = (b[1] - a[1]) / tl;
-      let nz = -(b[0] - a[0]) / tl;
-      if (o.bisect && k > lo && k < hi) {
-        const p = pts[k - 1], q = pts[k], r = pts[k + 1];
-        const l1 = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1, l2 = Math.hypot(r[0] - q[0], r[1] - q[1]) || 1;
-        const dx = (q[0] - p[0]) / l1 + (r[0] - q[0]) / l2, dz = (q[1] - p[1]) / l1 + (r[1] - q[1]) / l2;
-        const dl = Math.hypot(dx, dz);
-        if (dl > 1e-6) (nx = dz / dl), (nz = -dx / dl);
-      }
-      if (jn) {
-        nx = jn.d[1];
-        nz = -jn.d[0];
-      }
       const [px, pz] = pts[k];
       // (Laid on the ground's mesh: raised by as much as the mesh rises
       // above the straight line from edge to edge, across its middle.)
