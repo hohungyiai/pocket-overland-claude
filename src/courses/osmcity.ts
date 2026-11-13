@@ -100,7 +100,41 @@ export async function buildPasirRisCourse(
       const cap = e.one ? ONE_WAY_W[e.cls] : undefined;
       return cap ? { ...e, w: Math.min(e.w, cap), ...(e.ws ? { ws: e.ws.map(([f, w]) => [f, Math.min(w, cap)] as [number, number]) } : {}) } : e;
     });
-  const EP = edges.map((e) => resample(e.pts, 4));
+  // (Where a road runs on through a joint as one line, its points are 2 m
+  // apart over the 8 m either side: at 4 m, the corner at the joint's own
+  // point could hold more of the curve's turn than those either side, and
+  // the line kinked there.)
+  const fineEnds = (e: (typeof edges)[number]) => {
+    const pts = e.pts as XZ[];
+    let L = 0;
+    for (let k = 1; k < pts.length; k++) L += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+    /** The line cut d along it: [before, after], both holding the cut point. */
+    const cut = (P: XZ[], d: number): [XZ[], XZ[]] | null => {
+      let run = 0;
+      for (let k = 1; k < P.length; k++) {
+        const l = Math.hypot(P[k][0] - P[k - 1][0], P[k][1] - P[k - 1][1]);
+        if (run + l >= d) {
+          const u = (d - run) / (l || 1);
+          const x: XZ = [P[k - 1][0] + (P[k][0] - P[k - 1][0]) * u, P[k - 1][1] + (P[k][1] - P[k - 1][1]) * u];
+          return [[...P.slice(0, k), x], [x, ...P.slice(k)]];
+        }
+        run += l;
+      }
+      return null;
+    };
+    if (e.ta && e.tb && L <= 16) return resample(pts, 2);
+    const ra = e.ta ? Math.min(8, L / 2) : 0, rb = e.tb ? Math.min(8, L / 2) : 0;
+    let head: XZ[] = [], mid = pts, tail: XZ[] = [];
+    const c0 = ra > 0 ? cut(mid, ra) : null;
+    if (c0) (head = resample(c0[0], 2)), (mid = c0[1]);
+    let Lm = 0;
+    for (let k = 1; k < mid.length; k++) Lm += Math.hypot(mid[k][0] - mid[k - 1][0], mid[k][1] - mid[k - 1][1]);
+    const c1 = rb > 0 && Lm - rb > 0.01 ? cut(mid, Lm - rb) : null;
+    if (c1) (tail = resample(c1[1], 2)), (mid = c1[0]);
+    const M = resample(mid, 4);
+    return [...head.slice(0, -1), ...M, ...tail.slice(1)];
+  };
+  const EP = edges.map((e) => (e.ta || e.tb ? fineEnds(e) : resample(e.pts, 4)));
   // A road leaving a joint alongside a bridge deck (OSM often draws a slip
   // road within a metre or two of the viaduct it joins) is pushed out to
   // the side until the two lie clear of each other: the deck soon climbs
@@ -5008,6 +5042,12 @@ export async function buildPasirRisCourse(
     // A kerb, but beside a road that has none (a lane, a drive), or round
     // a junction's corner that has none.
     let kerb = !!r && (kerbedRoad(edges[r.i]) || hasProfile[r.i]);
+    // (Where an unkerbed road's end reaches just as far as a kerbed road's
+    // edge, the kerbed road's: a side road drawn across to the far side.)
+    if (r && !kerb && Math.abs(r.past) < 0.15) {
+      const k = edgeRoadOf(near, (i) => !JX.internal[i] && (kerbedRoad(edges[i]) || hasProfile[i]));
+      if (k && Math.abs(k.past) < 0.15) kerb = true;
+    }
     let why = r ? `road ${r.i} past ${r.past.toFixed(2)}` : 'no road';
     /** The joint whose paving's side this is (not a road's). */
     const jointSide = r && Math.abs(r.past) > 0.2 ? jointsNear(mx, mz).find((q) => jLvlM(q) === lvl && inRingXZ(JPOLY[q].ring, mx + nx * 0.05, mz + nz * 0.05) && !inRingXZ(JPOLY[q].ring, mx - nx * 0.05, mz - nz * 0.05)) : undefined;
@@ -5119,9 +5159,9 @@ export async function buildPasirRisCourse(
   // first the outline itself, then its sides a share at a time, asked
   // every 4 m or so along each, then the kerbs and lines drawn.)
   type OutRing = { P: XZ[]; cum: number[]; n: number; drawn: boolean[]; corner: XZ[]; edge: number[]; at: number[]; samples: (OutMark | null)[][]; hole: boolean; lvl: number };
-  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[] }>();
+  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[]; drawW: number[] }>();
   const OUT_PARTS = 6;
-  const OUT_DRAW = 3;
+  const OUT_DRAW = 6;
   /** How many places along a side of the outline are asked (one every 4 m or so). */
   const sidePlaces = (a: XZ, b: XZ) => Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
   if (oneLine) {
@@ -5154,7 +5194,7 @@ export async function buildPasirRisCourse(
           for (const e of want) for (let j = 0; j < samples[e].length; j++) todo.push([id, e, j]);
           rings.push({ P, cum, n, drawn, corner, edge, at, samples, hole, lvl });
         }
-        outWork.set(k, { rings, todo, draws: [] });
+        outWork.set(k, { rings, todo, draws: [], drawW: [] });
       });
       for (let part = 0; part < OUT_PARTS; part++)
         onTile('far', k, 'outline marks', () => {
@@ -5310,6 +5350,8 @@ export async function buildPasirRisCourse(
             let j1 = j0;
             while (j1 + 1 <= m && dr(j1 + 1)) j1++;
             const J0 = j0, J1 = j1;
+            // (Its share of the drawing: by its points, the heights of each asked.)
+            w.drawW.push(J1 - J0 + 2);
             w.draws.push((kerb, yellow) => {
               const j0 = J0, j1 = J1;
               // (Heights where the ground does not lie as the strips drape it, from the surface the side bounds.)
@@ -5351,10 +5393,17 @@ export async function buildPasirRisCourse(
         onTile('far', k, 'outline draw', (_kit, acc) => {
           const w = outWork.get(k);
           if (!w) return;
-          const per = Math.ceil(w.draws.length / OUT_DRAW);
+          // (Shared out by their points, not their number: one long run round
+          // a raised road costs as much as many short ones.)
+          const total = w.drawW.reduce((a, b) => a + b, 0) || 1;
           const kerb = acc('kerb');
           const yellow = acc('yellow');
-          for (const f of w.draws.slice(part * per, (part + 1) * per)) f(kerb, yellow);
+          let before = 0;
+          w.draws.forEach((f, q) => {
+            const mid = before + w.drawW[q] / 2;
+            before += w.drawW[q];
+            if (Math.min(OUT_DRAW - 1, Math.floor((mid / total) * OUT_DRAW)) === part) f(kerb, yellow);
+          });
           if (part === OUT_DRAW - 1) outWork.delete(k);
         });
     }
