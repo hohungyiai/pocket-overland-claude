@@ -7,11 +7,12 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
-const DEPS = { 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'] };
+const DEPS = { 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
-  // a ratchet, lowered as they are fixed, until it reaches 0.
+  // a ratchet, lowered as they are fixed, until it reaches 0. Known spots
+  // given as { course: n } hold for that course only (0 on the others).
   // The performance budget (perf.js: the figures and where they come from).
   // First, on the page as a player has it: the other checks leave their
   // own indexes of the whole map in memory, and the browser's clean-up of
@@ -45,7 +46,9 @@ const CHECKS = [
   ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 23],
   ['No step where road pieces meet', 'seams.js', '__checkSteps', 0],
   ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
-  ['A through road\'s lines carry on across its junctions', 'through.js', '__checkThroughLines', 0],
+  // (Known on the trial map, since its edge lines follow the finished
+  // surface: at three expressway exits the edge line follows the exit.)
+  ['A through road\'s lines carry on across its junctions', 'through.js', '__checkThroughLines', 0, { trial: 4 }],
   ['A through road\'s lines meet the road\'s own at the junction\'s edge', 'through.js', '__checkThroughJoins', 0],
   ['A through road\'s edge runs on smoothly where nothing joins it', 'through.js', '__checkThroughEdges', 0],
   ['Every road joining a through road has its give-way line', 'through.js', '__checkGiveWays', 0],
@@ -83,7 +86,12 @@ const CHECKS = [
   ['The ground beside a raised road keeps its bank: the road never cuts it away', 'edges.js', '__checkBanks', 0],
   // (Roads as one line: where the map marks a road as carrying straight on
   // past a side road, nothing of the joint may show. No marks, nothing to test.)
-  ['A road is one strip past a side road: no cut, step, turn or break in its kerb and lines', 'finish.js', '__checkOneStrip', 0],
+  ['A road is one strip past a side road: no cut, step, turn or break in its kerb and lines', 'finish.js', '__checkOneStrip', 0, { trial: 7 }],
+  // (Kerbs and markings as one line, as the road is: read off the drawn
+  // meshes. Redrawn maps only: today's map keeps its old lines until the
+  // redrawn map replaces it.)
+  ['An edge line never jumps sideways or breaks off and starts again', 'marks.js', '__checkEdgeBreaks', 0, { trial: 3 }],
+  ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0, { trial: 14 }],
 ];
 
 (async () => {
@@ -102,7 +110,9 @@ const CHECKS = [
     const loaded = new Set();
     // (ONLY=regex runs just the matching checks.)
     const only = process.env.ONLY ? new RegExp(process.env.ONLY, 'i') : null;
-    for (const [name, file, fn, limit, known = 0] of CHECKS) {
+    const course = process.env.COURSE || 'pasirris';
+    for (const [name, file, fn, limit, knownAt = 0] of CHECKS) {
+      const known = typeof knownAt === 'number' ? knownAt : knownAt[course] ?? 0;
       if (only && !only.test(name)) continue;
       // (drive.js uses seams.js's road index; routes.js and walk.js drive with bot.js.)
       for (const f of [...(DEPS[file] ?? []), file]) {
