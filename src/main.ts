@@ -21,6 +21,9 @@ const COURSES = {
   // East interchange, built by the same builder from a redrawn network.
   trial: ((scene, world, RAPIER, opts) =>
     buildPasirRisCourse(scene, world, RAPIER, { ...opts, map: 'maps/trial-ucre.json', name: 'Road trial: Upper Changi interchange', startAt: [1870, 1759] })) as typeof buildPasirRisCourse,
+  // The same redraw over the whole map: a preview beside today's map.
+  whole: ((scene, world, RAPIER, opts) =>
+    buildPasirRisCourse(scene, world, RAPIER, { ...opts, map: 'maps/east-redrawn.json', name: 'Redrawn roads: the whole map (preview)' })) as typeof buildPasirRisCourse,
   eastcoast: buildEastCoastCourse,
   ubin: buildUbinCourse,
 } as const;

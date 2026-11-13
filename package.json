@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "description": "Calm, scenic overland driving game for mobile web",
   "scripts": {
-    "maps": "node tools/osm/import.mjs build east-sg && npm run maps:trial --silent",
+    "maps": "node tools/osm/import.mjs build east-sg && npm run maps:trial --silent && npm run maps:whole --silent",
     "maps:trial": "node tools/osm/redraw.mjs public/maps/east-sg.json public/maps/trial-ucre.json --box 1150,2550,1050,2450 --steps lanes,corners,pair,join,roads --median 1.5 --pair-only residential,unclassified --quiet",
+    "maps:whole": "node tools/osm/redraw.mjs public/maps/east-sg.json public/maps/east-redrawn.json --steps lanes,corners,pair,join,roads --median 1.5 --pair-only residential,unclassified --quiet",
     "dev": "npm run maps && vite --host",
     "build": "npm run maps && tsc && vite build",
     "preview": "vite preview --host",
