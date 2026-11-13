@@ -4685,6 +4685,70 @@ export async function buildPasirRisCourse(
    * pieces of about a metre on a fixed lattice (so two tiles cut the same
    * stretch of outline at the same places, and their kerbs meet).
    */
+  /**
+   * Smooth an outline (Clipper's points, mm) where two pieces of paving hand
+   * over and their edges do not quite agree: a fold or hook, out and back
+   * within 3 m to within 0.4 m of where it left, is cut off; a jog, a few
+   * short sides stepping sideways under 0.4 m between two long sides that
+   * run the same way, is spread along the long sides either side. Real
+   * corners and curves stay as they are. (By the outline's own points
+   * only, so two tiles smooth the same stretch the same way.)
+   */
+  const smoothRing = (r: Path64) => {
+    const d = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+    // Folds and hooks.
+    for (let again = true; again && r.length > 4; ) {
+      again = false;
+      const n = r.length;
+      for (let i = 0; i < n && !again; i++) {
+        let path = 0;
+        for (let k = 1; k < Math.min(40, n - 2); k++) {
+          path += d(r[(i + k - 1) % n], r[(i + k) % n]);
+          if (path > 3 * OUT_S) break;
+          if (k < 2) continue;
+          const gap = d(r[i], r[(i + k) % n]);
+          if (gap < 0.4 * OUT_S && path > 3 * gap + 0.5 * OUT_S) {
+            // (Cut out the points between, from the far end back.)
+            const cut = new Set<number>();
+            for (let v = 1; v < k; v++) cut.add((i + v) % n);
+            const keep = r.filter((_, q) => !cut.has(q));
+            r.length = 0;
+            r.push(...keep);
+            again = true;
+            break;
+          }
+        }
+      }
+    }
+    // Jogs.
+    const LONG = 1 * OUT_S, SHORT = 0.6 * OUT_S;
+    for (let again = true; again && r.length > 5; ) {
+      again = false;
+      const n = r.length;
+      for (let b = 0; b < n && !again; b++) {
+        const a = (b - 1 + n) % n;
+        if (d(r[a], r[b]) < LONG) continue;
+        // (Short sides from b on, up to 1.5 m of them, to c; then a long one, c to e.)
+        let c = b, run = 0;
+        while (run < 1.5 * OUT_S && d(r[c], r[(c + 1) % n]) < SHORT && (c + 1) % n !== a) run += d(r[c], r[(c = (c + 1) % n)]);
+        if (c === b || run >= 1.5 * OUT_S) continue;
+        const e = (c + 1) % n;
+        if (d(r[c], r[e]) < LONG) continue;
+        const u1x = (r[b].x - r[a].x) / d(r[a], r[b]), u1y = (r[b].y - r[a].y) / d(r[a], r[b]);
+        const u2x = (r[e].x - r[c].x) / d(r[c], r[e]), u2y = (r[e].y - r[c].y) / d(r[c], r[e]);
+        if (u1x * u2x + u1y * u2y < Math.cos((20 * Math.PI) / 180)) continue;
+        const side = Math.abs((r[c].x - r[b].x) * u1y - (r[c].y - r[b].y) * u1x);
+        if (side >= 0.4 * OUT_S) continue;
+        // (b to c go: a runs straight on to e.)
+        const cut = new Set<number>();
+        for (let v = b; v !== e; v = (v + 1) % n) cut.add(v);
+        const keep = r.filter((_, q) => !cut.has(q));
+        r.length = 0;
+        r.push(...keep);
+        again = true;
+      }
+    }
+  };
   const outlineRings = (ix: number, iz: number) => {
     const M = 30;
     const bx0 = ix * TILE - M, bz0 = iz * TILE - M, bx1 = (ix + 1) * TILE + M, bz1 = (iz + 1) * TILE + M;
@@ -4718,6 +4782,7 @@ export async function buildPasirRisCourse(
           q--;
         }
       }
+      smoothRing(r);
       // (Nor a sliver, paved or not, where two pieces of paving all but
       // meet: under 0.6 m wide on average, area against length round.)
       let round = 0;
@@ -5061,6 +5126,27 @@ export async function buildPasirRisCourse(
             if (!nose && (toZebra || c < Math.cos((40 * Math.PI) / 180))) continue;
             if (toZebra && !marks.slice(q, e).every((m) => m!.kerb)) continue;
             for (let v = q; v < e; v++) marks[v] = { ...marks[v]!, line: true, why: marks[v]!.why + (nose ? ' nose' : ' on') };
+          }
+          // (No kerb or line on or off for under 3 m between two stretches
+          // the other way: where pieces hand over, the outline may run back
+          // and forth across a road's edge or a deck's end. A gap at a zebra
+          // or a deck stays.)
+          for (const key of ['kerb', 'line'] as const) {
+            const runs: { s: number; e: number; on: boolean; L: number }[] = [];
+            for (let q = 0; q < n; ) {
+              const on = !!marks[q]?.[key];
+              let e = q, L = 0;
+              while (e < n && !!marks[e]?.[key] === on && !!marks[e] === !!marks[q]) L += len(e++);
+              runs.push({ s: q, e, on, L });
+              q = e;
+            }
+            for (let i = 1; i + 1 < runs.length; i++) {
+              const R = runs[i];
+              if (R.L >= 3 || runs[i - 1].on !== runs[i + 1].on || runs[i - 1].on === R.on) continue;
+              if (marks.slice(R.s, R.e).some((m) => !m || (!R.on && m.stop))) continue;
+              for (let v = R.s; v < R.e; v++) marks[v] = { ...marks[v]!, [key]: !R.on };
+              R.on = !R.on;
+            }
           }
           // Only the points where something changes are kept: the outline's
           // corners, and where a kerb or a line starts or stops (or the tile
