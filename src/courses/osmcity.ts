@@ -2748,6 +2748,12 @@ export async function buildPasirRisCourse(
       ground?: (x: number, z: number) => number;
       /** Square across the bisector of its two pieces at each bend (not across the line between the points either side, which leans towards the shorter piece). */
       bisect?: boolean;
+      /**
+       * With sub: dashes, `on` metres of every `period`, counted along `from`
+       * (cum's metres to wherever the dashes are counted from: a run's start,
+       * so they keep their rhythm from one road of it to the next).
+       */
+      dash?: { from: (s: number) => number; period: number; on: number };
     } = {},
   ) => {
     const base = acc.pos.length / 3;
@@ -2816,17 +2822,36 @@ export async function buildPasirRisCourse(
           const ca = t > 1e-6 && t < 1 - 1e-6 ? o.clearInner ?? clearAt : clearAt;
           return (!ca || (ca(v[0], v[1] - lift, v[2]) && ca(v[3], v[4] - lift, v[5]))) && midOk(v[0], v[1], v[2], v[3], v[4], v[5]);
         };
-        const whole = s0 >= lo_s && s1 <= hi_s && (!clearAt || (corner(a) && corner(a + 1) && corner(a + 2) && corner(a + 3))) && okAt(at(0), 0) && okAt(at(0.5), 0.5) && okAt(at(1), 1);
+        // (A dash's ends within this piece, and whether it is all one dash.)
+        const dash = o.dash;
+        const dashOn = (sAt: number) => {
+          const r = dash!.from(sAt);
+          return r - Math.floor(r / dash!.period) * dash!.period < dash!.on;
+        };
+        const dashCuts: number[] = [];
+        if (dash) {
+          const r0 = dash.from(s0), r1 = dash.from(s1);
+          const lo = Math.min(r0, r1), hi = Math.max(r0, r1);
+          for (let m = Math.floor(lo / dash.period) * dash.period; m < hi; m += dash.period)
+            for (const e of [m, m + dash.on]) if (e > lo && e < hi) dashCuts.push((e - r0) / (r1 - r0));
+        }
+        const whole = !dashCuts.length && (!dash || dashOn((s0 + s1) / 2)) && s0 >= lo_s && s1 <= hi_s && (!clearAt || (corner(a) && corner(a + 1) && corner(a + 2) && corner(a + 3))) && okAt(at(0), 0) && okAt(at(0.5), 0.5) && okAt(at(1), 1);
         if (!whole) {
+          if (dash && !dashCuts.length && !dashOn((s0 + s1) / 2)) continue;
           const n = Math.max(2, Math.ceil((s1 - s0) / sub));
           const ts: number[] = [];
           for (let q = 0; q <= n; q++) ts.push(q / n);
           for (const e of [lo_s, hi_s]) if (e > s0 && e < s1) ts.push((e - s0) / (s1 - s0));
+          ts.push(...dashCuts);
           ts.sort((p, q) => p - q);
           let prev = -1;
+          let tPrev = 0;
           for (const t of ts) {
             const sAt = lerp(s0, s1, t);
             const v = at(t);
+            // (Between dashes: the last point ends one, this one may start the next.)
+            if (dash && prev >= 0 && !dashOn(lerp(s0, s1, (tPrev + t) / 2))) prev = -1;
+            tPrev = t;
             if (sAt < lo_s - 1e-6 || sAt > hi_s + 1e-6 || !okAt(v, t)) {
               prev = -1;
               continue;
@@ -4032,7 +4057,12 @@ export async function buildPasirRisCourse(
           clearMid: (x: number, y: number, z: number, cx: number, cz: number) => !onIsland(x, z, dy ? y : NaN) && !(solidLine && openXZ(x + cx * side * 0.8, z + cz * side * 0.8)),
         });
         const solid = (_off: (kk: number) => number) => drawn;
-        const dashed = (_off: (kk: number) => number) => (kk: number) => kk % 3 === 0 && drawn(kk);
+        // (On a redrawn map dashes are counted along the road's whole run,
+        // 4 m in every 12, so they keep their rhythm from one road of it to
+        // the next. Today's map: one piece in three.)
+        const R0 = runOf[line];
+        const DASH = oneLine ? { from: (sAt: number) => R0.at + (R0.fwd ? sAt : len - sAt), period: 12, on: 4 } : undefined;
+        const dashed = (_off: (kk: number) => number) => (DASH ? drawn : (kk: number) => kk % 3 === 0 && drawn(kk));
         void ends;
         void clearM;
         void openAt;
@@ -4053,7 +4083,7 @@ export async function buildPasirRisCourse(
           for (let l = 1; l < Math.max(lanes, Math.floor((2 * EHALF[line]) / laneW + 0.01)); l++) {
             const off = (kk: number) => -halfAt(kk) + l * laneW;
             const room = (kk: number) => halfAt(kk) - off(kk) > 0.6 * laneW && halfAt(kk + 1) - off(kk + 1) > 0.6 * laneW;
-            strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => room(kk) && dashed(off)(kk), yAt, tilt, ...fit(0, false) });
+            strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => room(kk) && dashed(off)(kk), yAt, tilt, ...fit(0, false), dash: DASH });
           }
         } else if (paired(e)) {
           // (Each line's place at every point along the road: the median may ease sideways.)
@@ -4062,11 +4092,11 @@ export async function buildPasirRisCourse(
             const broken = PL[0][q][1];
             const off = (kk: number) => PL[kk][q][0];
             const fits = (kk: number) => halfAt(kk) > PL[kk][q][2] && halfAt(kk + 1) > PL[kk + 1][q][2];
-            strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => fits(kk) && (broken ? dashed(off)(kk) : solid(off)(kk)), yAt, tilt, ...fit(Math.sign(off(Math.min(k0 + 1, k1))), !broken) });
+            strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, off, keep: (kk) => fits(kk) && (broken ? dashed(off)(kk) : solid(off)(kk)), yAt, tilt, ...fit(Math.sign(off(Math.min(k0 + 1, k1))), !broken), dash: broken ? DASH : undefined });
           }
         } else if (rank >= 1 && e.w >= 6) {
           const off = () => 0;
-          strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, keep: rank >= 3 ? solid(off) : dashed(off), yAt, tilt, ...fit(0, rank >= 3) });
+          strip(white, mp, cum, k0, k1, 0.07, 0.11, { ...mo, keep: rank >= 3 ? solid(off) : dashed(off), yAt, tilt, ...fit(0, rank >= 3), dash: rank >= 3 ? undefined : DASH });
         }
       }
     });
@@ -4616,8 +4646,20 @@ export async function buildPasirRisCourse(
     for (let k = cut.lo; k <= cut.hi; k++) {
       const { nx, nz, mm } = section(P, k, cut.lo, cut.hi, join);
       const h = halfAtE(i, k) * mm;
-      L.push([P[k][0] + nx * h, P[k][1] + nz * h]);
-      R.push([P[k][0] - nx * h, P[k][1] - nz * h]);
+      // (Each end 5 cm on into whatever it meets, the next road or a
+      // junction's paving, so the two overlap: two edges laid exactly on
+      // each other can leave a crack in the outline. Not at a dead end.)
+      const end = k === cut.lo ? -1 : k === cut.hi ? 1 : 0;
+      const j = end < 0 ? edges[i].a : edges[i].b;
+      let ex = 0, ez = 0;
+      if (end && (jDegree[j] > 1 || (end < 0 ? cut.lo > 0 || JX.trimA[i] > 0 : cut.hi < P.length - 1 || JX.trimB[i] > 0))) {
+        const o = P[end < 0 ? k + 1 : k - 1];
+        const l = Math.hypot(P[k][0] - o[0], P[k][1] - o[1]) || 1;
+        ex = ((P[k][0] - o[0]) / l) * 0.05;
+        ez = ((P[k][1] - o[1]) / l) * 0.05;
+      }
+      L.push([P[k][0] + nx * h + ex, P[k][1] + nz * h + ez]);
+      R.push([P[k][0] - nx * h + ex, P[k][1] - nz * h + ez]);
     }
     return [...L, ...R.reverse()];
   };
@@ -4657,6 +4699,22 @@ export async function buildPasirRisCourse(
     for (const r of Clipper.Union(paths, undefined, FillRule.NonZero)) {
       // (Slivers and specks, where two pieces of paving all but touch: no surface.)
       if (Math.abs(Clipper.area(r)) < 1e6) continue;
+      // (Nor a spike: the outline running out and straight back along itself, a crack of no width.)
+      for (let again = true; again && r.length > 3; ) {
+        again = false;
+        for (let q = 0; q < r.length && r.length > 3; q++) {
+          const a = r[(q - 1 + r.length) % r.length], c = r[(q + 1) % r.length];
+          const b = r[q];
+          const back = Math.abs(a.x - c.x) <= 20 && Math.abs(a.y - c.y) <= 20;
+          const same = Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1;
+          if (!back && !same) continue;
+          // (A spike: its tip and the way back; a repeated point: itself.)
+          if (back && !same) r.splice(q, 1), r.splice(q % r.length, 1);
+          else r.splice(q, 1);
+          again = true;
+          q--;
+        }
+      }
       const pts: XZ[] = [];
       /** The outline's own corners; and each piece's side (from corner[e] to the next), and where along it its middle is (0..1). */
       const corner: XZ[] = [];
@@ -4749,7 +4807,7 @@ export async function buildPasirRisCourse(
   };
   const crossTiles = new Map<string, Crossing[]>();
   const boxTiles = new Map<string, YBox[]>();
-  type OutMark = { kerb: boolean; line: boolean; stop: boolean; flat: boolean; why: string; road: number; seg: number; joint: number };
+  type OutMark = { kerb: boolean; line: boolean; stop: boolean; flat: boolean; why: string; road: number; seg: number; joint: number; lr: number; ls: number };
   /**
    * Does the outline's side a -> b (paving on its left, as the strip has
    * it) get a kerb, and an edge line inside it, at (mx, mz) on it? (why:
@@ -4766,7 +4824,7 @@ export async function buildPasirRisCourse(
     const joint = flat ? -1 : jointsNear(mx, mz).find((q) => jDeck(q) === 0 && ringDist(JPOLY[q].ring, mx, mz)[0] < 0.3) ?? -1;
     const under = edgeRoadOf(near, () => true);
     const y = flat ? NaN : outlineY(mx, mz, near);
-    const base = { flat, joint, road: under && hasProfile[under.i] ? under.i : -1, seg: under?.seg ?? 0 };
+    const base = { flat, joint, road: under && hasProfile[under.i] ? under.i : -1, seg: under?.seg ?? 0, lr: -1, ls: 0 };
     // The road whose edge this is.
     const r = edgeRoadOf(near, (i) => !JX.internal[i]);
     // (Across a road's very end, where it stops at the map's edge or a dead end: no kerb, no line.
@@ -4796,20 +4854,21 @@ export async function buildPasirRisCourse(
     // further along, may happen to lie a road's half width away too. Not
     // off its end: there the outline is round its end, not along its side.)
     let lined = -1;
+    let ls = 0;
     let off = Infinity;
     for (const [i, { seg, u, d }] of near) {
       if (!outlined[i] || JX.internal[i] || rankOf(edges[i].cls) < 2) continue;
       if ((seg === 0 && u <= 0) || (seg === EP[i].length - 2 && u >= 1)) continue;
       const o = d - drawnHalf(i, seg, u);
-      if (Math.abs(o) < Math.abs(off)) off = o;
       // (A little inside its edge too: where two roads overlap, one may be drawn a little narrower than its width says.)
-      if (o > -1 && o < 0.6) lined = i;
+      if (o > -1 && o < 0.6 && (lined < 0 || Math.abs(o) < Math.abs(off))) (lined = i), (ls = seg);
+      if (Math.abs(o) < Math.abs(off)) off = o;
     }
     // (A slip road's wedge between lined roads: its outside carries the
     // edge line from the road it leaves to the slip road's own.)
     const wedge = lined < 0 && jointSide !== undefined && slipLined(jointSide);
     why += ` lined ${lined} off ${off.toFixed(2)}${wedge ? ' wedge' : ''}`;
-    return { ...base, kerb, line: lined >= 0 || wedge, stop: false, why };
+    return { ...base, kerb, line: lined >= 0 || wedge, stop: false, why, lr: lined, ls };
   };
   /** Is joint id a slip road's wedge (or a far part of one) where every road is lined? */
   const slipLined = (id: number) => {
@@ -4977,8 +5036,22 @@ export async function buildPasirRisCourse(
               hK[v] = yOn(mm, Q[v][0], Q[v][1]);
               hY[v] = yOn(mm, Q[v][0] + sx * 0.35, Q[v][1] + sz * 0.35);
             }
-            strip(kerb, Q, qc, j0, j1 + 1, 0.25, 0.07, { lo: 0, hi: Q.length - 1, off: -0.1, keep: (j) => !!mk(j)?.kerb, yAt: (j) => hK[j], bisect: true });
-            strip(yellow, Q, qc, j0, j1 + 1, 0.07, 0.11, { lo: 0, hi: Q.length - 1, off: 0.35, keep: (j) => !!mk(j)?.line, yAt: (j) => hY[j], bisect: true });
+            // (Each kerb and line by itself, square across at its ends: at a
+            // bend in the outline where it stops, a cross-section on the
+            // bend's bisector would cut it off aslant. Where it runs on into
+            // the next tile, as the next tile has it there.)
+            const runs = (keep: (j: number) => boolean, f: (lo: number, hi: number, a: number, b: number) => void) => {
+              for (let a = j0; a <= j1; a++) {
+                if (!keep(a)) continue;
+                let b = a;
+                while (b + 1 <= j1 && keep(b + 1)) b++;
+                f(a === j0 && keep(j0 - 1) ? 0 : a, b === j1 && keep(j1 + 1) ? Q.length - 1 : b + 1, a, b + 1);
+                a = b;
+              }
+            };
+            const isKerb = (j: number) => !!mk(j)?.kerb, isLine = (j: number) => !!mk(j)?.line;
+            runs(isKerb, (lo, hi, a, b) => strip(kerb, Q, qc, a, b, 0.25, 0.07, { lo, hi, off: -0.1, yAt: (j) => hK[j], bisect: true }));
+            runs(isLine, (lo, hi, a, b) => strip(yellow, Q, qc, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true }));
             j0 = j1;
           }
         }
