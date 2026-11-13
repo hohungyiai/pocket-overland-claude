@@ -547,6 +547,26 @@ export async function buildPasirRisCourse(
         }
         d[q] = v;
       }
+    // (Blurred: the distance has a crease along every line midway between
+    // two waters, the ridge of a hill, and a road crossing it went from
+    // climbing to falling within a metre or two. Two passes of a 5-cell
+    // box each way round it off over 30 m or so.)
+    for (let q = 0; q < d.length; q++) d[q] = Math.min(d[q], 400);
+    const t = new Float32Array(d.length);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let j = 0; j < DH; j++)
+        for (let i = 0; i < DW; i++) {
+          let sum = 0;
+          for (let o = -2; o <= 2; o++) sum += d[j * DW + Math.min(DW - 1, Math.max(0, i + o))];
+          t[j * DW + i] = sum / 5;
+        }
+      for (let j = 0; j < DH; j++)
+        for (let i = 0; i < DW; i++) {
+          let sum = 0;
+          for (let o = -2; o <= 2; o++) sum += t[Math.min(DH - 1, Math.max(0, j + o)) * DW + i];
+          d[j * DW + i] = sum / 5;
+        }
+    }
     for (let q = 0; q < d.length; q++) d[q] = smoothstep(40, 260, d[q]);
     return d;
   })();
@@ -1711,9 +1731,15 @@ export async function buildPasirRisCourse(
    * road on it is drawn across its width: no steeper than 1 in 3.3 from its
    * middle. (Beside an embankment the ground's shape across a slip road could
    * tilt it 0.58 in 1, past what the car can take.)
+   * Only the ground's tilt across the road counts, the same point the other
+   * side of the middle falling as much as this one rises: the road's middle
+   * keeps its own height. (Ground falling away both sides, as off the top of
+   * a bank beside a road lower down, took the whole road down with it: 4 cm
+   * below its own line, and a step where it ran on into a piece with no
+   * such bank.)
    */
   const clampDrop = (dy: number, dist: number) => Math.max(-0.3 * dist, Math.min(0.3 * dist, dy));
-  const crossDrop = (x: number, z: number, cx: number, cz: number) => clampDrop(dropAt(x, z) - dropAt(cx, cz), Math.hypot(x - cx, z - cz));
+  const crossDrop = (x: number, z: number, cx: number, cz: number) => clampDrop((dropAt(x, z) - dropAt(2 * cx - x, 2 * cz - z)) / 2, Math.hypot(x - cx, z - cz));
   const tiltY = (i: number, s: number, y: number, x: number, z: number, cx: number, cz: number) => {
     const t = tiltAt(i, s);
     if (t <= 0) return y;
