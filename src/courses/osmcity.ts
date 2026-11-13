@@ -4355,42 +4355,65 @@ export async function buildPasirRisCourse(
     if (l) l.push(j);
     else padsByTile.set(k, [j]);
   });
+  /** A pad's shape: a disc of radius r round the joint, or (a slip road's joint) the ring round its roads' ends. */
+  const padShape = (j: number) => {
+    const [x, z] = M.junctions[j];
+    const r = jDegree[j] === 2 ? (halfEnd(jEdges[j][0], j) + halfEnd(jEdges[j][1], j)) / 2 : jRadius[j];
+    // A slip road's joint left plain is paved only between its roads'
+    // own ends: a disc as wide as the widest of them would stand out
+    // past the edges of the others.
+    if (slipJoint.has(j)) {
+      const ends: XZ[] = [];
+      for (const i of jEdges[j]) {
+        const atA = edges[i].a === j;
+        const P = EP[i];
+        const k = atA ? 0 : P.length - 1;
+        const q = atA ? 1 : P.length - 2;
+        const l = Math.hypot(P[q][0] - P[k][0], P[q][1] - P[k][1]) || 1;
+        const h = halfAtE(i, k);
+        const nx = (-(P[q][1] - P[k][1]) / l) * h, nz = ((P[q][0] - P[k][0]) / l) * h;
+        ends.push([x + nx, z + nz], [x - nx, z - nz]);
+      }
+      const ring = convexHull(ends);
+      let area = 0;
+      ring.forEach((a, m) => {
+        const b = ring[(m + 1) % ring.length];
+        area += (a[0] - x) * (b[1] - z) - (a[1] - z) * (b[0] - x);
+      });
+      if (ring.length >= 3 && area !== 0) return { x, z, r, ring: area > 0 ? ring : ring.reverse() };
+    }
+    return { x, z, r, ring: null as XZ[] | null };
+  };
+  // (The raised pads, by where they lie: a mark at a pad's edge lies on
+  // whichever of the pad and the road is on top, as they are drawn.)
+  const PCELL = 32;
+  const padGrid = new Map<number, { j: number; x: number; z: number; r: number; ring: XZ[] | null; y: number }[]>();
+  for (const all of padsByTile.values())
+    for (const j of all) {
+      const y = padY(j);
+      if (y === undefined) continue;
+      const p = { j, ...padShape(j), y };
+      for (let gx = Math.floor((p.x - p.r - 1) / PCELL); gx <= Math.floor((p.x + p.r + 1) / PCELL); gx++)
+        for (let gz = Math.floor((p.z - p.r - 1) / PCELL); gz <= Math.floor((p.z + p.r + 1) / PCELL); gz++) {
+          const key = gx * 100003 + gz;
+          (padGrid.get(key) ?? padGrid.set(key, []).get(key)!).push(p);
+        }
+    }
+  /** The raised pads at (x, z): each pad's joint and its height (as yOn has heights: under the lift all drawn things share). */
+  const padsAt = (x: number, z: number, grow = 0) =>
+    (padGrid.get(Math.floor(x / PCELL) * 100003 + Math.floor(z / PCELL)) ?? []).filter((p) =>
+      p.ring ? inRingXZ(p.ring, x, z) || (grow > 0 && ringDist(p.ring, x, z)[0] < grow) : Math.hypot(x - p.x, z - p.z) < p.r * 0.98 + grow,
+    );
   for (const [k, all] of padsByTile)
     inChunks('far', k, 'pads', all, 10, (list, _kit, acc) => {
       const road = acc('road');
       for (const j of list) {
-        const [x, z] = M.junctions[j];
-        const r = jDegree[j] === 2 ? (halfEnd(jEdges[j][0], j) + halfEnd(jEdges[j][1], j)) / 2 : jRadius[j];
+        const { x, z, r, ring } = padShape(j);
         const y = padY(j);
         // (No kerb round it: the roads' own kerbs run up to the joint, and a
         // ring would only cross the road as a lip.)
-        // A slip road's joint left plain is paved only between its roads'
-        // own ends: a disc as wide as the widest of them would stand out
-        // past the edges of the others.
-        if (slipJoint.has(j)) {
-          const ends: XZ[] = [];
-          for (const i of jEdges[j]) {
-            const atA = edges[i].a === j;
-            const P = EP[i];
-            const k = atA ? 0 : P.length - 1;
-            const q = atA ? 1 : P.length - 2;
-            const l = Math.hypot(P[q][0] - P[k][0], P[q][1] - P[k][1]) || 1;
-            const h = halfAtE(i, k);
-            const nx = (-(P[q][1] - P[k][1]) / l) * h, nz = ((P[q][0] - P[k][0]) / l) * h;
-            ends.push([x + nx, z + nz], [x - nx, z - nz]);
-          }
-          const ring = convexHull(ends);
-          let area = 0;
-          ring.forEach((a, m) => {
-            const b = ring[(m + 1) % ring.length];
-            area += (a[0] - x) * (b[1] - z) - (a[1] - z) * (b[0] - x);
-          });
-          if (ring.length >= 3 && area !== 0) {
-            padOver(road, x, z, area > 0 ? ring : ring.reverse(), 0.09, y);
-            continue;
-          }
-        }
-        disc(road, x, z, r, 0.09, y);
+        if (ring) padOver(road, x, z, ring, 0.09, y);
+        else disc(road, x, z, r, 0.09, y);
       }
     });
   /** The height of junction id's drawn paving at (x, z): its mesh, not the smooth surface it samples. */
@@ -5182,9 +5205,37 @@ export async function buildPasirRisCourse(
     );
   };
   /** The drawn surface's height at (x, z), on the surface a mark's side bounds (cheap: no look round). */
-  const yOn = (m: OutMark, x: number, z: number) => {
+  /**
+   * Road o's surface at (x, z) as its strip is drawn (piece seg, u along):
+   * on a road at the ground (tiltAt) its two edges are worked out at its own
+   * points, and the surface runs straight between them, across and along.
+   * (Worked out at the point itself, a mark on a ramp's foot lay up to 13 cm
+   * under the strip and showed in parts.)
+   */
+  const drawnTop = (o: number, seg: number, u: number, x: number, z: number) => {
+    const P = EP[o], Y = deckY(o);
+    const k1 = Math.min(P.length - 1, seg + 1);
+    if (!(tiltAt(o, ECUM[o][seg]) > 0) && !(tiltAt(o, ECUM[o][k1]) > 0)) return lerp(Y[seg], Y[k1], u);
+    const at = (k: number) => {
+      const tk = tiltAt(o, ECUM[o][k]);
+      if (!(tk > 0)) return Y[k];
+      const { nx, nz } = section(P, k, 0, P.length - 1);
+      const h = drawnHalf(o, Math.min(k, P.length - 2), k === P.length - 1 ? 1 : 0);
+      const yl = Y[k] + tk * crossDrop(P[k][0] - nx * h, P[k][1] - nz * h, P[k][0], P[k][1]);
+      const yr = Y[k] + tk * crossDrop(P[k][0] + nx * h, P[k][1] + nz * h, P[k][0], P[k][1]);
+      const off = Math.max(-h, Math.min(h, (x - P[k][0]) * nx + (z - P[k][1]) * nz));
+      return lerp(yl, yr, (off / (h || 1) + 1) / 2);
+    };
+    return lerp(at(seg), at(k1), u);
+  };
+  /**
+   * The height a mark at (x, z) lies on. onTop (an edge line): on whatever
+   * is drawn on top there, a joint's level pad or paving too. (Not a kerb:
+   * its inner part lies under the asphalt, and lifted onto a pad beside the
+   * road it showed through the road as a lump.)
+   */
+  const yOn = (m: OutMark, x: number, z: number, onTop = false) => {
     if (m.flat) return NaN;
-    if (m.joint >= 0) return paveY(m.joint, x, z);
     /** Road o's drawn height at (x, z), by its nearest point among pieces lo..hi. */
     const at = (o: number, lo: number, hi: number) => {
       const P = EP[o];
@@ -5195,17 +5246,31 @@ export async function buildPasirRisCourse(
         const d = Math.hypot(P[s][0] + vx * u - x, P[s][1] + vz * u - z);
         if (d < best) (best = d), (bs = s), (bu = u);
       }
-      return tiltY(o, lerp(ECUM[o][bs], ECUM[o][bs + 1], bu), deckAtHit(o, bs, bu), x, z, lerp(P[bs][0], P[bs + 1][0], bu), lerp(P[bs][1], P[bs + 1][1], bu));
+      return drawnTop(o, bs, bu, x, z);
     };
-    // (Its own road's, a few pieces either side of where the side was asked.)
-    let y = m.road >= 0 ? at(m.road, m.seg - 4, m.seg + 4) : NaN;
+    // (Its own road's, a few pieces either side of where the side was asked;
+    // or its junction's paving.)
+    let y = m.joint >= 0 ? paveY(m.joint, x, z) : m.road >= 0 ? at(m.road, m.seg - 4, m.seg + 4) : NaN;
     // (Where raised pieces of the same level overlap, as a ramp leaves a
     // road, the one on top is what shows: the mark lies on it.)
     roads.each(x, z, 12, (o, seg, u, d) => {
-      if (o === m.road || !hasProfile[o] || lvlOf(o) !== m.lvl || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
+      if ((o === m.road && m.joint < 0) || !hasProfile[o] || lvlOf(o) !== m.lvl || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
       const h = at(o, seg, seg);
-      if (y !== y || (h > y && h - y < 1.5)) y = h;
+      if (y !== y || (h > y && h - y < (m.joint >= 0 ? 0.5 : 1.5))) y = h;
     });
+    // (And where a joint's level pad reaches over the end of a climbing
+    // road, a few cm above it: a line on the road went under the pad's
+    // edge and showed as a step.)
+    // (From just short of its edge: the height between two of the mark's
+    // points runs straight, and the pad's edge lies between them.)
+    if (y === y && onTop) for (const p of padsAt(x, z, 0.5)) if (p.y > y && p.y - y < 0.5) y = p.y;
+    // (The same where a junction's paving of its level lies over the road's end.)
+    if (y === y && onTop)
+      for (const q of jointsNear(x, z)) {
+        if (q === m.joint || (m.lvl < 0 ? jDeck(q) > 0 : jLvlM(q) !== m.lvl) || ringDist(JPOLY[q].ring, x, z)[0] > 0.5) continue;
+        const h = paveY(q, x, z);
+        if (h > y && h - y < 0.5) y = h;
+      }
     return y;
   };
   // (A tile's outline is worked out over several build slices, each short:
@@ -5380,6 +5445,9 @@ export async function buildPasirRisCourse(
           // corners, and where a kerb or a line starts or stops (or the tile
           // ends). The road's own strips are drawn between its own points,
           // and the marks lie on them the same way.
+          // (And where it passes onto or off a junction's pad: the pad is
+          // level and the road under it climbs, so the height between two
+          // points either side would run under the pad's edge.)
           const same = (p: number, q: number) => edge[p] === edge[q] && drawn[p] === drawn[q] && !!marks[p]?.kerb === !!marks[q]?.kerb && !!marks[p]?.line === !!marks[q]?.line;
           const K: number[] = [];
           // (And on a raised road, a point every 3 m or so: the heights
@@ -5398,44 +5466,82 @@ export async function buildPasirRisCourse(
           const at0 = (j: number) => K[(j - 1 + m) % m];
           const mk = (j: number) => marks[at0(j)];
           const dr = (j: number) => j >= 1 && j <= m && drawn[at0(j)];
+          // Where a kept piece passes over or beside a joint's level pad or
+          // a junction's paving, a point every metre along it, on it: the
+          // pad is level and the road beside it climbs, and the height
+          // straight between the piece's ends ran under the pad's edge (a
+          // line showed a step there). Q2: Q with those points; of2: the
+          // piece of Q each piece of Q2 is part of; at2: where Q's points are in Q2.
+          const nearJoint = (x: number, z: number, mm: OutMark) =>
+            padsAt(x, z, 0.6).length > 0 || jointsNear(x, z).some((q) => q !== mm.joint && (mm.lvl < 0 ? jDeck(q) <= 0 : jLvlM(q) === mm.lvl) && ringDist(JPOLY[q].ring, x, z)[0] < 0.6);
+          const Q2: XZ[] = [];
+          const of2: number[] = [];
+          const at2: number[] = [];
+          for (let j = 0; j < Q.length; j++) {
+            at2.push(Q2.length);
+            Q2.push(Q[j]);
+            of2.push(j);
+            if (j === Q.length - 1) break;
+            const mm = mk(j);
+            const L = qc[j + 1] - qc[j];
+            if (!mm || mm.flat || L < 1.5) continue;
+            const cnt = Math.ceil(L);
+            let near = false;
+            for (let c = 0; c <= cnt && !near; c++) near = nearJoint(lerp(Q[j][0], Q[j + 1][0], c / cnt), lerp(Q[j][1], Q[j + 1][1], c / cnt), mm);
+            if (!near) continue;
+            for (let c = 1; c < cnt; c++) {
+              Q2.push([lerp(Q[j][0], Q[j + 1][0], c / cnt), lerp(Q[j][1], Q[j + 1][1], c / cnt)]);
+              of2.push(j);
+            }
+          }
+          const qc2 = [0];
+          for (let j = 1; j < Q2.length; j++) qc2.push(qc2[j - 1] + Math.hypot(Q2[j][0] - Q2[j - 1][0], Q2[j][1] - Q2[j - 1][1]));
           for (let j0 = 1; j0 <= m; j0++) {
             if (!dr(j0)) continue;
             let j1 = j0;
             while (j1 + 1 <= m && dr(j1 + 1)) j1++;
             const J0 = j0, J1 = j1;
             // (Its share of the drawing: by its points, the heights of each asked.)
-            w.drawW.push(J1 - J0 + 2);
+            w.drawW.push(at2[J1 + 1] - at2[J0] + 2);
             w.draws.push((kerb, yellow) => {
-              const j0 = J0, j1 = J1;
-              // (Heights where the ground does not lie as the strips drape it, from the surface the side bounds.)
+              // (Heights where the ground does not lie as the strips drape it,
+              // from the surface the side bounds: kerbs at Q's points, lines
+              // at Q2's, from Q's point J0 to its point J1 + 1.)
               const hK: number[] = [];
               const hY: number[] = [];
+              const markAt = (o: number) => (o <= J1 ? mk(o) : null) ?? mk(o - 1);
+              for (let v = J0; v <= J1 + 1; v++) {
+                const mm = markAt(v);
+                hK[v] = !mm || mm.flat ? NaN : yOn(mm, Q[v][0], Q[v][1]);
+              }
+              const j0 = at2[J0], j1 = at2[J1 + 1] - 1;
               for (let v = j0; v <= j1 + 1; v++) {
-                const mm = (v <= j1 ? mk(v) : null) ?? mk(v - 1);
+                const mm = markAt(of2[v]);
                 if (!mm || mm.flat) {
-                  hK[v] = hY[v] = NaN;
+                  hY[v] = NaN;
                   continue;
                 }
-                const { nx: sx, nz: sz } = section(Q, v, 0, Q.length - 1, undefined, true);
-                hK[v] = yOn(mm, Q[v][0], Q[v][1]);
-                hY[v] = yOn(mm, Q[v][0] + sx * 0.35, Q[v][1] + sz * 0.35);
+                const { nx: sx, nz: sz } = section(Q2, v, 0, Q2.length - 1, undefined, true);
+                hY[v] = yOn(mm, Q2[v][0] + sx * 0.35, Q2[v][1] + sz * 0.35, true);
               }
               // (Each kerb and line by itself, square across at its ends: at a
               // bend in the outline where it stops, a cross-section on the
               // bend's bisector would cut it off aslant. Where it runs on into
-              // the next tile, as the next tile has it there.)
-              const runs = (keep: (j: number) => boolean, f: (lo: number, hi: number, a: number, b: number) => void) => {
-                for (let a = j0; a <= j1; a++) {
-                  if (!keep(a)) continue;
+              // the next tile, as the next tile has it there. Kerbs by Q's
+              // pieces: a kerb's inner half lies under the asphalt, and with a
+              // point every metre it showed through as a lump.)
+              const runs = (P: XZ[], lo0: number, hi0: number, piece: (a: number) => number, keep: (j: number) => boolean, f: (lo: number, hi: number, a: number, b: number) => void) => {
+                for (let a = lo0; a <= hi0; a++) {
+                  if (!keep(piece(a))) continue;
                   let b = a;
-                  while (b + 1 <= j1 && keep(b + 1)) b++;
-                  f(a === j0 && keep(j0 - 1) ? 0 : a, b === j1 && keep(j1 + 1) ? Q.length - 1 : b + 1, a, b + 1);
+                  while (b + 1 <= hi0 && keep(piece(b + 1))) b++;
+                  f(a === lo0 && keep(J0 - 1) ? 0 : a, b === hi0 && keep(J1 + 1) ? P.length - 1 : b + 1, a, b + 1);
                   a = b;
                 }
               };
               const isKerb = (j: number) => !!mk(j)?.kerb, isLine = (j: number) => !!mk(j)?.line;
-              runs(isKerb, (lo, hi, a, b) => strip(kerb, Q, qc, a, b, 0.25, 0.07, { lo, hi, off: -0.1, yAt: (j) => hK[j], bisect: true }));
-              runs(isLine, (lo, hi, a, b) => strip(yellow, Q, qc, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true }));
+              runs(Q, J0, J1, (a) => a, isKerb, (lo, hi, a, b) => strip(kerb, Q, qc, a, b, 0.25, 0.07, { lo, hi, off: -0.1, yAt: (j) => hK[j], bisect: true }));
+              runs(Q2, j0, j1, (a) => of2[a], isLine, (lo, hi, a, b) => strip(yellow, Q2, qc2, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true }));
             });
             j0 = j1;
           }
