@@ -30,6 +30,9 @@ window.__markRuns = (key) => {
           // Out of the run: away from the triangle's third corner, square to the end.
           let ax = P[v * 3] - P[u * 3], az = P[v * 3 + 2] - P[u * 3 + 2];
           const al = Math.hypot(ax, az) || 1;
+          // (A strip's end is as wide as the mark: a run of one piece, two
+          // triangles, would otherwise show its long sides as ends too.)
+          if (al > (key === 'yellow' ? 0.3 : 0.8)) continue;
           let ox = -az / al, oz = ax / al;
           if ((P[w * 3] - mx) * ox + (P[w * 3 + 2] - mz) * oz > 0) (ox = -ox), (oz = -oz);
           ends.push({ x: mx, z: mz, y: (P[u * 3 + 1] + P[v * 3 + 1]) / 2, ox, oz, w: al });
