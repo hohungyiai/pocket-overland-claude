@@ -4852,6 +4852,74 @@ export async function buildPasirRisCourse(
    */
   const smoothRing = (r: Path64) => {
     const d = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+    // Nicks: a side under 0.25 m at a corner, where a road's end and a
+    // junction's mouth miss each other by a hair (a nose's corner). Its
+    // two sides either side run on to meet; a kerb or line turning there
+    // turned back on itself and stood out as a spike.
+    const NICK = 0.25 * OUT_S;
+    for (let again = true; again && r.length > 4; ) {
+      again = false;
+      const n = r.length;
+      for (let b = 0; b < n && !again; b++) {
+        const c = (b + 1) % n, a = (b - 1 + n) % n, e = (c + 1) % n;
+        if (d(r[b], r[c]) >= NICK || d(r[a], r[b]) < NICK || d(r[c], r[e]) < NICK) continue;
+        // (Where the lines a-b and c-e cross, near the nick; else its middle.)
+        const ux = r[b].x - r[a].x, uy = r[b].y - r[a].y, vx = r[e].x - r[c].x, vy = r[e].y - r[c].y;
+        const den = ux * vy - uy * vx;
+        const mx = (r[b].x + r[c].x) / 2, my = (r[b].y + r[c].y) / 2;
+        let px = mx, py = my;
+        if (Math.abs(den) > 1e-9 * Math.hypot(ux, uy) * Math.hypot(vx, vy)) {
+          const t = ((r[c].x - r[a].x) * vy - (r[c].y - r[a].y) * vx) / den;
+          const qx = r[a].x + ux * t, qy = r[a].y + uy * t;
+          if (Math.hypot(qx - mx, qy - my) < 0.3 * OUT_S) (px = qx), (py = qy);
+        }
+        const keep: typeof r[number][] = [];
+        r.forEach((q, i) => {
+          if (i === b) keep.push(new Point64(Math.round(px), Math.round(py)));
+          else if (i !== c) keep.push(q);
+        });
+        r.length = 0;
+        r.push(...keep);
+        again = true;
+      }
+    }
+    // Spikes: a tip under 10 degrees whose way back runs along its way out
+    // (two roads' edges meeting at a hair's angle, the gap between them
+    // nothing). The tip goes, and the way back with it, to where the
+    // outline leaves that line: a nose there, not a sliver no kerb fits.
+    for (let again = true; again && r.length > 4; ) {
+      again = false;
+      const n = r.length;
+      for (let t = 0; t < n && !again; t++) {
+        for (const dir of [1, -1]) {
+          const a = r[(t - dir + n) % n], T = r[t];
+          const lx = T.x - a.x, ly = T.y - a.y, L = Math.hypot(lx, ly);
+          if (L < 0.5 * OUT_S) continue;
+          // (The points on from the tip, back along the line from a.)
+          let k = 1, last = -1;
+          for (; k < Math.min(12, n - 2); k++) {
+            const p = r[(t + dir * k + n * 2) % n];
+            const off = Math.abs((p.x - a.x) * ly - (p.y - a.y) * lx) / L;
+            const s = ((p.x - a.x) * lx + (p.y - a.y) * ly) / L;
+            if (off > 0.12 * OUT_S || s < 0.05 * OUT_S || s > L) break;
+            last = k;
+          }
+          if (last < 0) continue;
+          // (A tip at all: the way back turns round, under 10 degrees.)
+          const c = r[(t + dir + n) % n];
+          const cx = c.x - T.x, cy = c.y - T.y;
+          if ((cx * -lx + cy * -ly) / ((Math.hypot(cx, cy) || 1) * L) < Math.cos((10 * Math.PI) / 180)) continue;
+          // (Keep the last point on the line; the tip and those before it go.)
+          const cut = new Set<number>([t]);
+          for (let v = 1; v < last; v++) cut.add((t + dir * v + n * 2) % n);
+          const keep = r.filter((_, q) => !cut.has(q));
+          r.length = 0;
+          r.push(...keep);
+          again = true;
+          break;
+        }
+      }
+    }
     // Folds and hooks.
     for (let again = true; again && r.length > 4; ) {
       again = false;
@@ -5212,19 +5280,29 @@ export async function buildPasirRisCourse(
    * (Worked out at the point itself, a mark on a ramp's foot lay up to 13 cm
    * under the strip and showed in parts.)
    */
+  const topMemo = new Map<number, [number, number, number, number, number]>();
   const drawnTop = (o: number, seg: number, u: number, x: number, z: number) => {
     const P = EP[o], Y = deckY(o);
     const k1 = Math.min(P.length - 1, seg + 1);
     if (!(tiltAt(o, ECUM[o][seg]) > 0) && !(tiltAt(o, ECUM[o][k1]) > 0)) return lerp(Y[seg], Y[k1], u);
     const at = (k: number) => {
-      const tk = tiltAt(o, ECUM[o][k]);
-      if (!(tk > 0)) return Y[k];
-      const { nx, nz } = section(P, k, 0, P.length - 1);
-      const h = drawnHalf(o, Math.min(k, P.length - 2), k === P.length - 1 ? 1 : 0);
-      const yl = Y[k] + tk * crossDrop(P[k][0] - nx * h, P[k][1] - nz * h, P[k][0], P[k][1]);
-      const yr = Y[k] + tk * crossDrop(P[k][0] + nx * h, P[k][1] + nz * h, P[k][0], P[k][1]);
+      // (Its two edge heights at point k, worked out once.)
+      const key = o * 4096 + k;
+      let e = topMemo.get(key);
+      if (!e) {
+        const tk = tiltAt(o, ECUM[o][k]);
+        if (!(tk > 0)) e = [Y[k], Y[k], 0, 0, 0];
+        else {
+          const { nx, nz } = section(P, k, 0, P.length - 1);
+          const h = drawnHalf(o, Math.min(k, P.length - 2), k === P.length - 1 ? 1 : 0);
+          e = [Y[k] + tk * crossDrop(P[k][0] - nx * h, P[k][1] - nz * h, P[k][0], P[k][1]), Y[k] + tk * crossDrop(P[k][0] + nx * h, P[k][1] + nz * h, P[k][0], P[k][1]), nx, nz, h];
+        }
+        topMemo.set(key, e);
+      }
+      const [yl, yr, nx, nz, h] = e;
+      if (!h) return yl;
       const off = Math.max(-h, Math.min(h, (x - P[k][0]) * nx + (z - P[k][1]) * nz));
-      return lerp(yl, yr, (off / (h || 1) + 1) / 2);
+      return lerp(yl, yr, (off / h + 1) / 2);
     };
     return lerp(at(seg), at(k1), u);
   };
@@ -5487,7 +5565,7 @@ export async function buildPasirRisCourse(
             if (!mm || mm.flat || L < 1.5) continue;
             const cnt = Math.ceil(L);
             let near = false;
-            for (let c = 0; c <= cnt && !near; c++) near = nearJoint(lerp(Q[j][0], Q[j + 1][0], c / cnt), lerp(Q[j][1], Q[j + 1][1], c / cnt), mm);
+            for (let c = 0; c <= cnt && !near; c += Math.max(1, cnt >> 1)) near = nearJoint(lerp(Q[j][0], Q[j + 1][0], c / cnt), lerp(Q[j][1], Q[j + 1][1], c / cnt), mm);
             if (!near) continue;
             for (let c = 1; c < cnt; c++) {
               Q2.push([lerp(Q[j][0], Q[j + 1][0], c / cnt), lerp(Q[j][1], Q[j + 1][1], c / cnt)]);
