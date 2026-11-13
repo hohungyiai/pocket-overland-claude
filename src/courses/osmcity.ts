@@ -4769,12 +4769,14 @@ export async function buildPasirRisCourse(
     const base = { flat, joint, road: under && hasProfile[under.i] ? under.i : -1, seg: under?.seg ?? 0 };
     // The road whose edge this is.
     const r = edgeRoadOf(near, (i) => !JX.internal[i]);
-    // (Across a road's very end, where it stops at the map's edge or a dead end: no kerb, no line.)
+    // (Across a road's very end, where it stops at the map's edge or a dead end: no kerb, no line.
+    // Not where another road carries on from it: a step there between the two is no end.)
     if (r && r.past < 0.1) {
       const s = lerp(ECUM[r.i][r.seg], ECUM[r.i][r.seg + 1], r.u);
+      const endJ = s < ELEN[r.i] / 2 ? edges[r.i].a : edges[r.i].b;
       const pa = EP[r.i][r.seg], pb = EP[r.i][r.seg + 1];
       const dl = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) || 1;
-      if ((s < 0.5 || s > ELEN[r.i] - 0.5) && Math.abs((tx * (pb[0] - pa[0]) + tz * (pb[1] - pa[1])) / dl) < 0.5) return { ...base, kerb: false, line: false, stop: true, why: 'road end' };
+      if ((s < 0.5 || s > ELEN[r.i] - 0.5) && jDegree[endJ] <= 1 && Math.abs((tx * (pb[0] - pa[0]) + tz * (pb[1] - pa[1])) / dl) < 0.5) return { ...base, kerb: false, line: false, stop: true, why: 'road end' };
     }
     // (Where a deck carries on from it: the deck's own kerbs and lines.)
     const deckNear = [...near].some(([i, h]) => isDeck[i] && h.d < drawnHalf(i, h.seg, h.u) + 1) || jointsNear(mx, mz).some((q) => jDeck(q) > 0) || !!goreGrid.get(Math.floor(mx / GCELL) * 100003 + Math.floor(mz / GCELL))?.some((q) => gores[q].deck > 0);
@@ -4800,7 +4802,8 @@ export async function buildPasirRisCourse(
       if ((seg === 0 && u <= 0) || (seg === EP[i].length - 2 && u >= 1)) continue;
       const o = d - drawnHalf(i, seg, u);
       if (Math.abs(o) < Math.abs(off)) off = o;
-      if (Math.abs(o) < 0.5) lined = i;
+      // (A little inside its edge too: where two roads overlap, one may be drawn a little narrower than its width says.)
+      if (o > -1 && o < 0.6) lined = i;
     }
     // (A slip road's wedge between lined roads: its outside carries the
     // edge line from the road it leaves to the slip road's own.)
@@ -4925,7 +4928,11 @@ export async function buildPasirRisCourse(
           });
           // Round a nose (a divider's end, a gore's tip) the edge line carries
           // on from one side to the other: a short stretch with no road's
-          // edge, turning more than 120°, between two lined stretches.
+          // edge, turning more than 120°, between two lined stretches. And
+          // across a joint's paving where one road's edge runs on into the
+          // next's (a merge, a split, a bend), turning less than 40°: the
+          // paving there lies a little off both roads' edges. (A corner into
+          // a side road, turning about 90°, is a mouth: the line stops.)
           for (let q = 1; q < n; q++) {
             if (!marks[q - 1]?.line || !marks[q] || marks[q]!.line) continue;
             let e = q;
@@ -4933,8 +4940,9 @@ export async function buildPasirRisCourse(
             while (e < n - 1 && marks[e] && !marks[e]!.line && !marks[e]!.stop && run < 12) run += len(e++);
             if (!marks[e]?.line || run >= 12) continue;
             const t0 = unit(R[q][0] - R[q - 1][0], R[q][1] - R[q - 1][1]), t1 = unit(R[nx(e)][0] - R[e][0], R[nx(e)][1] - R[e][1]);
-            if (t0[0] * t1[0] + t0[1] * t1[1] > -0.5) continue;
-            for (let v = q; v < e; v++) marks[v] = { ...marks[v]!, line: true, why: marks[v]!.why + ' nose' };
+            const c = t0[0] * t1[0] + t0[1] * t1[1];
+            if (c > -0.5 && c < Math.cos((40 * Math.PI) / 180)) continue;
+            for (let v = q; v < e; v++) marks[v] = { ...marks[v]!, line: true, why: marks[v]!.why + (c < 0 ? ' nose' : ' on') };
           }
           // Only the points where something changes are kept: the outline's
           // corners, and where a kerb or a line starts or stops (or the tile

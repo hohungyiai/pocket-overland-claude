@@ -190,7 +190,8 @@ window.__checkKerbLines = () => {
     const key = Math.round(x) + ',' + Math.round(z);
     if (seen.has(key)) continue;
     seen.add(key);
-    if (window.__markStopOk(x, z, y) || atCrossing(x, z)) continue;
+    // (A kerb lies outside the paving: a junction's corner is asked a metre in from it, all round.)
+    if (window.__markStopOk(x, z, y) || atCrossing(x, z) || [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([ax, az]) => d.stopsAt(x + ax, z + az, y).paving)) continue;
     n++;
     const g = near(x, z, y);
     if (g <= 0.75) continue;
