@@ -4914,8 +4914,9 @@ export async function buildPasirRisCourse(
   // first the outline itself, then its sides a share at a time, asked
   // every 4 m or so along each, then the kerbs and lines drawn.)
   type OutRing = { P: XZ[]; cum: number[]; n: number; drawn: boolean[]; corner: XZ[]; edge: number[]; at: number[]; samples: (OutMark | null)[][] };
-  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][] }>();
+  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[] }>();
   const OUT_PARTS = 6;
+  const OUT_DRAW = 3;
   /** How many places along a side of the outline are asked (one every 4 m or so). */
   const sidePlaces = (a: XZ, b: XZ) => Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
   if (oneLine) {
@@ -4948,7 +4949,7 @@ export async function buildPasirRisCourse(
           for (const e of want) for (let j = 0; j < samples[e].length; j++) todo.push([id, e, j]);
           rings.push({ P, cum, n, drawn, corner, edge, at, samples });
         }
-        outWork.set(k, { rings, todo });
+        outWork.set(k, { rings, todo, draws: [] });
       });
       for (let part = 0; part < OUT_PARTS; part++)
         onTile('far', k, 'outline marks', () => {
@@ -4962,12 +4963,9 @@ export async function buildPasirRisCourse(
             R.samples[e][j] = outlineMarks(a, b, lerp(a[0], b[0], t), lerp(a[1], b[1], t));
           }
         });
-      onTile('far', k, 'outline lines', (_kit, acc) => {
+      onTile('far', k, 'outline lines', () => {
         const w = outWork.get(k);
         if (!w) return;
-        outWork.delete(k);
-        const kerb = acc('kerb');
-        const yellow = acc('yellow');
         for (const { P, cum, n, drawn: drawnP, edge, at, samples } of w.rings) {
           // (By the ring's own pieces: piece q runs from point q to q + 1, round.)
           const R = P.slice(1, n + 1);
@@ -5023,39 +5021,54 @@ export async function buildPasirRisCourse(
             if (!dr(j0)) continue;
             let j1 = j0;
             while (j1 + 1 <= m && dr(j1 + 1)) j1++;
-            // (Heights where the ground does not lie as the strips drape it, from the surface the side bounds.)
-            const hK: number[] = [];
-            const hY: number[] = [];
-            for (let v = j0; v <= j1 + 1; v++) {
-              const mm = (v <= j1 ? mk(v) : null) ?? mk(v - 1);
-              if (!mm || mm.flat) {
-                hK[v] = hY[v] = NaN;
-                continue;
+            const J0 = j0, J1 = j1;
+            w.draws.push((kerb, yellow) => {
+              const j0 = J0, j1 = J1;
+              // (Heights where the ground does not lie as the strips drape it, from the surface the side bounds.)
+              const hK: number[] = [];
+              const hY: number[] = [];
+              for (let v = j0; v <= j1 + 1; v++) {
+                const mm = (v <= j1 ? mk(v) : null) ?? mk(v - 1);
+                if (!mm || mm.flat) {
+                  hK[v] = hY[v] = NaN;
+                  continue;
+                }
+                const { nx: sx, nz: sz } = section(Q, v, 0, Q.length - 1, undefined, true);
+                hK[v] = yOn(mm, Q[v][0], Q[v][1]);
+                hY[v] = yOn(mm, Q[v][0] + sx * 0.35, Q[v][1] + sz * 0.35);
               }
-              const { nx: sx, nz: sz } = section(Q, v, 0, Q.length - 1, undefined, true);
-              hK[v] = yOn(mm, Q[v][0], Q[v][1]);
-              hY[v] = yOn(mm, Q[v][0] + sx * 0.35, Q[v][1] + sz * 0.35);
-            }
-            // (Each kerb and line by itself, square across at its ends: at a
-            // bend in the outline where it stops, a cross-section on the
-            // bend's bisector would cut it off aslant. Where it runs on into
-            // the next tile, as the next tile has it there.)
-            const runs = (keep: (j: number) => boolean, f: (lo: number, hi: number, a: number, b: number) => void) => {
-              for (let a = j0; a <= j1; a++) {
-                if (!keep(a)) continue;
-                let b = a;
-                while (b + 1 <= j1 && keep(b + 1)) b++;
-                f(a === j0 && keep(j0 - 1) ? 0 : a, b === j1 && keep(j1 + 1) ? Q.length - 1 : b + 1, a, b + 1);
-                a = b;
-              }
-            };
-            const isKerb = (j: number) => !!mk(j)?.kerb, isLine = (j: number) => !!mk(j)?.line;
-            runs(isKerb, (lo, hi, a, b) => strip(kerb, Q, qc, a, b, 0.25, 0.07, { lo, hi, off: -0.1, yAt: (j) => hK[j], bisect: true }));
-            runs(isLine, (lo, hi, a, b) => strip(yellow, Q, qc, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true }));
+              // (Each kerb and line by itself, square across at its ends: at a
+              // bend in the outline where it stops, a cross-section on the
+              // bend's bisector would cut it off aslant. Where it runs on into
+              // the next tile, as the next tile has it there.)
+              const runs = (keep: (j: number) => boolean, f: (lo: number, hi: number, a: number, b: number) => void) => {
+                for (let a = j0; a <= j1; a++) {
+                  if (!keep(a)) continue;
+                  let b = a;
+                  while (b + 1 <= j1 && keep(b + 1)) b++;
+                  f(a === j0 && keep(j0 - 1) ? 0 : a, b === j1 && keep(j1 + 1) ? Q.length - 1 : b + 1, a, b + 1);
+                  a = b;
+                }
+              };
+              const isKerb = (j: number) => !!mk(j)?.kerb, isLine = (j: number) => !!mk(j)?.line;
+              runs(isKerb, (lo, hi, a, b) => strip(kerb, Q, qc, a, b, 0.25, 0.07, { lo, hi, off: -0.1, yAt: (j) => hK[j], bisect: true }));
+              runs(isLine, (lo, hi, a, b) => strip(yellow, Q, qc, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true }));
+            });
             j0 = j1;
           }
         }
       });
+      // (Drawn a share at a time.)
+      for (let part = 0; part < OUT_DRAW; part++)
+        onTile('far', k, 'outline draw', (_kit, acc) => {
+          const w = outWork.get(k);
+          if (!w) return;
+          const per = Math.ceil(w.draws.length / OUT_DRAW);
+          const kerb = acc('kerb');
+          const yellow = acc('yellow');
+          for (const f of w.draws.slice(part * per, (part + 1) * per)) f(kerb, yellow);
+          if (part === OUT_DRAW - 1) outWork.delete(k);
+        });
     }
   }
   /** (For the checks: the outline's sides within r of (x, z), and what each gets at its nearest point.) */
