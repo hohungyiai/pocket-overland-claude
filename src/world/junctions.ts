@@ -609,10 +609,23 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         const h = I.halfAt(sLine, sEnd === 0 ? at.seg : at.seg + 1);
         return [at.p[0] - (tz / tl) * h * sgn, at.p[1] + (tx / tl) * h * sgn];
       };
+      // (Where each edge of the side road comes clear of the road. A side
+      // road as wide as the road, leaving at a narrow angle, has both edges
+      // on the road's edges at the joint: the one on the far side then runs
+      // in across the road and leaves it only at the far edge, where the
+      // wedge between the two closes. Taken where it first touched the
+      // edge, both left at once and its mouth folded over itself.)
       const leaves = [1, -1].map((sgn) => {
+        let wasIn = false;
         for (let d = 0; d <= Math.min(sL, REACH); d += 0.25) {
           const p = sideAt(d, sgn);
-          if (offRoad(p[0], p[1]) >= -INSET) return { d, p };
+          const o = offRoad(p[0], p[1]);
+          if (o < -INSET) wasIn = true;
+          else if (wasIn) return { d, p };
+          else {
+            const q = sideAt(d + 0.5, sgn);
+            if (offRoad(q[0], q[1]) >= o) return { d, p };
+          }
         }
         return null;
       });
@@ -620,7 +633,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     };
     type TeePart = { ring: XZ[]; corners: XZ[][]; kerbs: XZ[][]; c: XZ; mouth: Mouth | null; inside: number | null; more: NonNullable<Built['more']>; kerbed: boolean; flip: number; sharp: boolean; empty?: boolean };
     /** The paving where side road sLine meets the road running through joint j. */
-    const teePart = (j: number, sLine: number, no: (why: string) => null): TeePart | null => {
+    const teePart = (j: number, sLine: number, no: (why: string, ring?: XZ[]) => null, asSlip = false): TeePart | null => {
       const G = teeGeom(j, sLine);
       if (!G) return no('short');
       const { through, sEnd, legs, offRoad, sp, sL, sideAt, leaves } = G;
@@ -639,7 +652,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // (Not an opening in a divider that crosses it on the slant: a few
       // metres over to the other side of the road, itself a tee there.)
       const opener = teeAt[farJ] && !thruAt(sLine, farJ) && sL < 30;
-      const sharp = !opener && Math.abs(leaves[0].d - leaves[1].d) > 2.4 * hS;
+      const sharp = !opener && (asSlip || Math.abs(leaves[0].d - leaves[1].d) > 2.4 * hS);
       const GAP = 1.8; // (a little more than the 1.5 m under which roads side by side are paved as one: that paving has nothing left to do here)
       let dG = -1;
       if (sharp) {
@@ -828,11 +841,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
             }
             cs = parts.map((r) => kernelOf(r));
           }
-          if (cs.some((x) => !x)) {
-            no('outline folds: wedge');
-            out.why[out.why.length - 1].ring = parts[cs.findIndex((x) => !x)];
-            return null;
-          }
+          if (cs.some((x) => !x)) return no('outline folds: wedge', parts[cs.findIndex((x) => !x)]);
           ring = parts[0];
           k0 = cs[0];
           more = parts.slice(1).map((r, q) => ({ ring: r, centre: cs[q + 1]!, radius: Math.max(...r.map((p) => Math.hypot(p[0] - cs[q + 1]![0], p[1] - cs[q + 1]![1]))) }));
@@ -882,9 +891,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         }
       }
       if (sees(ring, c) <= 1e-6) {
-        no('outline folds');
-        out.why[out.why.length - 1].ring = ring;
-        return null;
+        return no('outline folds', ring);
       }
       const kerbed = [sLine, ...through].some(hasKerb);
       if (cutMid) {
@@ -934,14 +941,20 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     };
     const teeShape = (j: number): Built | null => {
       // (Why a marked joint could not be built as a tee: kept for the checks.)
-      const no = (why: string) => {
-        out.why.push({ nodes: [j], why: 'tee: ' + why });
+      const no = (why: string, ring?: XZ[]) => {
+        out.why.push({ nodes: [j], why: 'tee: ' + why, ring });
         return null;
       };
       const parts: TeePart[] = [];
       for (const sLine of jE[j]) {
         if (thruAt(sLine, j)) continue;
-        const part = teePart(j, sLine, no);
+        // (A side road whose bell mouth folds over itself leaves at a
+        // narrower angle than its corners can round: it comes away as a slip
+        // road does, one surface with the road until it is clear of it.)
+        let why = '';
+        let part = teePart(j, sLine, (w) => ((why = w), null));
+        if (!part && why.startsWith('outline folds')) part = teePart(j, sLine, no, true);
+        else if (!part) return no(why);
         if (!part) return null;
         parts.push(part);
       }
