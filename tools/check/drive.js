@@ -61,7 +61,7 @@ window.__driveScan = () => {
         // (On a redrawn map a road at the ground keeps its own height along
         // its line and follows the ground's shape across from its middle:
         // the builder's tiltY.)
-        if (tk > 0) want += d.oneLine ? tk * (ground(x, z) - ground(cx, cz)) : (ground(x, z) + rk - want) * tk;
+        if (tk > 0) want += d.oneLine ? tk * (d.crossDrop ? d.crossDrop(x, z, cx, cz) : ground(x, z) - ground(cx, cz)) : (ground(x, z) + rk - want) * tk;
         const y = topAt(x, z, want - 1.5, want + 1.2);
         // Nothing drawn here, at this level: the seam check's business.
         if (y !== y) {

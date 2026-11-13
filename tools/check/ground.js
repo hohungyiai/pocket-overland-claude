@@ -47,7 +47,7 @@ window.__checkGround = () => {
         if (!Y) return (d.surfaceAt ?? d.heightAt)(ex, ez);
         const s = d.ECUM[i][q], t = d.tiltAt(i, s);
         if (!(t > 0)) return Y[q];
-        return d.oneLine ? Y[q] + t * (drop(ex, ez) - drop(px, pz)) : Y[q] + (drop(ex, ez) + d.relAlong(i, s) - Y[q]) * t;
+        return d.oneLine ? Y[q] + t * (d.crossDrop ? d.crossDrop(ex, ez, px, pz) : drop(ex, ez) - drop(px, pz)) : Y[q] + (drop(ex, ez) + d.relAlong(i, s) - Y[q]) * t;
       };
       const la = edgeY(k, -1), ra = edgeY(k, 1), lb = edgeY(k + 1, -1), rb = edgeY(k + 1, 1);
       // Across the full width and out to the kerbs (|f| > 1 holds the edge
