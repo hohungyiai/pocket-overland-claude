@@ -93,7 +93,7 @@ window.__markStopOk = (x, z, y) => {
 // An edge line never jumps sideways or breaks off and starts again: two of
 // its ends facing each other within 4 m are one line broken (unless
 // something it rightly stops for lies between them).
-window.__checkEdgeBreaks = () => {
+window.__checkEdgeBreaks = (all = false) => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [] };
   const { ends } = window.__markRuns('yellow');
@@ -130,13 +130,13 @@ window.__checkEdgeBreaks = () => {
         }
   });
   const pl = window.__finishIndex().places(bad.map((b) => ({ ...b, value: b.over })), 4);
-  return { samples: ends.length, bad: pl.length, worst: pl.slice(0, 40), unit: 'm' };
+  return { samples: ends.length, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
 
 // Every metre of kerb has its edge line beside it, 0.2 to 0.6 m in from
 // it, except where a mark rightly stops (a junction's mouth, a crossing, a
 // gore) and beside roads with no lines.
-window.__checkKerbLines = () => {
+window.__checkKerbLines = (all = false) => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [] };
   const kerb = window.__markRuns('kerb').tris;
@@ -199,5 +199,5 @@ window.__checkKerbLines = () => {
     bad.push({ x: +x.toFixed(1), z: +z.toFixed(1), over: g === Infinity ? 1 : +g.toFixed(2) });
   }
   const pl = window.__finishIndex().places(bad.map((b) => ({ ...b, value: b.over })), 4);
-  return { samples: n, bad: pl.length, worst: pl.slice(0, 40), unit: 'm' };
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
