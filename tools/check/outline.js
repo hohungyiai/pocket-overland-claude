@@ -7,7 +7,8 @@
 //                          of road surface (a hairline, a sliver)
 //   __checkKerbLoops       every kerb runs on unbroken: where one piece ends
 //                          the next carries on within 2 cm and at the same
-//                          height, or the kerb meets a road; and nothing
+//                          height, or the kerb meets a road or ends where
+//                          a plain lane (a driveway) begins; and nothing
 //                          drawn lies over it, so its whole width shows
 //   __checkUprightsInKerb  no wall or parapet beside a kerb stands more than
 //                          2 cm out past the kerb's outer edge
@@ -139,7 +140,7 @@ window.__checkGaps = (all = false) => {
 // on is a gap or a fragment; one carried on off-line or at another height is
 // a step. And nothing of the road's surface lies over a kerb: where paving
 // or road lies over it, part of its width is hidden (a notch).
-window.__checkKerbLoops = (all = false, STEP = 0.02) => {
+window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
   const F = window.__finishIndex();
   const at = window.__flatIndex(SURFACE_KINDS);
   const pts = [];
@@ -218,7 +219,12 @@ window.__checkKerbLoops = (all = false, STEP = 0.02) => {
     // (Carried on by road, deck or more kerb just past its end, at its level.)
     const past = at(p.x + p.ox * 0.05, p.z + p.oz * 0.05);
     if (past.some((f) => Math.abs(f.h - p.y) <= 0.15 && (f.kind !== 'kerb' || Math.abs(f.h - p.y) <= STEP))) return;
-    pts.push({ what: past.some((f) => f.kind === 'kerb') ? 'kerb steps' : 'kerb stops on the verge', x: +p.x.toFixed(2), z: +p.z.toFixed(2), value: 0.1 });
+    // (Or it ends where a plain lane's edge begins, a driveway or a car
+    // park lane, which has no kerb: the street's kerb stops there, as a
+    // dropped kerb does. The user's choice, 14 Nov.)
+    const steps = past.some((f) => f.kind === 'kerb');
+    if (!steps && globalThis.__osm.plainRoadNear?.(p.x, p.z, PLAIN)) return;
+    pts.push({ what: steps ? 'kerb steps' : 'kerb stops on the verge', x: +p.x.toFixed(2), z: +p.z.toFixed(2), value: 0.1 });
   });
   const bad = F.places(pts, 2);
   return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm' };
