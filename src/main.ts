@@ -3,6 +3,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { buildUbinCourse } from './courses/ubin';
 import { buildEastCoastCourse } from './courses/eastcoast';
 import { buildPasirRisCourse } from './courses/osmcity';
+import { buildUbinTrailCourse } from './courses/ubintrail';
 import { skyTexture, type ArtStyle } from './courses/detail';
 import { Minimap } from './minimap';
 import { FullMap } from './fullmap';
@@ -22,6 +23,8 @@ const COURSES = {
   trial: ((scene, world, RAPIER, opts) =>
     buildPasirRisCourse(scene, world, RAPIER, { ...opts, map: 'maps/trial-ucre.json', name: 'Road trial: Upper Changi interchange', startAt: [1870, 1759] })) as typeof buildPasirRisCourse,
   eastcoast: buildEastCoastCourse,
+  // The first off-road trail: Pulau Ubin, round Ketam Quarry.
+  ubintrail: buildUbinTrailCourse,
   ubin: buildUbinCourse,
 } as const;
 type CourseId = keyof typeof COURSES;
@@ -379,10 +382,13 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       hudSurface.textContent = car.wheelsOnGround ? car.surface.name : 'Airborne';
       // Never a fail state: if the car sits stuck under throttle, offer a tip.
       stuckTime = Math.abs(car.speed) < 0.4 && Math.abs(controls.input.throttle) > 0.3 ? stuckTime + 0.1 : 0;
-      const tip = stuckTime > 3 ? (car.lowRange && car.diffLock ? 'Tip: back up and take a run at it, or tap ↺' : 'Tip: try LOW range and DIFF lock') : null;
+      // A trail coaches its own obstacles (and opens a way round after a few tries).
+      const coach = course.coach?.({ x: p.x, z: p.z, speed: car.speed, low: car.lowRange, diff: car.diffLock, stuck: stuckTime }) ?? null;
+      if (coach?.say) say(coach.say, 6);
+      const tip = coach?.tip ?? (stuckTime > 3 ? (car.lowRange && car.diffLock ? 'Tip: back up and take a run at it, or tap ↺' : 'Tip: try LOW range and DIFF lock') : null);
       toastTime -= 0.1;
       if (toastTime <= 0) toast = null;
-      const zone = tip ?? toast ?? course.zoneAt(p.x, p.z);
+      const zone = tip ?? toast ?? coach?.zone ?? course.zoneAt(p.x, p.z);
       // Camp button: shown when stopped inside a camp, or while camped.
       if (camps) {
         const spot = camps.at(p.x, p.z);
