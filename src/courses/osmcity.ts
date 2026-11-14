@@ -5479,7 +5479,14 @@ export async function buildPasirRisCourse(
       const end = k === cut.lo ? -1 : k === cut.hi ? 1 : 0;
       const j = end < 0 ? edges[i].a : edges[i].b;
       let ex = 0, ez = 0;
-      if (end && (jDegree[j] > 1 || (end < 0 ? cut.lo > 0 || JX.trimA[i] > 0 : cut.hi < P.length - 1 || JX.trimB[i] > 0))) {
+      // (Nor where all it meets there is of another level, a flyover's end
+      // and the ground road on from it: each level's outline is its own,
+      // and the two kerbs ran 10 cm on past each other there.)
+      const lv = (o: number) => lvlOf(o, edges[o].a === j ? 0 : EP[o].length - 2);
+      const mine = end < 0 ? lvlOf(i, 0) : lvlOf(i, EP[i].length - 2);
+      const others = end && jDegree[j] > 1 ? jEdges[j].filter((o) => o !== i && outlined[o]) : [];
+      const apart = others.length > 0 && (end < 0 ? cut.lo === 0 : cut.hi === P.length - 1) && others.every((o) => lv(o) !== mine);
+      if (end && !apart && (jDegree[j] > 1 || (end < 0 ? cut.lo > 0 || JX.trimA[i] > 0 : cut.hi < P.length - 1 || JX.trimB[i] > 0))) {
         const o = P[end < 0 ? k + 1 : k - 1];
         const l = Math.hypot(P[k][0] - o[0], P[k][1] - o[1]) || 1;
         ex = ((P[k][0] - o[0]) / l) * 0.05;
@@ -7274,6 +7281,9 @@ export async function buildPasirRisCourse(
       if (trim > 0 || jDegree[j] !== 2 || Math.hypot(p[0] - L[k === 0 ? 0 : L.length - 1][0], p[1] - L[k === 0 ? 0 : L.length - 1][1]) > 0.01) return 0;
       const o = jE[j].find((i) => i !== line);
       if (o === undefined) return 0;
+      // (Nor from a flyover's end on to the ground road, or back: each
+      // level's outline, kerb and wall end there, square across.)
+      if (oneLine && lvlOf(line, k === 0 ? 0 : L.length - 2) !== lvlOf(o, edges[o].a === j ? 0 : EP[o].length - 2)) return 0;
       // (band's offset direction at this end, from the first or last piece of the line.)
       const a = P[Math.min(k, kIn)], b = P[Math.max(k, kIn)];
       const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
