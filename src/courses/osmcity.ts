@@ -4112,13 +4112,52 @@ export async function buildPasirRisCourse(
               // road's wall to the other's: one wall, no fin standing at its
               // end. Each point's own drop: none where the island is up at
               // the roads' level.)
-              const NW = c.nose.map((p): XZ => {
+              // (And on from each end to where the road's own wall begins:
+              // its first point clear of the nose's paving, 0.45 m out from
+              // the road's edge. Ending 0.3 m in from the end of the nose's
+              // side, the two walls jogged 0.3 m sideways there, a step.)
+              const bandOut = (line: number | undefined, from: XZ): XZ | null => {
+                if (line === undefined) return null;
+                const P = EP[line];
+                let k = 0, best = Infinity;
+                P.forEach((p, q) => {
+                  const dd = Math.hypot(p[0] - from[0], p[1] - from[1]);
+                  if (dd < best) (best = dd), (k = q);
+                });
+                const away = (q: number) => Math.hypot(P[q][0] - c.C[0], P[q][1] - c.C[1]);
+                const dir = k + 1 < P.length && (k === 0 || away(k + 1) > away(k - 1)) ? 1 : -1;
+                for (let kk = k; kk >= 0 && kk < P.length && Math.abs(kk - k) <= 4; kk += dir) {
+                  const a = P[Math.max(0, kk - 1)], b = P[Math.min(P.length - 1, kk + 1)];
+                  const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+                  const nx = (b[1] - a[1]) / tl, nz = -(b[0] - a[0]) / tl;
+                  const sg = nx * (c.C[0] - P[kk][0]) + nz * (c.C[1] - P[kk][1]) > 0 ? 1 : -1;
+                  const h = halfAtE(line, kk) + 0.45;
+                  const o: XZ = [P[kk][0] + nx * sg * h, P[kk][1] + nz * sg * h];
+                  if (!inRingXZ(c.pave, o[0], o[1]) && !inGore(o[0], o[1])) return Math.hypot(o[0] - from[0], o[1] - from[1]) < 5 ? o : null;
+                }
+                return null;
+              };
+              const eA = bandOut(gores[id].A, c.nose[0]), eB = bandOut(gores[id].B, c.nose[c.nose.length - 1]);
+              const NP: XZ[] = [...(eA ? [eA] : []), ...c.nose, ...(eB ? [eB] : [])];
+              // (The ends of the nose's sides, on the roads' edges, out to
+              // that same line square to their road; round the point, 0.3 m
+              // in from it.)
+              const sq = (p: XZ, prev: XZ): XZ => {
+                const t = unit(p[0] - prev[0], p[1] - prev[1]);
+                const sg = -t[1] * (c.C[0] - p[0]) + t[0] * (c.C[1] - p[1]) > 0 ? 1 : -1;
+                return [p[0] - t[1] * sg * 0.45, p[1] + t[0] * sg * 0.45];
+              };
+              const nA = c.nose[0], nB = c.nose[c.nose.length - 1];
+              const NW = NP.map((p, q): XZ => {
+                if ((eA && q === 0) || (eB && q === NP.length - 1)) return p;
+                if (p === nA && eA) return sq(nA, c.sideA.length ? c.sideA[c.sideA.length - 1] : c.a);
+                if (p === nB && eB) return sq(nB, c.sideB.length ? c.sideB[c.sideB.length - 1] : c.b);
                 const u = unit(c.C[0] - p[0], c.C[1] - p[1]);
                 return [p[0] + u[0] * 0.3, p[1] + u[1] * 0.3];
               });
               const nc = NW.map((_, q) => (q ? 0 : 0));
               for (let q = 1; q < NW.length; q++) nc[q] = nc[q - 1] + Math.hypot(NW[q][0] - NW[q - 1][0], NW[q][1] - NW[q - 1][1]);
-              const ny = (q: number) => c.yAt(c.nose[q]) + 0.09;
+              const ny = (q: number) => c.yAt(NP[q]) + 0.09;
               const nd = NW.map((p, q) => ny(q) - heightAt(p[0], p[1]));
               band(deck, NW, nc, 0, NW.length - 1, 0, ny, (q) => Math.max(0, nd[q]) + 0.3, (q) => wallTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > WALL_FROM);
               band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, (q) => parapetTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > PARAPET_FROM);
