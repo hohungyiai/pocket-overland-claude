@@ -4578,7 +4578,16 @@ export async function buildPasirRisCourse(
           return !coveredBy(line, x, z, y) && !onIsland(x, z, y) && !inPaving(x, z, y);
         };
         const clear = clearOn(pts);
-        if (dy && !isDeck[line]) {
+        // (A flyover's piece still on its bank, under LOW_DECK over the
+        // ground, is traced with the ground's roads: it is drawn as a raised
+        // road is, not as a deck. With its edge beams, underside and full
+        // parapets, it stood round the nose where it leaves the road beside
+        // it, a grey slab over the grass.)
+        const low = (kk: number) => isDeck[line] && lvlOf(line, kk) < 0;
+        const raised = (kk: number) => !isDeck[line] || low(kk);
+        let anyLow = false;
+        if (dy && isDeck[line]) for (let kk = Math.min(lo, k0); kk < Math.max(hi, k1) && !anyLow; kk++) anyLow = low(kk);
+        if (dy && (!isDeck[line] || anyLow)) {
           // A raised road: where the ground beside it falls away (its bank
           // was cut short by a road below), a retaining wall, and a parapet
           // where the drop is more than a kerb.
@@ -4614,8 +4623,8 @@ export async function buildPasirRisCourse(
               return [P[kk][0] + ((b[1] - a[1]) / tl) * off(kk), P[kk][1] - ((b[0] - a[0]) / tl) * off(kk)];
             };
             const endOff = (kk: number) => inNose(...endAt(kk)) || inGore(...endAt(kk));
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]));
-            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)), ext(sgn));
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]));
+            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)), ext(sgn));
           }
         }
         if (dy && isDeck[line]) {
@@ -4630,10 +4639,19 @@ export async function buildPasirRisCourse(
           const y = (kk: number) => dy[kk] + 0.09;
           const ext = runsOn(line, pts);
           for (const sgn of [-1, 1]) {
-            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0, () => true, ext(sgn));
-            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, 0.95, (kk) => parapetClear(line, kk, side(sgn)(kk)), ext(sgn));
+            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0, (kk) => !low(kk), ext(sgn));
+            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, 0.95, (kk) => !low(kk) && parapetClear(line, kk, side(sgn)(kk)), ext(sgn));
           }
-          strip(deck, pts, cum, k0, k1, (kk) => halfAt(kk) + 0.45, 0.09 - depth, { yAt });
+          for (let a = k0; a < k1; ) {
+            if (low(a)) {
+              a++;
+              continue;
+            }
+            let b = a;
+            while (b < k1 && !low(b)) b++;
+            strip(deck, pts, cum, a, b, (kk) => halfAt(kk) + 0.45, 0.09 - depth, { yAt });
+            a = b;
+          }
         }
         // (The through road's lines run right up to the junction's edge,
         // where they carry on across it.)
@@ -4811,7 +4829,7 @@ export async function buildPasirRisCourse(
             if (coveredBy(line, mx + dz * sgn * 0.6, mz - dx * sgn * 0.6, y) || !parapetClear(line, kk, sgn * (halfAtE(line, kk) + halfAtE(line, kk + 1)) / 2 + sgn * 0.45)) continue;
             // A raised road only needs one where its side drops away: as
             // tall as the parapet drawn there (it ramps up with the drop).
-            const ph = isDeck[line] ? PARAPET_H : parapetTop(y - heightAt(mx + dz * sgn * 0.6, mz - dx * sgn * 0.6));
+            const ph = isDeck[line] && lvlOf(line, kk) >= 0 ? PARAPET_H : parapetTop(y - heightAt(mx + dz * sgn * 0.6, mz - dx * sgn * 0.6));
             if (ph < 0.3) continue;
             world.createCollider(
               RAPIER.ColliderDesc.cuboid(sl / 2 + 0.15, ph / 2 + 0.125, 0.25)
