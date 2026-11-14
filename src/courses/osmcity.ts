@@ -5741,8 +5741,9 @@ export async function buildPasirRisCourse(
   // first the outline itself, then its sides a share at a time, asked
   // every 4 m or so along each, then the kerbs and lines drawn.)
   type OutRing = { P: XZ[]; cum: number[]; n: number; drawn: boolean[]; corner: XZ[]; edge: number[]; at: number[]; samples: (OutMark | null)[][]; hole: boolean; lvl: number };
-  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[]; drawW: number[] }>();
+  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[]; drawW: number[]; linePart?: number[] }>();
   const OUT_PARTS = 6;
+  const OUT_LINES = 3;
   const OUT_DRAW = 6;
   /** How many places along a side of the outline are asked (one every 4 m or so). */
   const sidePlaces = (a: XZ, b: XZ) => Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
@@ -5790,10 +5791,23 @@ export async function buildPasirRisCourse(
             R.samples[e][j] = outlineMarks(a, b, lerp(a[0], b[0], t), lerp(a[1], b[1], t), R.hole, R.lvl);
           }
         });
+      // (Its lines worked out a share of its rings at a time, shared out by their points.)
+      for (let lp = 0; lp < OUT_LINES; lp++)
       onTile('far', k, 'outline lines', () => {
         const w = outWork.get(k);
         if (!w) return;
-        for (const { P, cum, n, drawn: drawnP, edge, at, samples, hole, lvl } of w.rings) {
+        if (!w.linePart) {
+          const load = new Array(OUT_LINES).fill(0);
+          w.linePart = [];
+          const order = w.rings.map((r, i) => [r.n, i]).sort((a, b) => b[0] - a[0]);
+          for (const [nn, i] of order) {
+            const q = load.indexOf(Math.min(...load));
+            w.linePart[i] = q;
+            load[q] += nn;
+          }
+        }
+        for (const [ri, { P, cum, n, drawn: drawnP, edge, at, samples, hole, lvl }] of w.rings.entries()) {
+          if (w.linePart[ri] !== lp) continue;
           // (By the ring's own pieces: piece q runs from point q to q + 1, round.)
           const R = P.slice(1, n + 1);
           const nx = (q: number) => (q + 1) % n;
@@ -5941,6 +5955,7 @@ export async function buildPasirRisCourse(
           const Q2: XZ[] = [];
           const of2: number[] = [];
           const at2: number[] = [];
+          let endY: [number, OutMark | null, number] | null = null;
           for (let j = 0; j < Q.length; j++) {
             at2.push(Q2.length);
             Q2.push(Q[j]);
@@ -5948,11 +5963,26 @@ export async function buildPasirRisCourse(
             if (j === Q.length - 1) break;
             const mm = mk(j);
             const L = qc[j + 1] - qc[j];
-            if (!mm || mm.flat || L < 1.5) continue;
-            const cnt = Math.ceil(L);
+            if (!mm || L < 0.75) continue;
             let near = false;
-            for (let c = 0; c <= cnt && !near; c += Math.max(1, cnt >> 1)) near = nearJoint(lerp(Q[j][0], Q[j + 1][0], c / cnt), lerp(Q[j][1], Q[j + 1][1], c / cnt), mm);
+            if (!mm.flat && L >= 1.5) {
+              const n1 = Math.ceil(L);
+              for (let c = 0; c <= n1 && !near; c += Math.max(1, n1 >> 1)) near = nearJoint(lerp(Q[j][0], Q[j + 1][0], c / n1), lerp(Q[j][1], Q[j + 1][1], c / n1), mm);
+            }
+            // (And wherever the surface under the line is not straight
+            // between the piece's ends: a kink in the road, another road's
+            // edge merging, the ground dipping under a strip laid straight
+            // across it. The line straight between them lay under it.)
+            if (!near) {
+              const s0 = section(Q, j, 0, Q.length - 1, undefined, true), s1 = section(Q, j + 1, 0, Q.length - 1, undefined, true);
+              const yAtT = (t: number) => yOn(mm, lerp(Q[j][0], Q[j + 1][0], t) + lerp(s0.nx, s1.nx, t) * 0.35, lerp(Q[j][1], Q[j + 1][1], t) + lerp(s0.nz, s1.nz, t) * 0.35, true);
+              // (The piece's start as the last piece's end had it, by the same mark.)
+              const ya = endY && endY[0] === j && endY[1] === mm ? endY[2] : yAtT(0), yb = yAtT(1);
+              endY = [j + 1, mm, yb];
+              near = ya === ya && yb === yb && [0.5, ...(L > 1 ? [0.25, 0.75] : [])].some((t) => yAtT(t) - lerp(ya, yb, t) > 0.001);
+            }
             if (!near) continue;
+            const cnt = Math.ceil(L / 0.5);
             for (let c = 1; c < cnt; c++) {
               Q2.push([lerp(Q[j][0], Q[j + 1][0], c / cnt), lerp(Q[j][1], Q[j + 1][1], c / cnt)]);
               of2.push(j);
@@ -6005,20 +6035,7 @@ export async function buildPasirRisCourse(
               };
               const isKerb = (j: number) => !!mk(j)?.kerb, isLine = (j: number) => !!mk(j)?.line;
               runs(Q, J0, J1, (a) => a, isKerb, (lo, hi, a, b) => strip(kerb, Q, qc, a, b, 0.25, 0.07, { lo, hi, off: -0.1, yAt: (j) => hK[j], bisect: true }));
-              // (A line on whatever is drawn under it at every half metre, by the
-              // mark of its nearest point: between two of its points it may
-              // pass over a kink in the road, or onto the edge of another
-              // road merging with it.)
-              const lineY = (a: number, b: number) => (x: number, z: number) => {
-                let best = Infinity, bv = a;
-                for (let v = a; v <= b; v++) {
-                  const d = (Q2[v][0] - x) ** 2 + (Q2[v][1] - z) ** 2;
-                  if (d < best) (best = d), (bv = v);
-                }
-                const mm = markAt(of2[Math.min(bv, b - 1)]);
-                return mm ? yOn(mm, x, z, true) : NaN;
-              };
-              runs(Q2, j0, j1, (a) => of2[a], isLine, (lo, hi, a, b) => strip(yellow, Q2, qc2, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true, sub: 0.5, yXZ: lineY(a, b) }));
+              runs(Q2, j0, j1, (a) => of2[a], isLine, (lo, hi, a, b) => strip(yellow, Q2, qc2, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true }));
             });
             j0 = j1;
           }
