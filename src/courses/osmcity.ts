@@ -3146,7 +3146,9 @@ export async function buildPasirRisCourse(
     acc.pos.push(x, yc, z);
     acc.uv.push(0, 0);
     // (Two rings, so a pad draped on a slope follows it closely.)
-    const n = 16;
+    // (A point every 15°: a dead end's round end is the outline's, its
+    // kerb round it.)
+    const n = 24;
     for (const f of [0.5, 1])
       for (let i = 0; i < n; i++) {
         const a = (i / n) * Math.PI * 2;
@@ -5407,6 +5409,16 @@ export async function buildPasirRisCourse(
         }
     });
     JPOLY.forEach((sh, id) => rings.push([sh.ring, jLvl(id)]));
+    // (A dead end's round pad: its turning circle is the road's end, the
+    // kerb running round it. Left out, the outline ended square across the
+    // road and the pad lay past the kerb, the kerb hidden under it.)
+    for (const all of padsByTile.values())
+      for (const j of all) {
+        if (jDegree[j] !== 1 || !outlined[jEdges[j][0]]) continue;
+        const { x, z, r, ring } = padShape(j);
+        if (ring) continue;
+        rings.push([Array.from({ length: 24 }, (_, q): XZ => [x + Math.cos((q / 24) * Math.PI * 2) * r, z + Math.sin((q / 24) * Math.PI * 2) * r]), -1]);
+      }
     gores.forEach((g, id) => {
       // (With its noses: the island's rounded point is the outline's.)
       const caps = oneLine ? goreCaps(id) : [];
@@ -5445,6 +5457,35 @@ export async function buildPasirRisCourse(
    */
   const smoothRing = (r: Path64) => {
     const d = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+    // Knots: three or more points all within 15 cm of the first, where
+    // two pieces' corners miss each other by a hair several ways at once
+    // (a W of four sides in 10 cm at a road's bend). One point, their
+    // middle: the kerb round them, 0.35 m wide, folded over itself there
+    // and stood out as an arrowhead.
+    const KNOT = 0.15 * OUT_S;
+    for (let again = true; again && r.length > 5; ) {
+      again = false;
+      const n = r.length;
+      for (let i = 0; i < n && !again; i++) {
+        let e = i;
+        while (e - i < n - 4 && d(r[i], r[(e + 1) % n]) < KNOT) e++;
+        if (e - i < 2) continue;
+        let sx = 0, sy = 0;
+        for (let v = i; v <= e; v++) (sx += r[v % n].x), (sy += r[v % n].y);
+        const mid = new Point64(Math.round(sx / (e - i + 1)), Math.round(sy / (e - i + 1)));
+        const keep: typeof r[number][] = [];
+        for (let v = 0; v < n; v++) {
+          const inK = e < n ? v >= i && v <= e : v >= i || v <= e - n;
+          if (!inK) keep.push(r[v]);
+          else if (v === i) keep.push(mid);
+        }
+        // (Wrapped round the ring's start: the middle stands where its first point was.)
+        if (e >= n && !keep.includes(mid)) keep.unshift(mid);
+        r.length = 0;
+        r.push(...keep);
+        again = true;
+      }
+    }
     // Nicks: a side under 0.25 m at a corner, where a road's end and a
     // junction's mouth miss each other by a hair (a nose's corner). Its
     // two sides either side run on to meet; a kerb or line turning there
@@ -5967,14 +6008,18 @@ export async function buildPasirRisCourse(
     // across the road it meets took the far side's kerb away.)
     const offEnd = (i: number, h: { seg: number; u: number }) => (h.seg === 0 && h.u <= 0 && jDegree[edges[i].a] >= 2) || (h.seg === EP[i].length - 2 && h.u >= 1 && jDegree[edges[i].b] >= 2);
     const r = edgeRoadOf(new Map([...near].filter(([i, h]) => !offEnd(i, h))), (i) => !JX.internal[i]) ?? edgeRoadOf(near, (i) => !JX.internal[i]);
-    // (Across a road's very end, where it stops at the map's edge or a dead end: no kerb, no line.
+    // (Round a road's very end, where it stops at the map's edge or a dead
+    // end: its kerb runs on round the end, and on a lined road its edge
+    // line with it, as round an island. The kerb is one closed loop; with
+    // none across the end, each side's kerb stopped on the verge.
     // Not where another road carries on from it: a step there between the two is no end.)
-    if (r && r.past < 0.1) {
+    if (r) {
       const s = lerp(ECUM[r.i][r.seg], ECUM[r.i][r.seg + 1], r.u);
       const endJ = s < ELEN[r.i] / 2 ? edges[r.i].a : edges[r.i].b;
-      const pa = EP[r.i][r.seg], pb = EP[r.i][r.seg + 1];
-      const dl = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) || 1;
-      if ((s < 0.5 || s > ELEN[r.i] - 0.5) && jDegree[endJ] <= 1 && Math.abs((tx * (pb[0] - pa[0]) + tz * (pb[1] - pa[1])) / dl) < 0.5) return { ...base, kerb: false, line: false, stop: true, why: 'road end' };
+      if ((s < 0.5 || s > ELEN[r.i] - 0.5) && jDegree[endJ] <= 1) {
+        const kb = kerbedRoad(edges[r.i]) || hasProfile[r.i];
+        return { ...base, kerb: kb, line: kb && outlined[r.i] && rankOf(edges[r.i].cls) >= 2, stop: false, why: 'road end', lr: r.i, ls: r.seg };
+      }
     }
     // (Where a deck carries on from it: the deck's own kerbs and lines.)
     // (And where a flyover's end lands on the ground: the ground's.)
@@ -5996,7 +6041,13 @@ export async function buildPasirRisCourse(
     // kerb once ran: an edge line along a kerbed road keeps its kerb there.)
     const kerbAlong = kerb;
     if (jointSide !== undefined) {
-      if (kerb) kerb = JPOLY[jointSide].kerbs.some((F) => F.some((p, w) => w > 0 && segDist(F[w - 1], p, mx, mz) < 0.6));
+      // (On a redrawn map the kerb is one closed loop: round a joint's
+      // corner beside a kerbed road it runs on, wherever the junction's own
+      // kerb lines lie. Asked of those alone, a corner the tidied outline
+      // rounds off more than 0.6 m from them, or one they leave out, had
+      // none, and the kerbs either side stopped on the verge.)
+      const jk = JPOLY[jointSide].kerbs.some((F) => F.some((p, w) => w > 0 && segDist(F[w - 1], p, mx, mz) < 0.6));
+      kerb = oneLine ? kerb || jk : kerb && jk;
       why += ` joint ${jointSide}`;
     }
     // An edge line: where the outline runs along a lined road's edge.
