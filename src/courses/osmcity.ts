@@ -5296,16 +5296,41 @@ export async function buildPasirRisCourse(
     }
     edges.forEach((_, i) => isDeck[i] && (deckGrp[i] = find(i)));
   }
-  /** The level a road's surface is traced in: -1 the ground, else its flyover. */
-  const lvlOf = (i: number) => deckGrp[i];
-  /** Road i's drawn surface as a polygon: its two sides from mouth to mouth, as the road's strip draws them. */
-  const surfacePoly = (i: number): XZ[] => {
+  /**
+   * Which points of a flyover are down on the ground: where it has come down
+   * onto its bank, beside the roads on the ground there, or its foot. It is
+   * traced with the ground's outline there, not apart as the flyover's own.
+   * (A flyover link that came down beside another road on the same bank was
+   * traced apart from it all the way: where the two parted, grass showed in
+   * a crack between them, and neither had a kerb round the end of it.)
+   */
+  const LOW_DECK = 1.5;
+  const deckLowOf = new Map<number, Uint8Array>();
+  const deckLow = (i: number) => {
+    let L = deckLowOf.get(i);
+    if (L) return L;
+    const P = EP[i], dy = deckY(i);
+    L = Uint8Array.from(P, (p, k) => +(dy[k] - heightAt(p[0], p[1]) < LOW_DECK));
+    deckLowOf.set(i, L);
+    return L;
+  };
+  /** The level piece seg of road i is traced in: -1 the ground, else its flyover. */
+  const lvlOf = (i: number, seg: number) => {
+    if (deckGrp[i] < 0) return -1;
+    const L = deckLow(i);
+    const s = Math.max(0, Math.min(L.length - 2, seg));
+    return L[s] && L[s + 1] ? -1 : deckGrp[i];
+  };
+  /** Is road i, about piece seg, traced in level lvl? (Either side of where its level changes, both: the outline's corner there is each's.) */
+  const onLvl = (i: number, seg: number, lvl: number) => lvlOf(i, seg) === lvl || (deckGrp[i] >= 0 && (lvlOf(i, seg - 1) === lvl || lvlOf(i, seg + 1) === lvl));
+  /** Road i's drawn surface as a polygon: its two sides from mouth to mouth (or from k0 to k1), as the road's strip draws them. */
+  const surfacePoly = (i: number, k0 = -1, k1 = -1): XZ[] => {
     const cut = cutOf(i);
     const P = cut.pts;
     const join = joinOf(i);
     const L: XZ[] = [];
     const R: XZ[] = [];
-    for (let k = cut.lo; k <= cut.hi; k++) {
+    for (let k = k0 < 0 ? cut.lo : k0; k <= (k1 < 0 ? cut.hi : k1); k++) {
       const { nx, nz, mm } = section(P, k, cut.lo, cut.hi, join);
       const h = halfAtE(i, k) * mm;
       // (Each end 5 cm on into whatever it meets, the next road or a
@@ -5333,19 +5358,32 @@ export async function buildPasirRisCourse(
     const fill = id < JX.shapes.length ? undefined : JX.fills[id - JX.shapes.length];
     const es = (fill ? (fill.tee !== undefined ? [fill.tee] : []) : JX.shapes[id].nodes).flatMap((j) => jE[j]);
     const d = es.find((i) => isDeck[i]);
-    return d === undefined ? -1 : lvlOf(d);
+    if (d === undefined) return -1;
+    const ends = fill ? (fill.tee !== undefined ? [fill.tee] : []) : JX.shapes[id].nodes;
+    return lvlOf(d, ends.includes(edges[d].a) ? 0 : EP[d].length - 2);
   };
   /** A gore's level: the ground, or the flyover whose deck lies nearest its first row. */
   const goreLvl = (g: (typeof gores)[number]) => {
     if (g.deck <= 0) return -1;
     const r = g.rows[0];
     const hit = roads.nearest((r.a[0] + r.b[0]) / 2, (r.a[1] + r.b[1]) / 2, 30, (i) => isDeck[i]);
-    return hit ? lvlOf(hit.line) : -1;
+    return hit ? lvlOf(hit.line, hit.seg) : -1;
   };
   const outSources = () => {
     if (outSrcs) return outSrcs;
     const rings: [XZ[], number][] = [];
-    edges.forEach((_, i) => outlined[i] && rings.push([surfacePoly(i), lvlOf(i)]));
+    edges.forEach((_, i) => {
+      if (!outlined[i]) return;
+      if (deckGrp[i] < 0) return rings.push([surfacePoly(i), -1]);
+      // (A flyover a piece at a time: the ground's where it is down on it.)
+      const { lo, hi } = cutOf(i);
+      let k0 = lo;
+      for (let k = lo; k < hi; k++)
+        if (k + 1 === hi || lvlOf(i, k + 1) !== lvlOf(i, k)) {
+          rings.push([surfacePoly(i, k0, k + 1), lvlOf(i, k)]);
+          k0 = k + 1;
+        }
+    });
     JPOLY.forEach((sh, id) => rings.push([sh.ring, jLvl(id)]));
     gores.forEach((g, id) => {
       // (With its noses: the island's rounded point is the outline's.)
@@ -5513,6 +5551,151 @@ export async function buildPasirRisCourse(
       }
     }
   };
+  /**
+   * Every sharp point of grass in the outline rounded, as an island's nose
+   * is: a circle NOSE_R round (less where its sides are short), a point every
+   * 15 deg. (Where two roads part with no island drawn between them, the
+   * outline met in a bare V: its kerb and line ran into a spike.) The
+   * ground cut back from the point is paved: its piece goes in cuts.
+   * (Paved by the outline's sources but by no road drawn there, it showed
+   * as bare ground where the kerb had run out to the point.)
+   * Clipper's rings have the paving on their left, so a point of grass is
+   * where the outline turns right.
+   */
+  const roundTips = (r: Path64, cuts: Path64[]) => {
+    const TIP = (100 * Math.PI) / 180;
+    const STEP = (15 * Math.PI) / 180;
+    type P = (typeof r)[number];
+    const dist = (p: { x: number; y: number }, q: { x: number; y: number }) => Math.hypot(p.x - q.x, p.y - q.y);
+    for (let b = 0; b < r.length && r.length > 6; b++) {
+      const n = r.length;
+      const at = (k: number) => r[(((b + k) % n) + n) % n];
+      /** How far the outline turns right (into the grass) at k from b, in radians; negative turning left. */
+      const right = (k: number) => {
+        const A = at(k - 1), B = at(k), C = at(k + 1);
+        const ux = B.x - A.x, uy = B.y - A.y, wx = C.x - B.x, wy = C.y - B.y;
+        if (Math.hypot(ux, uy) < 1 || Math.hypot(wx, wy) < 1) return 0;
+        return -Math.atan2(ux * wy - uy * wx, ux * wx + uy * wy);
+      };
+      if (right(0) <= TIP) continue;
+      // (The point and the bends in the grass's favour beside it, within
+      // 3 m: one nose, rounded as one.)
+      let ka = 0, kc = 0;
+      while (ka < 6 && right(-ka - 1) >= (10 * Math.PI) / 180 && dist(at(-ka - 1), at(0)) < 3 * OUT_S) ka++;
+      while (kc < 6 && right(kc + 1) >= (10 * Math.PI) / 180 && dist(at(kc + 1), at(0)) < 3 * OUT_S) kc++;
+      // (Each side's line: from the nose's last point out 1.5 m or more, past short pieces.)
+      let fa = ka + 1, fc = kc + 1;
+      while (fa < Math.min(24, n / 2 - 1) && dist(at(-fa), at(-ka)) < 1.5 * OUT_S) fa++;
+      while (fc < Math.min(24, n / 2 - 1) && dist(at(fc), at(kc)) < 1.5 * OUT_S) fc++;
+      const SA = at(-ka), FA = at(-fa), SC = at(kc), FC = at(fc);
+      const la = dist(SA, FA) || 1, lc = dist(SC, FC) || 1;
+      const ux = (FA.x - SA.x) / la, uy = (FA.y - SA.y) / la, wx = (FC.x - SC.x) / lc, wy = (FC.y - SC.y) / lc;
+      // (A blunt end, its sides near parallel or its corners turning more
+      // than a half turn between them: a half circle across it, set back
+      // till it lies wholly in the grass, the island as wide as there.)
+      let total = 0;
+      for (let k = -ka; k <= kc; k++) total += right(k);
+      const blunt = (): boolean => {
+        let mx = ux + wx, my = uy + wy;
+        const ml = Math.hypot(mx, my);
+        if (ml < 1e-3) return false;
+        mx /= ml;
+        my /= ml;
+        const du = ux * mx + uy * my, dw = wx * mx + wy * my;
+        if (du < 0.3 || dw < 0.3) return false;
+        const dot = (p: { x: number; y: number }) => p.x * mx + p.y * my;
+        let deep = -Infinity;
+        for (let k = -ka; k <= kc; k++) deep = Math.max(deep, dot(at(k)));
+        const feet = (sc: number) => {
+          const t1 = (sc - dot(SA)) / du, t2 = (sc - dot(SC)) / dw;
+          return { t1, t2, f1: { x: SA.x + ux * t1, y: SA.y + uy * t1 }, f2: { x: SC.x + wx * t2, y: SC.y + wy * t2 } };
+        };
+        let sc = deep;
+        for (let it = 0; it < 3; it++) sc = deep + dist(feet(sc).f1, feet(sc).f2) / 2;
+        const { t1, t2, f1, f2 } = feet(sc);
+        if (t1 < 0 || t2 < 0 || t1 > 0.9 * la || t2 > 0.9 * lc) return false;
+        const cx = (f1.x + f2.x) / 2, cy = (f1.y + f2.y) / 2;
+        const R = dist(f1, f2) / 2;
+        if (R < 0.2 * OUT_S || R > 3 * OUT_S) return false;
+        const a0 = Math.atan2(f1.y - cy, f1.x - cx), a1 = Math.atan2(f2.y - cy, f2.x - cx);
+        // (Round by the front: the way from f1 that turns toward -m.)
+        const sg = (f1.x - cx) * -my - (f1.y - cy) * -mx > 0 ? 1 : -1;
+        let da = (a1 - a0) * sg;
+        while (da <= 0) da += 2 * Math.PI;
+        while (da > 2 * Math.PI) da -= 2 * Math.PI;
+        da *= sg;
+        const m = Math.max(2, Math.ceil(Math.abs(da) / STEP));
+        const arc: P[] = [];
+        for (let q = 0; q <= m; q++) arc.push(new Point64(Math.round(cx + R * Math.cos(a0 + (da * q) / m)), Math.round(cy + R * Math.sin(a0 + (da * q) / m))));
+        const gone = new Set<number>();
+        const piece = new Path64();
+        piece.push(new Point64(arc[0].x, arc[0].y));
+        for (let k = -fa + 1; k < fc; k++) {
+          if ((k < -ka || k > kc) && dot(at(k)) >= sc) return false;
+          gone.add((((b + k) % n) + n) % n);
+          piece.push(new Point64(at(k).x, at(k).y));
+        }
+        for (let q = arc.length - 1; q >= 0; q--) piece.push(new Point64(arc[q].x, arc[q].y));
+        cuts.push(piece);
+        const keep: P[] = [];
+        for (let q = 0; q < n; q++) {
+          if (q === b) keep.push(...arc);
+          else if (!gone.has(q)) keep.push(r[q]);
+        }
+        r.length = 0;
+        r.push(...keep);
+        b = keep.indexOf(arc[arc.length - 1]);
+        return true;
+      };
+      if (total >= (160 * Math.PI) / 180 && blunt()) continue;
+      // (Where the two lines meet: the point the nose rounds.)
+      const den = ux * wy - uy * wx;
+      if (Math.abs(den) < 1e-6) continue;
+      const s1 = ((SC.x - SA.x) * wy - (SC.y - SA.y) * wx) / den;
+      const s2 = ((SC.x - SA.x) * uy - (SC.y - SA.y) * ux) / den;
+      // (Behind both nose ends: SA = T + u * -s1.)
+      if (s1 > 1 || s2 > 1) continue;
+      const T = { x: SA.x + ux * s1, y: SA.y + uy * s1 };
+      const phi = Math.acos(Math.max(-1, Math.min(1, ux * wx + uy * wy)));
+      if (Math.PI - phi <= TIP || phi < 1e-3) continue;
+      const tan = Math.tan(phi / 2);
+      const reach = Math.max(dist(T, SA), dist(T, SC));
+      const t = Math.min(Math.max((NOSE_R * OUT_S) / tan, reach + 1), 0.9 * Math.min(dist(T, FA), dist(T, FC)));
+      if (t < reach) continue;
+      const R = t * tan;
+      if (R < 0.02 * OUT_S) continue;
+      const bx = ux + wx, by = uy + wy, bl = Math.hypot(bx, by) || 1;
+      const ox = T.x + (bx / bl) * (R / Math.sin(phi / 2)), oy = T.y + (by / bl) * (R / Math.sin(phi / 2));
+      const a0 = Math.atan2(T.y + uy * t - oy, T.x + ux * t - ox);
+      let da = Math.atan2(T.y + wy * t - oy, T.x + wx * t - ox) - a0;
+      // (The short way round, past the point.)
+      while (da > Math.PI) da -= 2 * Math.PI;
+      while (da < -Math.PI) da += 2 * Math.PI;
+      const m = Math.max(2, Math.ceil(Math.abs(da) / STEP));
+      const arc: P[] = [];
+      for (let q = 0; q <= m; q++) arc.push(new Point64(Math.round(ox + R * Math.cos(a0 + (da * q) / m)), Math.round(oy + R * Math.sin(a0 + (da * q) / m))));
+      // (The points between, that the circle cuts off, give way to it; the
+      // ground between them and it is paved.)
+      const gone = new Set<number>();
+      const piece = new Path64();
+      piece.push(new Point64(arc[0].x, arc[0].y));
+      for (let k = -fa + 1; k < fc; k++) {
+        if ((k < -ka || k > kc) && dist(at(k), T) >= t) continue;
+        gone.add((((b + k) % n) + n) % n);
+        piece.push(new Point64(at(k).x, at(k).y));
+      }
+      for (let q = arc.length - 1; q >= 0; q--) piece.push(new Point64(arc[q].x, arc[q].y));
+      cuts.push(piece);
+      const keep: P[] = [];
+      for (let q = 0; q < n; q++) {
+        if (q === b) keep.push(...arc);
+        else if (!gone.has(q)) keep.push(r[q]);
+      }
+      r.length = 0;
+      r.push(...keep);
+      b = keep.indexOf(arc[arc.length - 1]);
+    }
+  };
   const outlineRings = (ix: number, iz: number) => {
     const M = 30;
     const bx0 = ix * TILE - M, bz0 = iz * TILE - M, bx1 = (ix + 1) * TILE + M, bz1 = (iz + 1) * TILE + M;
@@ -5538,6 +5721,7 @@ export async function buildPasirRisCourse(
       U0.push(c);
     }
     const kept = new Paths64();
+    const tipCuts: Path64[] = [];
     for (const r of U) {
       // (Slivers and specks, where two pieces of paving all but touch: no surface.)
       if (Math.abs(Clipper.area(r)) < 1e6) continue;
@@ -5558,6 +5742,7 @@ export async function buildPasirRisCourse(
         }
       }
       smoothRing(r);
+      roundTips(r, tipCuts);
       // (Nor a sliver, paved or not, where two pieces of paving all but
       // meet: under 0.6 m wide on average, area against length round.)
       let round = 0;
@@ -5608,7 +5793,7 @@ export async function buildPasirRisCourse(
           // (The paving on the left, the hole on the right: x east, z south.)
           const x = (a[0] + b[0]) / 2 - ((b[1] - a[1]) / l) * 0.3, z = (a[1] + b[1]) / 2 + ((b[0] - a[0]) / l) * 0.3;
           if (!inRingXZ(corner, x, z)) continue;
-          const near: Near = new Map([...nearRoads(x, z)].filter(([i]) => lvlOf(i) === lvl));
+          const near: Near = new Map([...nearRoads(x, z)].filter(([i, h]) => onLvl(i, h.seg, lvl)));
           const r = edgeRoadOf(near, (i) => !JX.internal[i]);
           if (r && r.past < -0.1) paved = true;
         }
@@ -5622,7 +5807,7 @@ export async function buildPasirRisCourse(
     // Its kerb runs across it, so it is paved over, a few millimetres under
     // the roads about it: left as it was, the ground showed through the
     // road there, a sliver of grass up to half a metre wide.)
-    for (const f of Clipper.Difference(kept, U0, FillRule.NonZero)) {
+    for (const f of [...Clipper.Difference(kept, U0, FillRule.NonZero), ...tipCuts]) {
       if (Math.abs(Clipper.area(f)) < 1e3) continue;
       const corner = f.map((q): XZ => [q.x / OUT_S, q.y / OUT_S]);
       out.push({ pts: corner, corner, edge: [], at: [], hole: true, lvl, fill: true });
@@ -5678,7 +5863,7 @@ export async function buildPasirRisCourse(
     const g = y === y ? y : dropAt(x, z);
     let hit = false;
     roads.each(x, z, 16, (i, seg, u, d) => {
-      if (hit || !isDeck[i] || d > drawnHalf(i, seg, u) + 0.05) return;
+      if (hit || lvlOf(i, seg) < 0 || d > drawnHalf(i, seg, u) + 0.05) return;
       hit = Math.abs(deckAtHit(i, seg, u) - g) < 1.5;
     });
     if (hit) return true;
@@ -5690,7 +5875,7 @@ export async function buildPasirRisCourse(
     if (y !== y) return false;
     let hit = false;
     roads.each(x, z, 16, (i, seg, u, d) => {
-      if (hit || lvlOf(i) === lvl || !outlined[i] || d > drawnHalf(i, seg, u) + 0.05) return;
+      if (hit || lvlOf(i, seg) === lvl || !outlined[i] || d > drawnHalf(i, seg, u) + 0.05) return;
       hit = Math.abs((hasProfile[i] ? deckAtHit(i, seg, u) : dropAt(x, z)) - y) < 1.5;
     });
     return hit || jointsNear(x, z).some((q) => jLvlM(q) !== lvl && inRingXZ(JPOLY[q].ring, x, z) && Math.abs(jTop(q, x, z) - y) < 1.5);
@@ -5716,7 +5901,7 @@ export async function buildPasirRisCourse(
     const nx = tz, nz = -tx;
     // (The roads of this outline's own level: the ground's, or this flyover's.)
     const all = nearRoads(mx, mz);
-    const near: Near = new Map([...all].filter(([i]) => lvlOf(i) === lvl));
+    const near: Near = new Map([...all].filter(([i, h]) => onLvl(i, h.seg, lvl)));
     const flat = lvl < 0 && flatNear(mx, mz, near);
     const joint = flat ? -1 : jointsNear(mx, mz).find((q) => (lvl < 0 ? jDeck(q) === 0 : jLvlM(q) === lvl) && ringDist(JPOLY[q].ring, mx, mz)[0] < 0.3) ?? -1;
     const under = edgeRoadOf(near, () => true);
@@ -5961,7 +6146,7 @@ export async function buildPasirRisCourse(
       if (!onTop) return NaN;
       let y = NaN;
       roads.each(x, z, 12, (o, seg, u, d) => {
-        if (lvlOf(o) !== m.lvl || !outlined[o] || JX.internal[o] || d > drawnHalf(o, seg, u) + 0.4) return;
+        if (!onLvl(o, seg, m.lvl) || !outlined[o] || JX.internal[o] || d > drawnHalf(o, seg, u) + 0.4) return;
         const h = stripTop(o, x, z, seg - 2, seg + 2);
         if (stripOut < 0.02 && (y !== y || h > y)) y = h;
       });
@@ -5990,7 +6175,7 @@ export async function buildPasirRisCourse(
     // (A road laid on the ground too, an edge line on its strip: where it
     // lies over the ground between its corners, or over the paving.)
     roads.each(x, z, 12, (o, seg, u, d) => {
-      if ((o === m.road && m.joint < 0) || (!hasProfile[o] && !onTop) || JX.internal[o] || lvlOf(o) !== m.lvl || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
+      if ((o === m.road && m.joint < 0) || (!hasProfile[o] && !onTop) || JX.internal[o] || !onLvl(o, seg, m.lvl) || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
       let h: number;
       if (hasProfile[o]) h = at(o, seg, seg);
       else {
@@ -6033,6 +6218,41 @@ export async function buildPasirRisCourse(
   // (Ground inside the outline that no piece paves (see outlineRings), or
   // a hole no kerb runs round: paved over, a few millimetres under the
   // roads about it.)
+  /** The height a paving fill is laid at, at (x, z) of level lvl (without the road's lift; NaN: the ground's). */
+  const fillY = (x: number, z: number, lvl: number) => {
+    const near: Near = new Map([...nearRoads(x, z)].filter(([i, h]) => onLvl(i, h.seg, lvl)));
+    let y = outlineY(x, z, near, lvl);
+    // (As high as the surface drawn nearest it, the road's strip, a
+    // joint's or a nose's paving, and a little under that: it shows only
+    // where nothing else is drawn. Between two roads at different heights
+    // the outline's own height, or the other road's, stood it over the
+    // edge line laid on the nearer.)
+    // (Where a lower road lies within 1.5 m, toward it by up to 10 cm: the
+    // fill lies flat between its points, and an edge line round a nose
+    // between two roads at different heights runs on from one's to the
+    // other's over it.)
+    let best = 0.6, low = Infinity;
+    roads.each(x, z, 12, (o, seg, u, d) => {
+      const out = d - drawnHalf(o, seg, u);
+      if (JX.internal[o] || !onLvl(o, seg, lvl) || !outlined[o] || out > 1.5) return;
+      const h = stripTop(o, x, z, seg - 1, seg + 1);
+      if (h !== h) return;
+      low = Math.min(low, h);
+      if (out <= best) (best = out), (y = h);
+    });
+    for (const q of jointsNear(x, z)) {
+      if (lvl < 0 ? jDeck(q) > 0 : jLvlM(q) !== lvl) continue;
+      const out = inRingXZ(JPOLY[q].ring, x, z) ? 0 : ringDist(JPOLY[q].ring, x, z)[0];
+      const h = out <= 1.5 ? paveY(q, x, z) : NaN;
+      if (h !== h) continue;
+      low = Math.min(low, h);
+      if (out <= best) (best = out), (y = h);
+    }
+    const g = goreTopAt(x, z) - ROAD_LIFT;
+    if (g === g && best > 0) y = g;
+    if (y === y && low < y) y = Math.max(low, y - 0.1);
+    return y;
+  };
   const holeFill = (road: Acc, ring: XZ[], lvl: number, inTile: (x: number, z: number) => boolean) => {
     if (ring.length < 3) return;
     let cx = 0, cz = 0;
@@ -6041,16 +6261,15 @@ export async function buildPasirRisCourse(
     const tris = THREE.ShapeUtils.triangulateShape(ring.map(([x, z]) => new THREE.Vector2(x, z)), []);
     const base = road.pos.length / 3;
     for (const [x, z] of ring) {
-      const near: Near = new Map([...nearRoads(x, z)].filter(([i]) => lvlOf(i) === lvl));
-      const y = outlineY(x, z, near, lvl);
-      road.pos.push(x, (y === y ? y : Math.max(rawHeight(x, z), WL + 0.15)) + ROAD_LIFT - 0.005, z);
+      const y = fillY(x, z, lvl);
+      road.pos.push(x, (y === y ? y : Math.max(rawHeight(x, z), WL + 0.15)) + ROAD_LIFT - 0.025, z);
       road.uv.push(x / 6, z / 6);
     }
     for (const [a, b, c] of tris) faceUp(road, base + a, base + b, base + c);
   };
   const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[]; drawAt?: number; linePart?: number[] }>();
   const OUT_PARTS = 8;
-  const OUT_LINES = 6;
+  const OUT_LINES = 12;
   const OUT_DRAW = 40;
   /** How many places along a side of the outline are asked (one every 4 m or so). */
   const sidePlaces = (a: XZ, b: XZ) => Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
@@ -6058,10 +6277,15 @@ export async function buildPasirRisCourse(
     for (const k of roadRuns.keys()) {
       const [ix, iz] = k.split(',').map(Number);
       const inTile = (x: number, z: number) => Math.floor(x / TILE) === ix && Math.floor(z / TILE) === iz;
+      // (Traced in one slice, laid out for asking in the next.)
+      let traced: ReturnType<typeof outlineRings> | null = null;
+      onTile('far', k, 'outline', () => {
+        traced = outlineRings(ix, iz);
+      });
       onTile('far', k, 'outline', (_kit, acc) => {
         const rings: OutRing[] = [];
         const todo: [number, number, number][] = [];
-        for (const { pts: R, corner, edge, at, hole, lvl, fill } of outlineRings(ix, iz)) {
+        for (const { pts: R, corner, edge, at, hole, lvl, fill } of traced ?? outlineRings(ix, iz)) {
           if (fill) {
             holeFill(acc('road'), corner, lvl, inTile);
             continue;
@@ -6089,6 +6313,7 @@ export async function buildPasirRisCourse(
           rings.push({ P, cum, n, drawn, corner, edge, at, samples, hole, lvl });
         }
         outWork.set(k, { rings, todo, draws: [] });
+        traced = null;
       });
       for (let part = 0; part < OUT_PARTS; part++)
         onTile('far', k, 'outline marks', () => {
@@ -6339,7 +6564,7 @@ export async function buildPasirRisCourse(
                 const g = goreTopAt(x, z, gNear) - ROAD_LIFT;
                 if (g === g) hs.push(g);
                 roads.each(x, z, 12, (o, seg, u, d) => {
-                  if (JX.internal[o] || lvlOf(o) !== mm.lvl || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
+                  if (JX.internal[o] || !onLvl(o, seg, mm.lvl) || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
                   const h = stripTop(o, x, z, seg - 1, seg + 1);
                   // (On it, not near: a strip's triangle reaching 2% further,
                   // over the end of one 3 cm lower beside it, tilted a kerb
@@ -8087,6 +8312,8 @@ export async function buildPasirRisCourse(
       gores,
       goreCaps,
       sAlong,
+      fillY,
+      outlineFillsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ corner: g.corner, lvl: g.lvl })),
       outlineRingsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => !g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ hole: g.hole, corner: g.corner, lvl: g.lvl })),
       stopsAt: (x: number, z: number, y: number) => ({ paving: inPaving(x, z, y), island: onIsland(x, z), gore: inGore(x, z) }),
       whyClosed: (line: number, x: number, z: number, y: number) => ({ covered: coveredBy(line, x, z, y), island: onIsland(x, z), paving: inPaving(x, z, y), gore: inGore(x, z) }),
