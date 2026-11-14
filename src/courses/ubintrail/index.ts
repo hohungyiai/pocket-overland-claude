@@ -732,7 +732,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     // A plane's front faces +z; turn it to face back along the route.
     return makeSign(lines, x, z, Math.atan2(-p.tx, -p.tz));
   };
-  for (const o of trail.obstacles) signAt([o.label], trail.route, o.s0 - 40, -1);
+  for (const o of trail.obstacles) signAt([o.label], trail.route, o.s0 - 60, -1);
 
   // ---------- The ways round: a barrier until opened, then marker posts ----------
   const gateBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
@@ -784,9 +784,11 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       if (!o.open || g.opened) return;
       g.opened = true;
       world.removeCollider(g.collider, true);
-      // The log is rolled off the track.
-      g.group.children[0].position.z = 3.2;
-      g.group.children[0].rotation.y = 0.5;
+      // The log is dragged off the track to one side (it lies across the
+      // track along the group's x, so it moves along x and turns to lie
+      // beside the track).
+      g.group.children[0].position.x = 4.6;
+      g.group.children[0].rotation.y = 1.3;
       g.posts.visible = true;
     });
 
