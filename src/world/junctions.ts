@@ -1169,7 +1169,10 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       if (!f || !f.ok || r < 0.3) return [];
       const { CA, CB, ta, fa, tb, fb } = f;
       const dA = (ta[0] - p0[0]) * A.t[0] + (ta[1] - p0[1]) * A.t[1], dB = (tb[0] - p2[0]) * B.t[0] + (tb[1] - p2[1]) * B.t[1];
-      if (dA < 0.05 || dB < 0.05 || A.s + dA > len[A.line] * 0.5 || B.s + dB > len[B.line] * 0.5) return [];
+      // (Running on along each road no more than half of what is left of
+      // it past its mouth: a mouth set back past the middle of a short road
+      // had its median left square.)
+      if (dA < 0.05 || dB < 0.05 || dA > (len[A.line] - A.s) * 0.5 || dB > (len[B.line] - B.s) * 0.5) return [];
       const arcOf = (Cq: XZ, from: XZ, to: XZ): XZ[] => {
         const t0 = Math.atan2(from[1] - Cq[1], from[0] - Cq[0]);
         let sw = Math.atan2(to[1] - Cq[1], to[0] - Cq[0]) - t0;
@@ -1391,6 +1394,25 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         const Mb = ownerOf(b);
         if (Ma && Mb && Ma !== Mb && (hasKerb(Ma.line) || hasKerb(Mb.line))) kerbs.push(edge);
       }
+      // (A median's end the hull runs straight across: its two roads'
+      // inner corners lie on or just inside one of its sides, not at its
+      // corners, where they lie in a line with the outer ones. Rounded all the same.)
+      // (Within half a metre: one side's corner may lie a little inside it.)
+      const onSide = (p: XZ) => {
+        for (let k = 0; k < ring.length; k++) {
+          const a = ring[k], b = ring[(k + 1) % ring.length];
+          const vx = b[0] - a[0], vz = b[1] - a[1];
+          const u = Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vz) / (vx * vx + vz * vz || 1)));
+          if (Math.hypot(a[0] + vx * u - p[0], a[1] + vz * u - p[1]) < 0.5) return true;
+        }
+        return false;
+      };
+      const mid = (p: XZ, q: XZ): XZ => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      const gap = (p: XZ, q: XZ) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+      if (!hullEnds.length)
+        for (const A of mouths)
+          for (const B of mouths)
+            if (A !== B && gap(A.left, B.right) < gap(A.right, B.left) && onSide(A.left) && onSide(B.right) && onSide(mid(A.left, B.right))) hullEnds.push(...medianEnd(A, B));
       if (spills(ring)) return 'spill';
       centre = mean(hull);
       // (Eased sides curve inward: where the outline then folds as seen from

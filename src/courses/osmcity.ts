@@ -8632,6 +8632,7 @@ export async function buildPasirRisCourse(
       surfacePoly: (i: number) => surfacePoly(i),
       outSources: () => outSources(),
       padsAt, stripOutNow: () => stripOut, drapedPadAt, padShapeOf: (j: number) => padShape(j), padYOf: (j: number) => padY(j), padsByTile,
+      jpolyNear: (x: number, z: number, r: number) => JPOLY.map((sh, id) => ({ id, sh })).filter(({ sh }) => sh.ring.some((p) => Math.hypot(p[0] - x, p[1] - z) < r)).map(({ id, sh }) => ({ id, fill: sh.fill, ring: sh.ring.map((p) => [+p[0].toFixed(2), +p[1].toFixed(2)]) })),
       /** Is (x, z) on or within pad of a drawn plain road (a driveway, a car park lane: no kerb of its own)? */
       plainRoadNear: (x: number, z: number, pad: number) => {
         let hit = false;
