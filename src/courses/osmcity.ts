@@ -3869,7 +3869,15 @@ export async function buildPasirRisCourse(
   // past it. From a plain 10 cm, every raised road stood on a low wall
   // along its whole length, a kerb raised well above the road.)
   const WALL_FROM = ROAD_LIFT + UNDER + 0.1;
-  const wallTop = (drop: number) => 0.05 * smoothstep(WALL_FROM, WALL_FROM + 0.15, drop);
+  // (A raised road's wall stands at its kerb's outer edge, 0.35 m out from
+  // the road's edge, 1 cm past it so the kerb's edge is behind it, not
+  // showing through as a hairline. Out at 0.45 m, as a deck's edge is, it
+  // stood 10 cm proud of the kerb.)
+  const WALL_OUT = 0.36;
+  // (Its top level with the kerb's, 1 cm over the road: 5 cm over it, the
+  // kerb's edge, a centimetre off the wall's line here and there as the
+  // outline is simplified, showed through its face as a hairline.)
+  const wallTop = (drop: number) => 0.01 * smoothstep(WALL_FROM, WALL_FROM + 0.15, drop);
   const parapetTop = (drop: number) => Math.max(wallTop(drop), PARAPET_H * smoothstep(PARAPET_FROM, PARAPET_FULL, drop));
   const besideMid = (line: number, kk: number, off: number): XZ => {
     const a = EP[line][kk];
@@ -4150,7 +4158,7 @@ export async function buildPasirRisCourse(
                   const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
                   const nx = (b[1] - a[1]) / tl, nz = -(b[0] - a[0]) / tl;
                   const sg = nx * (c.C[0] - P[kk][0]) + nz * (c.C[1] - P[kk][1]) > 0 ? 1 : -1;
-                  const h = halfAtE(line, kk) + 0.45;
+                  const h = halfAtE(line, kk) + WALL_OUT;
                   const o: XZ = [P[kk][0] + nx * sg * h, P[kk][1] + nz * sg * h];
                   if (!inRingXZ(c.pave, o[0], o[1]) && !inGore(o[0], o[1])) return Math.hypot(o[0] - from[0], o[1] - from[1]) < 5 ? o : null;
                 }
@@ -4164,7 +4172,7 @@ export async function buildPasirRisCourse(
               const sq = (p: XZ, prev: XZ): XZ => {
                 const t = unit(p[0] - prev[0], p[1] - prev[1]);
                 const sg = -t[1] * (c.C[0] - p[0]) + t[0] * (c.C[1] - p[1]) > 0 ? 1 : -1;
-                return [p[0] - t[1] * sg * 0.45, p[1] + t[0] * sg * 0.45];
+                return [p[0] - t[1] * sg * WALL_OUT, p[1] + t[0] * sg * WALL_OUT];
               };
               const nA = c.nose[0], nB = c.nose[c.nose.length - 1];
               const NW = NP.map((p, q): XZ => {
@@ -4178,7 +4186,14 @@ export async function buildPasirRisCourse(
               for (let q = 1; q < NW.length; q++) nc[q] = nc[q - 1] + Math.hypot(NW[q][0] - NW[q - 1][0], NW[q][1] - NW[q - 1][1]);
               const ny = (q: number) => c.yAt(NP[q]) + 0.09;
               const nd = NW.map((p, q) => ny(q) - heightAt(p[0], p[1]));
-              band(deck, NW, nc, 0, NW.length - 1, 0, ny, (q) => Math.max(0, nd[q]) + 0.3, (q) => wallTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > WALL_FROM);
+              const at = (q: number, e: XZ | null) => !!e && Math.hypot(NW[q][0] - e[0], NW[q][1] - e[1]) < 0.05;
+              const onA = (q: number) => at(q, eA) && nd[q] > ROAD_LIFT + UNDER;
+              const onB = (q: number) => at(q + 1, eB) && nd[q + 1] > ROAD_LIFT + UNDER;
+              // (Where a road's own wall comes on to the nose's, the nose's
+              // carries it on from there however low, its top coming down to
+              // the ground by the next point: it grows from nothing, where it
+              // stopped square at the road wall's last point, 30 cm tall.)
+              band(deck, NW, nc, 0, NW.length - 1, 0, ny, (q) => Math.max(0, nd[q]) + 0.3, (q) => wallTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > WALL_FROM || onA(q) || onB(q), [0, 0], (q) => (nd[q] > WALL_FROM ? Infinity : -nd[q]));
               band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, (q) => parapetTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > PARAPET_FROM);
             } else if (c.drop > WALL_FROM) {
               band(deck, W, cw, 0, 1, 0, yk, Math.max(0, c.drop) + 0.3, wallTop(c.drop), () => true);
@@ -4569,7 +4584,7 @@ export async function buildPasirRisCourse(
           const deck = acc('deck');
           const ext = runsOn(line, P);
           for (const sgn of [-1, 1]) {
-            const off = (kk: number) => sgn * (halfAt(kk) + 0.45);
+            const off = (kk: number) => sgn * (halfAt(kk) + WALL_OUT);
             const dr = new Float32Array(hi - lo + 1);
             // (The way the road runs at each point looks along the whole
             // run in this tile, not just the part drawn in this slice.)
@@ -4598,7 +4613,7 @@ export async function buildPasirRisCourse(
               return [P[kk][0] + ((b[1] - a[1]) / tl) * off(kk), P[kk][1] - ((b[0] - a[0]) / tl) * off(kk)];
             };
             const endOff = (kk: number) => inNose(...endAt(kk)) || inGore(...endAt(kk));
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn));
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]));
             band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)), ext(sgn));
           }
         }
@@ -5116,7 +5131,7 @@ export async function buildPasirRisCourse(
             }
             // (Elsewhere a wall down to the ground, growing with the drop beside it, and its parapet.)
             const dr = (q: number) => Math.min(w.drop[q], 9);
-            band(deck, w.W, w.cum, 0, last, 0, yk, (q) => Math.max(0, dr(q)) + 0.3, (q) => wallTop(dr(q)), (q) => w.keep[q] && !deckPiece(w, q) && Math.max(dr(q), dr(q + 1)) > WALL_FROM);
+            band(deck, w.W, w.cum, 0, last, 0, yk, (q) => Math.max(0, dr(q)) + 0.3, (q) => wallTop(dr(q)), (q) => w.keep[q] && !deckPiece(w, q) && Math.max(dr(q), dr(q + 1)) > WALL_FROM, [0, 0], (q, o) => (w.keep[o] && !deckPiece(w, o) ? -dr(q) : Infinity));
             band(deck, w.W, w.cum, 0, last, 0, yk, 0, (q) => parapetTop(dr(q)), (q) => w.keep[q] && !deckPiece(w, q) && Math.max(dr(q), dr(q + 1)) > PARAPET_FROM);
           }
         }
@@ -6635,8 +6650,12 @@ export async function buildPasirRisCourse(
    * walls overlap a little instead of leaving a hairline between them where
    * the road bends at the joint.)
    */
-  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), aboveIn: number | ((k: number) => number), keep: (k: number) => boolean, ext: [number, number] = [0, 0]) => {
+  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), aboveIn: number | ((k: number) => number), keep: (k: number) => boolean, ext: [number, number] = [0, 0], endAbove?: (k: number, off: number) => number) => {
     const base = acc.pos.length / 3;
+    // (Kept pieces, worked out first: where a run of them ends, its top may
+    // come down to endAbove there, as a wall comes out of the ground.)
+    const kept: boolean[] = [];
+    for (let k = k0; k < k1; k++) kept[k - k0] = keep(k);
     for (let k = k0; k <= k1; k++) {
       const a = pts[Math.max(0, k - 1)];
       const b = pts[Math.min(pts.length - 1, k + 1)];
@@ -6647,12 +6666,13 @@ export async function buildPasirRisCourse(
       const z = pts[k][1] - ((b[0] - a[0]) / tl) * off + ((b[1] - a[1]) / tl) * along;
       const yk = y(k);
       const below = typeof belowIn === 'number' ? belowIn : belowIn(k);
-      const above = typeof aboveIn === 'number' ? aboveIn : aboveIn(k);
+      let above = typeof aboveIn === 'number' ? aboveIn : aboveIn(k);
+      if (endAbove && k > k0 && k < k1 && kept[k - k0 - 1] !== kept[k - k0]) above = Math.min(above, endAbove(k, kept[k - k0] ? k - 1 : k));
       acc.pos.push(x, yk - below, z, x, yk + above, z);
       acc.uv.push(0, cum[k] / 6, 1, cum[k] / 6);
     }
     for (let k = k0; k < k1; k++) {
-      if (!keep(k)) continue;
+      if (!kept[k - k0]) continue;
       const q = base + (k - k0) * 2;
       acc.idx.push(q, q + 2, q + 1, q + 1, q + 2, q + 3);
     }
