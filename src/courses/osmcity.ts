@@ -3396,13 +3396,20 @@ export async function buildPasirRisCourse(
     const sh = JX.shapes[JX.shapeOf[edges[i].a]];
     if (!sh) return false;
     const pts = EP[i];
-    return pts.every((p, k) => {
+    // (Or nearly: a piece between two joints of the one junction, drawn
+    // wider than the junction's paving (turning lanes), stood out up to two
+    // metres past it, the kerb stepping out round it and back. The
+    // junction's own paving, as wide as the roads that leave it, is the road there.)
+    const both = JX.shapeOf[edges[i].b] === JX.shapeOf[edges[i].a];
+    const within = (slack: number) => pts.every((p, k) => {
       const a = pts[Math.max(0, k - 1)];
       const b = pts[Math.min(pts.length - 1, k + 1)];
       const [nx, nz] = unit(b[1] - a[1], -(b[0] - a[0]));
       const h = halfAtE(i, k) - 0.3;
-      return inRingXZ(sh.ring, p[0] + nx * h, p[1] + nz * h) && inRingXZ(sh.ring, p[0] - nx * h, p[1] - nz * h);
+      const inside = (x: number, z: number) => inRingXZ(sh.ring, x, z) || (slack > 0 && ringDist(sh.ring, x, z)[0] < slack);
+      return (slack === 0 || inRingXZ(sh.ring, p[0], p[1])) && inside(p[0] + nx * h, p[1] + nz * h) && inside(p[0] - nx * h, p[1] - nz * h);
     });
+    return within(0) || (both && within(2.5));
   });
 
   // Each edge's segments go to the tile holding their midpoint, in runs.
@@ -6124,7 +6131,12 @@ export async function buildPasirRisCourse(
     // it meets, and that road's edge it is. A side road drawn a little
     // across the road it meets took the far side's kerb away.)
     const offEnd = (i: number, h: { seg: number; u: number }) => (h.seg === 0 && h.u <= 0 && jDegree[edges[i].a] >= 2) || (h.seg === EP[i].length - 2 && h.u >= 1 && jDegree[edges[i].b] >= 2);
-    const r = edgeRoadOf(new Map([...near].filter(([i, h]) => !offEnd(i, h))), (i) => !JX.internal[i]) ?? edgeRoadOf(near, (i) => !JX.internal[i]);
+    let r = edgeRoadOf(new Map([...near].filter(([i, h]) => !offEnd(i, h))), (i) => !JX.internal[i]) ?? edgeRoadOf(near, (i) => !JX.internal[i]);
+    // (A junction's own piece of road, drawn, whose edge this is, where no
+    // other road's is: a loop at a road's end, all of it a junction's
+    // pieces, had no road's edge within metres and no kerb round it.)
+    const own = edgeRoadOf(new Map([...near].filter(([i, h]) => JX.internal[i] && !offEnd(i, h))), () => true);
+    if (own && Math.abs(own.past) < 0.2 && (!r || Math.abs(r.past) > 0.2)) r = own;
     // (Round a road's very end, where it stops at the map's edge or a dead
     // end: its kerb runs on round the end, and on a lined road its edge
     // line with it, as round an island. The kerb is one closed loop; with
@@ -8610,6 +8622,16 @@ export async function buildPasirRisCourse(
       surfacePoly: (i: number) => surfacePoly(i),
       outSources: () => outSources(),
       padsAt, stripOutNow: () => stripOut, drapedPadAt, padShapeOf: (j: number) => padShape(j), padYOf: (j: number) => padY(j), padsByTile,
+      /** Is (x, z) on or within pad of a drawn plain road (a driveway, a car park lane: no kerb of its own)? */
+      plainRoadNear: (x: number, z: number, pad: number) => {
+        let hit = false;
+        roads.each(x, z, 16, (i, seg, u, d) => {
+          if (!hit && outlined[i] && !kerbedRoad(edges[i]) && !hasProfile[i] && d <= drawnHalf(i, seg, u) + pad) hit = true;
+        });
+        return hit;
+      },
+      jxInfo: (i: number) => ({ internal: JX.internal[i], hidden: internalHidden[i], outlined: outlined[i], tee: JX.tee[i], shapeA: JX.shapeOf[edges[i].a], shapeB: JX.shapeOf[edges[i].b], trimA: JX.trimA[i], trimB: JX.trimB[i], half: [EP[i].map((_, k) => halfAtE(i, k))] }),
+      jpolyAt: (x: number, z: number) => JPOLY.map((sh, id) => ({ id, sh })).filter(({ sh }) => inRingXZ(sh.ring, x, z)).map(({ id, sh }) => ({ id, fill: sh.fill, n: sh.ring.length, centre: sh.centre, radius: sh.radius, kerbs: sh.kerbs.length, near: jointsNear(x, z).includes(id), lvl: jLvlM(id), deck: jDeck(id) })),
       outlineFillsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ corner: g.corner, lvl: g.lvl })),
       outlineRingsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => !g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ hole: g.hole, corner: g.corner, lvl: g.lvl })),
       stopsAt: (x: number, z: number, y: number) => ({ paving: inPaving(x, z, y), island: onIsland(x, z), gore: inGore(x, z) }),
