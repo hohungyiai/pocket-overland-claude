@@ -1040,7 +1040,7 @@ export async function buildPasirRisCourse(
   // (Held to an island's point: may run past 40% of the road; see TRIM_A.)
   const ptA = new Float32Array(edges.length);
   const ptB = new Float32Array(edges.length);
-  const mates = edges.map(() => [] as { o: number; ia: boolean; oa: boolean; L: number }[]);
+  const mates = edges.map(() => [] as { o: number; ia: boolean; oa: boolean; L: number; pt?: boolean }[]);
   jE.forEach((list, j) => {
     if (list.length < 2) return;
     for (const i of list)
@@ -1073,6 +1073,7 @@ export async function buildPasirRisCourse(
         // point instead, as roads overlapping do: see relAlong.)
         const atDeck = (jE[j] ?? []).some((t) => elevated[t]);
         let mateL = s;
+        let pt = false;
         if (oneLine && !elevated[i] && !elevated[o]) {
           let d = s;
           // (To the point, however far along it lies, leaving 10 m of each
@@ -1088,7 +1089,7 @@ export async function buildPasirRisCourse(
             if (Math.hypot(x1 - x2, z1 - z2) >= halfAtS(i, ia ? d + 1 : ELEN[i] - d - 1) + halfAtS(o, oa ? d + 1 : ELEN[o] - d - 1) + 1.8) break;
             d += 1;
           }
-          if (d < lim && atDeck) mateL = d + 1;
+          if (d < lim && atDeck) (mateL = d + 1), (pt = true);
           else if (d < lim) {
             if (ia) ptA[i] = Math.max(ptA[i], d + 1);
             else ptB[i] = Math.max(ptB[i], d + 1);
@@ -1097,7 +1098,7 @@ export async function buildPasirRisCourse(
         // Two roads on the ground (or ramps) share one height where they
         // overlap (see relAlong); beside a flyover deck, a road stays level.
         if (!elevated[i] && !elevated[o]) {
-          mates[i].push({ o, ia, oa, L: mateL });
+          mates[i].push({ o, ia, oa, L: mateL, pt });
           // (A road running through the joint as one strip stays level
           // beside a road that leaves it there, for as far as that road is
           // level: out to its mouth. The two are one surface until then.)
@@ -1259,17 +1260,22 @@ export async function buildPasirRisCourse(
   const relAlong = (i: number, s: number) => {
     const r = relOwn(i, s);
     if (!mates[i].length || held(i)) return r;
+    const under = groundUnder;
     let sum = 0;
     let w = 0;
     for (const m of mates[i]) {
-      if (held(m.o)) continue;
+      // (One held down under a flyover keeps its height, and where the two
+      // share one height to an island's point (pt) the road beside it takes
+      // it, all of it: left out, the two parted 0.16 m apart at the point.)
+      const mHeld = held(m.o) && !!m.pt;
+      if (held(m.o) && !m.pt) continue;
       const d = m.ia ? s : ELEN[i] - s; // from the joint
       if (d > m.L + 60) continue;
       const so = m.oa ? d : ELEN[m.o] - d;
       if (so < 0 || so > ELEN[m.o]) continue;
       const di = m.ia ? m.L : ELEN[i] - m.L;
       const dO = m.oa ? m.L : ELEN[m.o] - m.L;
-      const gap = Math.abs(relOwn(m.o, Math.max(0, Math.min(ELEN[m.o], dO))) - relOwn(i, Math.max(0, Math.min(ELEN[i], di)))) / 2;
+      const gap = (Math.abs(relOwn(m.o, Math.max(0, Math.min(ELEN[m.o], dO))) - relOwn(i, Math.max(0, Math.min(ELEN[i], di)))) / 2) * (mHeld ? 2 : 1);
       const fade = Math.min(60, Math.max(8, (1.5 * gap) / (0.5 * MAX_GRADE)));
       // (Both roads are back to their own height at their far ends, where
       // other roads meet them.)
@@ -1282,9 +1288,20 @@ export async function buildPasirRisCourse(
       const j = m.ia ? edges[i].a : edges[i].b;
       const iThru = thruJoint(i, j) !== undefined, oThru = thruJoint(m.o, j) !== undefined;
       if (iThru && !oThru) continue;
-      sum += (t * (relOwn(m.o, so) - r)) / (oThru && !iThru ? 1 : 2);
+      // (To an island's point, one height, not one height above the hills:
+      // each road's ground under its own middle, 8 m apart where the two
+      // part, differed by 0.2 m there. Not elsewhere: two roads on the
+      // ground beside each other lie each on its own.)
+      let db = 0;
+      if (m.pt) {
+        const [xi, zi] = along(i, true, s);
+        const [xo, zo] = along(m.o, true, so);
+        db = roadBase(m.o, so, xo, zo) - roadBase(i, s, xi, zi);
+      }
+      sum += (t * (relOwn(m.o, so) + db - r)) / ((oThru && !iThru) || mHeld ? 1 : 2);
       w += t;
     }
+    groundUnder = under;
     return w > 1 ? r + sum / w : r + sum;
   };
   /** Road height above the ground at distance s along edge i, on its own: straight ramps. */
@@ -2987,6 +3004,8 @@ export async function buildPasirRisCourse(
        * corners lie on (straight between them, the strip lies over hollows).
        */
       yXZ?: (x: number, z: number) => number;
+      /** With yAt: each side's own height where it has one (k, -1 or 1), so it may tilt across with what it lies beside. */
+      ySide?: (k: number, sgn: number) => number;
     } = {},
   ) => {
     const base = acc.pos.length / 3;
@@ -3017,6 +3036,10 @@ export async function buildPasirRisCourse(
         }
         if (o.yXZ) {
           const h = o.yXZ(x, z);
+          if (h === h) yk = h;
+        }
+        if (o.ySide) {
+          const h = o.ySide(k, sgn);
           if (h === h) yk = h;
         }
         acc.pos.push(x, (yk === yk ? yk : (o.y ?? Math.max((o.ground ?? rawHeight)(x, z) + rise, WL + 0.15))) + lift, z);
@@ -4047,8 +4070,10 @@ export async function buildPasirRisCourse(
         sw += wt;
         sy += wt * h;
       });
-      // (Never above its own carrying on: a hair under the roads, as the wedge is, so it never covers their kerbs.)
-      return sw > 0 ? Math.min(g, sy / sw) : g;
+      // (As the roads are, drawn 3 mm under them as the wedge is. Kept
+      // under its own carrying on too, it lay 3 cm under the road beside it
+      // at the 1797 point, and the kerb along both stood out of the one.)
+      return sw > 0 ? sy / sw : g;
     };
     return { nose, sideA, sideB, pave, tris, C, yAt };
   };
@@ -5972,9 +5997,9 @@ export async function buildPasirRisCourse(
   // every 4 m or so along each, then the kerbs and lines drawn.)
   type OutRing = { P: XZ[]; cum: number[]; n: number; drawn: boolean[]; corner: XZ[]; edge: number[]; at: number[]; samples: (OutMark | null)[][]; hole: boolean; lvl: number };
   const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[]; drawW: number[]; linePart?: number[] }>();
-  const OUT_PARTS = 6;
-  const OUT_LINES = 4;
-  const OUT_DRAW = 6;
+  const OUT_PARTS = 8;
+  const OUT_LINES = 6;
+  const OUT_DRAW = 9;
   /** How many places along a side of the outline are asked (one every 4 m or so). */
   const sidePlaces = (a: XZ, b: XZ) => Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
   if (oneLine) {
@@ -6193,7 +6218,7 @@ export async function buildPasirRisCourse(
             if (j === Q.length - 1) break;
             const mm = mk(j);
             const L = qc[j + 1] - qc[j];
-            // (Only under a line: the kerbs are drawn on Q's own points.)
+            // (Only under a line, and the kerbs beside it.)
             if (!mm || !mm.line || L < 0.75) continue;
             let near = false;
             if (!mm.flat && L >= 1.5) {
@@ -6210,7 +6235,9 @@ export async function buildPasirRisCourse(
               // (The piece's start as the last piece's end had it, by the same mark.)
               const ya = endY && endY[0] === j && endY[1] === mm ? endY[2] : yAtT(0), yb = yAtT(1);
               endY = [j + 1, mm, yb];
-              near = ya === ya && yb === yb && [0.5, ...(L > 3 ? [0.25, 0.75] : [])].some((t) => yAtT(t) - lerp(ya, yb, t) > 0.001);
+              // (Or under it, by more than a kerb lies under the road: at a
+              // ramp's foot the kerb straight across stood out of it.)
+              near = ya === ya && yb === yb && [0.5, ...(L > 3 ? [0.25, 0.75] : [])].some((t) => { const d = yAtT(t) - lerp(ya, yb, t); return d > 0.001 || (mm.kerb && d < -0.012); });
             }
             if (!near) continue;
             const cnt = Math.ceil(L / 0.5);
@@ -6224,45 +6251,113 @@ export async function buildPasirRisCourse(
           for (let j0 = 1; j0 <= m; j0++) {
             if (!dr(j0)) continue;
             let j1 = j0;
-            while (j1 + 1 <= m && dr(j1 + 1)) j1++;
+            // (40 points at most to a run, each drawn by itself: round an
+            // island's point every kerb point asks what is drawn there, and
+            // one run all round it held a frame up for 110 ms. Each run's
+            // ends carry on as the next has it, as across a tile's edge.)
+            while (j1 + 1 <= m && dr(j1 + 1) && j1 - j0 < 40) j1++;
             const J0 = j0, J1 = j1;
-            // (Its share of the drawing: by its points, the heights of each asked.)
-            w.drawW.push(at2[J1 + 1] - at2[J0] + 2);
+            // (Its share of the drawing: by its points, the heights of each
+            // asked; those beside paving ask what is drawn there too, ten
+            // times the work.)
+            let wt = at2[J1 + 1] - at2[J0] + 2;
+            for (let v = J0; v <= J1 + 1; v++) if (goresNear(Q[v][0], Q[v][1]).length || jointsNear(Q[v][0], Q[v][1]).length) wt += 10;
+            w.drawW.push(wt);
             w.draws.push((kerb, yellow) => {
               // (Heights where the ground does not lie as the strips drape it,
               // from the surface the side bounds: kerbs at Q's points, lines
               // at Q2's, from Q's point J0 to its point J1 + 1.)
               const hK: number[] = [];
+              const hR: number[] = [];
               const hY: number[] = [];
               const markAt = (o: number) => (o <= J1 ? mk(o) : null) ?? mk(o - 1);
+              // (What is drawn on top at (x, z), in the roads' own frame, if
+              // anything is: a nose's or wedge's paving, a road's strip
+              // reaching over it, a joint's paving or level pad.)
+              // (What is drawn at (x, z), in the roads' own frame, if anything
+              // is: a nose's or wedge's paving, road strips, a joint's paving
+              // or level pad. The lowest of what lies within 10 cm of the top:
+              // where two pieces overlap a few cm apart, as two roads' strips
+              // with their own crossfall do beside an island, each shows at
+              // its own edge, and a kerb under only the upper one stood out
+              // of the lower.)
+              const drawnTopAt = (mm: OutMark, x: number, z: number, gNear?: number[]) => {
+                const hs: number[] = [];
+                const g = goreTopAt(x, z, gNear) - ROAD_LIFT;
+                if (g === g) hs.push(g);
+                roads.each(x, z, 12, (o, seg, u, d) => {
+                  if (JX.internal[o] || lvlOf(o) !== mm.lvl || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
+                  const h = stripTop(o, x, z, seg - 1, seg + 1);
+                  // (On it, not near: a strip's triangle reaching 2% further,
+                  // over the end of one 3 cm lower beside it, tilted a kerb
+                  // up out of that one.)
+                  if (stripOut < 0.001) hs.push(h);
+                });
+                for (const q of jointsNear(x, z)) {
+                  if ((mm.lvl < 0 ? jDeck(q) > 0 : jLvlM(q) !== mm.lvl) || !inRingXZ(JPOLY[q].ring, x, z)) continue;
+                  const h = paveY(q, x, z);
+                  if (h === h) hs.push(h);
+                }
+                if (hs.length) for (const p of padsAt(x, z, 0)) hs.push(p.y);
+                if (!hs.length) return NaN;
+                // (Nothing far above the rest: a deck's pad over a road's end.)
+                const lo0 = Math.min(...hs);
+                let top = lo0;
+                for (const h of hs) if (h > top && h - lo0 < 0.5) top = h;
+                let lo = top;
+                for (const h of hs) if (h < lo && top - h < 0.1) lo = h;
+                return lo;
+              };
               for (let v = J0; v <= J1 + 1; v++) {
                 const mm = markAt(v);
                 hK[v] = !mm || mm.flat ? NaN : yOn(mm, Q[v][0], Q[v][1]);
-                // (Never under the paving beside it: a wedge's or a nose's
-                // paving between two roads at different heights slopes from
-                // one to the other, and round the island's point it lay over
-                // the lower side's kerb, a notch out of the kerb there; a
-                // joint's paving likewise. Level with its top where the kerb
-                // meets it, and across the kerb's outer half.)
-                // (And half way to the points either side: the kerb runs
-                // straight between its points, the road under it may not.)
-                // (Only where there is such paving about: along a road's own
-                // edge the road is all there is, and its height is the kerb's.)
+                hR[v] = NaN;
+                // (Where paving lies about, a wedge's, a nose's or a joint's,
+                // on what is drawn there: a nose's paving between two roads at
+                // different heights slopes from one to the other, and taken
+                // from its own road the kerb stood through it in one place and
+                // sank under it the next, a notch out of it round the point.
+                // Along a road's own edge the road is all there is, and its
+                // height is the kerb's.)
                 const [qx, qz] = Q[v];
                 const gNear = mm && !mm.flat ? goresNear(qx, qz).filter((id) => { const b = goreBox(id); return qx > b[0] - 1 && qx < b[2] + 1 && qz > b[1] - 1 && qz < b[3] + 1; }) : [];
                 const busy = !!mm && !mm.flat && (gNear.some((id) => goreCaps(id).length) || jointsNear(qx, qz).some((q) => q !== mm.joint));
                 if (mm && !mm.flat && (gNear.length || busy)) {
                   const { nx: sx, nz: sz } = section(Q, v, 0, Q.length - 1, undefined, true);
-                  const at: XZ[] = [Q[v]];
-                  for (const w of [v - 1, v + 1]) if (w >= 0 && w < Q.length && Math.hypot(Q[w][0] - Q[v][0], Q[w][1] - Q[v][1]) > 0.5) at.push([(Q[v][0] * 3 + Q[w][0]) / 4, (Q[v][1] * 3 + Q[w][1]) / 4]);
-                  for (const P of at) for (const o of [0, -0.15, 0.15]) {
-                    const x = P[0] + sx * o, z = P[1] + sz * o;
-                    const mid = P !== Q[v];
-                    // (And whatever is drawn on top there, as a line is laid:
-                    // a junction's paving reaching a little past the next
-                    // road's edge at a bend, a road's strip tilting up across it.)
-                    const tops = [goreTopAt(x, z, gNear), busy && !mid ? yOn(mm, x, z, true) : NaN];
-                    for (const g of tops) if (g === g && (hK[v] !== hK[v] || (g > hK[v] && g - hK[v] < 0.5))) hK[v] = g;
+                  // (All in the roads' own frame, under the 0.09 m every
+                  // strip is drawn up by: on the paving's top, the kerb stood
+                  // 9 cm proud along an island's sides, twice as wide there
+                  // as further on.)
+                  // (On an island's paving, the paving is what is drawn: a
+                  // road asked there, cut back short of it, gave the height
+                  // its end would have had, 10 cm off where two roads meet.
+                  // Beside a nose, its own road: the other road, higher,
+                  // lifted it out from under the asphalt of its own.)
+                  const capNear = gNear.some((id) => goreCaps(id).length);
+                  const drawnAt = (x: number, z: number, fall: boolean) => {
+                    const g = drawnTopAt(mm, x, z, gNear);
+                    return g === g || !fall ? g : yOn(mm, x, z, !capNear);
+                  };
+                  // (Tilted across with the surface it lies under: flat, where
+                  // that sloped, from one road down to the other round an
+                  // island's point, it stood through the road in one place and
+                  // sank under it in the next, its width stepping. Its road
+                  // edge (0.15 m in) 2 cm under what is drawn there, on the
+                  // same slope out through the outline to its grass edge
+                  // (0.35 m out). Not lifted on the grass side for whatever
+                  // lay there: the other road, past a narrow island's point,
+                  // stood it 15 cm up.)
+                  const own = hK[v];
+                  const near = (g: number) => g === g && (own !== own || Math.abs(g - own) < 0.5);
+                  const { mm: rm } = section(Q, v, 0, Q.length - 1, undefined, true);
+                  let hQ = drawnAt(qx + sx * 0.03 * rm, qz + sz * 0.03 * rm, true);
+                  if (!near(hQ)) hQ = own;
+                  if (hQ === hQ) {
+                    let r = drawnAt(qx + sx * 0.15 * rm, qz + sz * 0.15 * rm, true);
+                    if (!near(r)) r = hQ;
+                    const yG = hQ + Math.max(-0.05, Math.min(0.05, ((hQ - r) * 0.35) / 0.15));
+                    hK[v] = yG;
+                    hR[v] = r;
                   }
                 }
               }
@@ -6292,7 +6387,45 @@ export async function buildPasirRisCourse(
                 }
               };
               const isKerb = (j: number) => !!mk(j)?.kerb, isLine = (j: number) => !!mk(j)?.line;
-              runs(Q, J0, J1, (a) => a, isKerb, (lo, hi, a, b) => strip(kerb, Q, qc, a, b, 0.25, 0.07, { lo, hi, off: -0.1, yAt: (j) => hK[j], bisect: true }));
+              // (Kerbs by Q2's points too where a line's are put in between
+              // Q's, where the surface is not straight between them: a ramp
+              // climbing from just past an island's point, its kerb straight
+              // from the point to its next 3 m on stood 5 cm out of the road
+              // at the foot of the climb.) (Each such point as the kerb's own are found.)
+              const hK2: number[] = [], hR2: number[] = [];
+              for (let v = j0; v <= j1 + 1; v++) {
+                const J = of2[v];
+                if (v === at2[J] || J + 1 >= Q.length || J + 1 > J1 + 1) {
+                  hK2[v] = hK[J];
+                  hR2[v] = hR[J];
+                  continue;
+                }
+                const va = at2[J], vb = at2[J + 1];
+                const t = (qc2[v] - qc2[va]) / (qc2[vb] - qc2[va] || 1);
+                hK2[v] = lerp(hK[J], hK[J + 1], t);
+                hR2[v] = NaN;
+                const mm = mk(J);
+                // (Only beside paving, where the kerb's own points were found
+                // so: along a road's own edge, straight between them.)
+                if (mm && !mm.flat && hK2[v] === hK2[v] && (hR[J] === hR[J] || hR[J + 1] === hR[J + 1])) {
+                  const { nx: sx, nz: sz } = section(Q2, v, 0, Q2.length - 1, undefined, true);
+                  const [x, z] = Q2[v];
+                  // (Its road edge on what is drawn there; its tilt across as
+                  // its own points either side have it.)
+                  // (Only ever lower than straight between them: these points
+                  // are put in where the surface dips under that line; where
+                  // it rose above, by a step of 2 cm between two strips, the
+                  // kerb rose with it and stood out of the lower one beside.)
+                  const ra = hR[J] === hR[J] ? hR[J] : hK[J], rb = hR[J + 1] === hR[J + 1] ? hR[J + 1] : hK[J + 1];
+                  const r = Math.min(drawnTopAt(mm, x + sx * 0.15, z + sz * 0.15), lerp(ra, rb, t));
+                  const tilt = lerp(hK[J] - ra, hK[J + 1] - rb, t);
+                  if (r === r && tilt === tilt && Math.abs(r + tilt - hK2[v]) < 0.5) {
+                    hK2[v] = r + tilt;
+                    hR2[v] = r;
+                  }
+                }
+              }
+              runs(Q2, j0, j1, (a) => of2[a], isKerb, (lo, hi, a, b) => strip(kerb, Q2, qc2, a, b, 0.25, 0.07, { lo, hi, off: -0.1, yAt: (j) => hK2[j], ySide: (j, sgn) => (sgn > 0 ? hR2[j] : NaN), bisect: true }));
               runs(Q2, j0, j1, (a) => of2[a], isLine, (lo, hi, a, b) => strip(yellow, Q2, qc2, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true }));
             });
             j0 = j1;
