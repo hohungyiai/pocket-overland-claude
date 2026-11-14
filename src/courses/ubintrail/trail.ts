@@ -362,8 +362,9 @@ export class UbinTrail {
       const len = o.s1 - o.s0;
       const onLine = !!n && n.d < 4.5;
       if (n && n.d < 16 && n.s > -1 && n.s < len + 1) out = { ...(out ?? {}), zone: o.label };
-      // Passed it.
-      if (n && onLine && n.s > len - 1 && o.inside && !o.done) {
+      // Passed it: got to the far end on the hard line (or left it there,
+      // a little wide, at speed).
+      if (n && o.inside && !o.done && (n.s > len - 3 || o.furthest > len - 3) && n.d < 10) {
         o.done = 'hard';
         o.inside = false;
         const nice = o.kind === 'sand' ? 'Through the sand, and the view over the strait is yours.' : o.kind === 'climb' ? 'Up and over. Nicely done.' : 'Through the washout. Nicely done.';

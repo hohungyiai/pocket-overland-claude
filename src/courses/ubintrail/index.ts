@@ -292,7 +292,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         if (ground.wet.at(x, z) > -2) continue;
         const m = ground.maskAt(x, z);
         const wild = valueNoise(x / 45, z / 45, SEED + 12);
-        let p = m & MASK.wood ? 0.8 : 0.35 + 0.45 * wild;
+        let p = m & MASK.wood ? 0.85 : 0.45 + 0.45 * wild;
         if (m & MASK.beach) p = 0.08;
         if (r1 > p) continue;
         const rd = ground.road(x, z, 9);
@@ -303,7 +303,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         let kind: Tree['kind'];
         if (m & MASK.wetland) kind = r2 < 0.85 ? 'mangrove' : 'shrub';
         else if (shore < 40 && r2 < 0.45) kind = r3 < 0.5 ? 'casuarina' : 'palm';
-        else if (r2 < 0.28) kind = 'shrub';
+        else if (r2 < 0.36) kind = 'shrub';
         else if (r2 < 0.62) kind = 'rain';
         else if (r2 < 0.9) kind = 'almond';
         else kind = 'palm';
@@ -347,31 +347,41 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     };
     return m;
   };
-  const trunk = (h: number, r0: number, r1: number) => tint(new THREE.CylinderGeometry(r1, r0, h, 5, 1, true).translate(0, h / 2, 0), 0x5b4636);
-  const crown = (r: number, sy: number, x: number, y: number, z: number) => tint(new THREE.IcosahedronGeometry(1, 0).scale(r, sy, r).translate(x, y, z), 0xffffff);
-  const KINDS: Record<Tree['kind'], { geo: THREE.BufferGeometry; mat: THREE.Material; hues: [number, number, number, number]; collide: number }> = {
-    rain: { geo: merge([trunk(5, 0.45, 0.3), crown(4.8, 1.7, 0, 6.2, 0), crown(3.2, 1.3, 1.7, 7.1, 0.8), crown(2.8, 1.2, -1.5, 6.9, -1)]), mat: swayMat(0.01), hues: [0.27, 0.42, 0.3, 0.05], collide: 0.45 },
-    almond: { geo: merge([trunk(5.5, 0.35, 0.22), crown(3.6, 0.7, 0, 4.4, 0), crown(2.6, 0.6, 0, 5.6, 0), crown(1.6, 0.6, 0, 6.6, 0)]), mat: swayMat(0.01), hues: [0.25, 0.45, 0.33, 0.06], collide: 0.35 },
-    palm: {
-      geo: merge([
-        tint(new THREE.CylinderGeometry(0.18, 0.28, 8, 5, 1, true).translate(0, 4, 0), 0x8a7356),
-        ...Array.from({ length: 7 }, (_, i) =>
-          tint(new THREE.BoxGeometry(3.4, 0.08, 0.7).translate(1.7, 0, 0).rotateZ(-0.45).rotateY((i / 7) * Math.PI * 2 + 0.2).translate(0, 8, 0), 0xffffff),
-        ),
-      ]),
-      mat: swayMat(0.02),
-      hues: [0.22, 0.5, 0.36, 0.04],
-      collide: 0.3,
-    },
-    casuarina: { geo: merge([trunk(3, 0.3, 0.15), tint(new THREE.ConeGeometry(1.9, 9, 6, 1, true).translate(0, 7, 0), 0xffffff)]), mat: swayMat(0.015), hues: [0.3, 0.35, 0.28, 0.03], collide: 0.3 },
-    mangrove: { geo: merge([trunk(2, 0.25, 0.18), crown(2.6, 1.3, 0, 3, 0), crown(1.8, 1, 1.2, 3.6, 0.4)]), mat: swayMat(0.012), hues: [0.28, 0.4, 0.24, 0.04], collide: 0.3 },
-    shrub: { geo: tint(new THREE.IcosahedronGeometry(1, 0).scale(1.4, 0.9, 1.4).translate(0, 0.6, 0), 0xffffff), mat: swayMat(0.02), hues: [0.27, 0.45, 0.28, 0.06], collide: 0 },
+  const trunk = (h: number, r0: number, r1: number) => tint(new THREE.CylinderGeometry(r1, r0, h, 5, 1, true).translate(0, h / 2, 0), 0x7a6450);
+  // Two levels of detail: rounder crowns near the car, plainer ones (a
+  // quarter of the triangles) further off, where the haze softens them.
+  type Kinds = Record<Tree['kind'], { geo: THREE.BufferGeometry; mat: THREE.Material; hues: [number, number, number, number]; collide: number }>;
+  const mats = { broad: swayMat(0.01), palm: swayMat(0.02), cas: swayMat(0.015), mangrove: swayMat(0.012), shrub: swayMat(0.02) };
+  const makeKinds = (detail: number): Kinds => {
+    const crown = (r: number, sy: number, x: number, y: number, z: number) => tint(new THREE.IcosahedronGeometry(1, detail).scale(r, sy, r).translate(x, y, z), 0xffffff);
+    return {
+      rain: { geo: merge([trunk(4.2, 0.45, 0.3), crown(4.8, 2.2, 0, 5.6, 0), crown(3.2, 1.8, 1.9, 6.6, 0.9)]), mat: mats.broad, hues: [0.27, 0.42, 0.3, 0.05], collide: 0.45 },
+      almond: { geo: merge([trunk(5, 0.35, 0.22), crown(3.4, 1.0, 0, 4.4, 0), crown(2.2, 1.0, 0, 5.8, 0)]), mat: mats.broad, hues: [0.25, 0.45, 0.33, 0.06], collide: 0.35 },
+      palm: {
+        geo: merge([
+          tint(new THREE.CylinderGeometry(0.18, 0.28, 8, 5, 1, true).translate(0, 4, 0), 0x8a7356),
+          ...Array.from({ length: 7 }, (_, i) =>
+            tint(new THREE.BoxGeometry(3.4, 0.08, 0.7).translate(1.7, 0, 0).rotateZ(-0.45).rotateY((i / 7) * Math.PI * 2 + 0.2).translate(0, 8, 0), 0xffffff),
+          ),
+        ]),
+        mat: mats.palm,
+        hues: [0.22, 0.5, 0.36, 0.04],
+        collide: 0.3,
+      },
+      casuarina: { geo: merge([trunk(3, 0.3, 0.15), tint(new THREE.ConeGeometry(1.9, 9, 6, 1, true).translate(0, 7, 0), 0xffffff)]), mat: mats.cas, hues: [0.3, 0.35, 0.28, 0.03], collide: 0.3 },
+      mangrove: { geo: merge([trunk(1.6, 0.25, 0.18), crown(2.8, 1.6, 0, 2.8, 0)]), mat: mats.mangrove, hues: [0.28, 0.4, 0.24, 0.04], collide: 0.3 },
+      shrub: { geo: tint(new THREE.IcosahedronGeometry(1, detail).scale(1.6, 1.1, 1.6).translate(0, 0.7, 0), 0xffffff), mat: mats.shrub, hues: [0.27, 0.45, 0.28, 0.06], collide: 0 },
+    };
   };
+  const KINDS = makeKinds(1);
+  const KINDS_FAR = makeKinds(0);
   const dummy = new THREE.Object3D();
   const tcol = new THREE.Color();
+  const lods: { hi: THREE.Object3D[]; lo: THREE.Object3D[]; x: number; z: number }[] = [];
   function treeMeshes(ti: number, tj: number, kit: TileKit) {
     const list = treesIn(ti, tj);
     const rand = mulberry32(SEED + 31 + ti * 131 + tj * 977);
+    const lod = { hi: [] as THREE.Object3D[], lo: [] as THREE.Object3D[], x: (ti + 0.5) * TILE, z: (tj + 0.5) * TILE };
     for (const name of Object.keys(KINDS) as Tree['kind'][]) {
       const these = list.filter((t) => t.kind === name);
       if (!these.length) continue;
@@ -391,6 +401,32 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       im.receiveShadow = true;
       im.computeBoundingSphere();
       kit.add(im);
+      // The far copy shares the same instances.
+      const far = new THREE.InstancedMesh(KINDS_FAR[name].geo, k.mat, these.length);
+      far.instanceMatrix = im.instanceMatrix;
+      far.instanceColor = im.instanceColor;
+      far.boundingSphere = im.boundingSphere;
+      far.visible = false;
+      kit.add(far);
+      lod.hi.push(im);
+      lod.lo.push(far);
+    }
+    lods.push(lod);
+  }
+  /** Near tiles draw the rounder trees, far ones the plainer copies. */
+  let lodAt = { x: Infinity, z: Infinity };
+  function updateLods(x: number, z: number) {
+    if (Math.hypot(x - lodAt.x, z - lodAt.z) < 10) return;
+    lodAt = { x, z };
+    for (let i = lods.length - 1; i >= 0; i--) {
+      const l = lods[i];
+      if (!l.hi[0]?.parent) {
+        lods.splice(i, 1);
+        continue;
+      }
+      const near = Math.max(Math.abs(l.x - x), Math.abs(l.z - z)) < TILE * 1.1;
+      for (const m of l.hi) m.visible = near;
+      for (const m of l.lo) m.visible = !near;
     }
   }
   function treeBodies(ti: number, tj: number, kit: TileKit) {
@@ -524,9 +560,11 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         return;
       }
       const key = `${ti},${tj}`;
+      // The drawn ground is 2 m everywhere; the solid ground is 1 m where
+      // an obstacle's humps are (the eye can't tell, the wheels can).
       const step = fineTile.has(key) ? 1 : NEAR_STEP;
       if (layer === 'far') {
-        const p = yield* patch(ti, tj, step, true);
+        const p = yield* patch(ti, tj, NEAR_STEP, true);
         if (!p) return;
         patches.set(key, p);
         if (patches.size > 40) patches.delete(patches.keys().next().value!);
@@ -650,6 +688,52 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     }
   }
 
+  // ---------- Wooden signboards ----------
+  const signPost = new THREE.MeshStandardMaterial({ color: 0x6b5236, roughness: 0.9 });
+  function makeSign(lines: string[], x: number, z: number, yaw: number) {
+    const c = document.createElement('canvas');
+    c.width = 512;
+    c.height = 256;
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#5a3f26';
+    g.fillRect(0, 0, 512, 256);
+    g.fillStyle = '#6d4d2f';
+    for (let k = 0; k < 4; k++) g.fillRect(0, k * 64 + 2, 512, 58);
+    g.fillStyle = '#f3e7c9';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    lines.forEach((t, k) => {
+      g.font = `${k ? 'normal 44px' : 'bold 58px'} system-ui, sans-serif`;
+      g.fillText(t, 256, 128 + (k - (lines.length - 1) / 2) * 72);
+    });
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const group = new THREE.Group();
+    const board = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.1, 0.08), [signPost, signPost, signPost, signPost, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 }), signPost]);
+    board.position.y = 1.9;
+    board.castShadow = true;
+    group.add(board);
+    for (const dx of [-0.9, 0.9]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.4, 0.12), signPost);
+      post.position.set(dx, 1.2, 0);
+      group.add(post);
+    }
+    group.position.set(x, heightAt(x, z), z);
+    group.rotation.y = yaw;
+    scene.add(group);
+    return group;
+  }
+  /** A sign beside the route at s, on the right, facing the driver coming along it. */
+  const signAt = (lines: string[], line: { at(s: number): { x: number; z: number; tx: number; tz: number } }, s: number, side = 1, out = 4.2) => {
+    const p = line.at(s);
+    // Right of travel is (-tz, tx) with x east and z south.
+    const x = p.x - p.tz * out * side;
+    const z = p.z + p.tx * out * side;
+    // A plane's front faces +z; turn it to face back along the route.
+    return makeSign(lines, x, z, Math.atan2(-p.tx, -p.tz));
+  };
+  for (const o of trail.obstacles) signAt([o.label], trail.route, o.s0 - 40, -1);
+
   // ---------- The ways round: a barrier until opened, then marker posts ----------
   const gateBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
   const gates = trail.obstacles.map((o) => {
@@ -687,6 +771,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       m.position.set(x, heightAt(x, z), z);
       posts.add(m);
     }
+    const sign = signAt(['Easier way round', o.side > 0 ? '\u2190 this way' : 'this way \u2192'], trail.route, o.s0 - 34, -1, 4.6);
+    posts.add(sign);
+    scene.remove(sign);
     posts.visible = false;
     scene.add(posts);
     return { group, collider, posts, opened: false };
@@ -711,6 +798,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     camp.x = (trail.camp.x + campPoi.x) / 2;
     camp.z = (trail.camp.z + campPoi.z) / 2;
   }
+
+  signAt(['Endut Senin', 'Campsite'], trail.route, trail.route.length - 30, -1);
+  signAt(['Pulau Ubin', 'Ketam Trail \u2192 7 km'], trail.route, 22, -1);
 
   // ---------- Map ----------
   const mapData: MapData = {
@@ -805,7 +895,10 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     update(time, _dt, cam, player) {
       wind.value = time;
       const at = player ?? cam;
-      if (at) streamer.update(at.x, at.z);
+      if (at) {
+        streamer.update(at.x, at.z);
+        updateLods(at.x, at.z);
+      }
       for (let i = 0; i < boats.length; i++) {
         boats[i].position.y = 0.05 * Math.sin(time * 1.1 + i * 2);
         boats[i].rotation.z = 0.02 * Math.sin(time * 0.9 + i);
