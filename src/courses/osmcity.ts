@@ -2011,6 +2011,44 @@ export async function buildPasirRisCourse(
     lit.push({ mouths, at, cands });
   });
 
+  /** Do any two of a closed ring's sides cross? */
+  const ringCrosses = (r: XZ[]) => {
+    const n = r.length;
+    for (let a = 0; a < n; a++)
+      for (let b = a + 2; b < n; b++) {
+        if (a === 0 && b === n - 1) continue;
+        const [p, q] = [r[a], r[(a + 1) % n]], [u, v] = [r[b], r[(b + 1) % n]];
+        const d1 = (q[0] - p[0]) * (u[1] - p[1]) - (q[1] - p[1]) * (u[0] - p[0]);
+        const d2 = (q[0] - p[0]) * (v[1] - p[1]) - (q[1] - p[1]) * (v[0] - p[0]);
+        const d3 = (v[0] - u[0]) * (p[1] - u[1]) - (v[1] - u[1]) * (p[0] - u[0]);
+        const d4 = (v[0] - u[0]) * (q[1] - u[1]) - (v[1] - u[1]) * (q[0] - u[0]);
+        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+      }
+    return false;
+  };
+  // (Every junction ring a simple polygon, its sides crossing nowhere: a
+  // slip road's island end, its edge carried on past the joint, crossed
+  // back over its own nose, and the paving drawn from it reached out past
+  // its outline over the kerb. Where a ring crosses itself, the part wound
+  // the way most of it is is kept, the largest piece.)
+  {
+    const simple = (r: XZ[]): XZ[] => {
+      const p = new Path64();
+      for (const q of r) p.push(new Point64(Math.round(q[0] * 1000), Math.round(q[1] * 1000)));
+      if (Clipper.area(p) < 0) p.reverse();
+      const P = new Paths64();
+      P.push(p);
+      let best: Path64 | null = null;
+      for (const o of Clipper.Union(P, undefined, FillRule.Positive)) if (Clipper.area(o) > 0 && (!best || Clipper.area(o) > Clipper.area(best))) best = o;
+      if (!best) return r;
+      const out = best.map((q): XZ => [q.x / 1000, q.y / 1000]);
+      // (The way round it was given.)
+      let a0 = 0;
+      r.forEach((q, i) => (a0 += q[0] * r[(i + 1) % r.length][1] - r[(i + 1) % r.length][0] * q[1]));
+      return a0 < 0 ? out.reverse() : out;
+    };
+    for (const sh of [...JX.shapes, ...JX.fills]) if (sh.ring.length > 3 && ringCrosses(sh.ring)) sh.ring = simple(sh.ring);
+  }
   // Everything paved at junctions: the shapes, and islands filled in.
   const JPOLY = [...JX.shapes.map((sh) => ({ ...sh, fill: false })), ...JX.fills.map((f) => ({ ...f, mouths: [] as typeof JX.shapes[number]['mouths'], kerbs: f.kerbs ?? ([] as XZ[][]), fill: true }))];
   const JCELL = 64;
@@ -4032,32 +4070,43 @@ export async function buildPasirRisCourse(
     if (runB) bL = runB[runB.length - 1];
     const sideA = runA ? runA.slice(1, -1) : [], sideB = runB ? runB.slice(1, -1) : [];
     const R = Math.min(NOSE_R, w / 2 - 0.05);
-    const C: XZ = [mx + d[0] * R, mz + d[1] * R];
-    // Where the island's straight side from P touches the circle (on the side away from the other road).
-    const touch = (P: XZ, side: XZ): number => {
-      const vx = P[0] - C[0], vz = P[1] - C[1];
-      const D = Math.hypot(vx, vz);
-      const base = Math.atan2(vz, vx), off = Math.acos(Math.min(1, R / D));
-      const t1 = base + off, t2 = base - off;
-      return Math.cos(t1) * side[0] + Math.sin(t1) * side[1] >= Math.cos(t2) * side[0] + Math.sin(t2) * side[1] ? t1 : t2;
+    // (The circle just past the row; or further on, a quarter metre at a
+    // time, until the island's sides back from the 4 m points to it cross
+    // neither road's edge: where the two roads part fast, the circle at
+    // the row's middle lay behind the row's corner, and the side to it
+    // crossed back over A's edge, the paving drawn out over the kerb.)
+    const shape = (set: number) => {
+      const C: XZ = [mx + d[0] * set, mz + d[1] * set];
+      // Where the island's straight side from P touches the circle (on the side away from the other road).
+      const touch = (P: XZ, side: XZ): number => {
+        const vx = P[0] - C[0], vz = P[1] - C[1];
+        const D = Math.hypot(vx, vz);
+        const base = Math.atan2(vz, vx), off = Math.acos(Math.min(1, R / D));
+        const t1 = base + off, t2 = base - off;
+        return Math.cos(t1) * side[0] + Math.sin(t1) * side[1] >= Math.cos(t2) * side[0] + Math.sin(t2) * side[1] ? t1 : t2;
+      };
+      let tA = touch(aL, ua), tB = touch(bL, [-ua[0], -ua[1]]);
+      // (Round the front, past the point nearest the wedge.)
+      const front = Math.atan2(-d[1], -d[0]);
+      const wrap = (t: number) => ((t % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+      let sweep = wrap(tB - tA);
+      if (wrap(front - tA) > sweep) sweep -= 2 * Math.PI;
+      // (A point every 15° at least, and every 0.3 m: no facets on a small point.)
+      const N = Math.max(3, Math.ceil(Math.abs(sweep) / (Math.PI / 12)), Math.ceil((Math.abs(sweep) * R) / 0.3));
+      const nose: XZ[] = [aL];
+      for (let k = 0; k <= N; k++) {
+        const t = tA + (sweep * k) / N;
+        nose.push([C[0] + Math.cos(t) * R, C[1] + Math.sin(t) * R]);
+      }
+      nose.push(bL);
+      // (Paved as one piece, its triangles found by ear clipping: from the
+      // row along A's edge, round the point and back along B's.)
+      const pave: XZ[] = [r.a, ...sideA, ...nose, ...[...sideB].reverse(), r.b];
+      return { C, nose, pave };
     };
-    let tA = touch(aL, ua), tB = touch(bL, [-ua[0], -ua[1]]);
-    // (Round the front, past the point nearest the wedge.)
-    const front = Math.atan2(-d[1], -d[0]);
-    const wrap = (t: number) => ((t % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-    let sweep = wrap(tB - tA);
-    if (wrap(front - tA) > sweep) sweep -= 2 * Math.PI;
-    // (A point every 15° at least, and every 0.3 m: no facets on a small point.)
-    const N = Math.max(3, Math.ceil(Math.abs(sweep) / (Math.PI / 12)), Math.ceil((Math.abs(sweep) * R) / 0.3));
-    const nose: XZ[] = [aL];
-    for (let k = 0; k <= N; k++) {
-      const t = tA + (sweep * k) / N;
-      nose.push([C[0] + Math.cos(t) * R, C[1] + Math.sin(t) * R]);
-    }
-    nose.push(bL);
-    // (Paved as one piece, its triangles found by ear clipping: from the
-    // row along A's edge, round the point and back along B's.)
-    const pave: XZ[] = [r.a, ...sideA, ...nose, ...[...sideB].reverse(), r.b];
+    let got = shape(R);
+    for (let set = R + 0.25; set < NOSE_L - R && ringCrosses(got.pave); set += 0.25) got = shape(set);
+    const { C, nose, pave } = got;
     const tris = THREE.ShapeUtils.triangulateShape(pave.map((p) => new THREE.Vector2(p[0], p[1])), []) as [number, number, number][];
     // (Each side's height carries on along it at the slope it had.)
     const sa = la > 0.05 ? (r.ya - q.ya) / la : 0, sb = lb > 0.05 ? (r.yb - q.yb) / lb : 0;
@@ -4977,6 +5026,14 @@ export async function buildPasirRisCourse(
         }
     }
   /** The raised pads at (x, z): each pad's joint and its height (as yOn has heights: under the lift all drawn things share). */
+  /** Is (x, z) on (or within grow of) a pad laid on the ground, not level? */
+  const drapedShapes = new Map<number, ReturnType<typeof padShape>>();
+  const drapedPadAt = (x: number, z: number, grow = 0) =>
+    !!padsByTile.get(tileKey(x, z))?.some((j) => {
+      if (padY(j) !== undefined) return false;
+      const p = drapedShapes.get(j) ?? drapedShapes.set(j, padShape(j)).get(j)!;
+      return p.ring ? inRingXZ(p.ring, x, z) || (grow > 0 && ringDist(p.ring, x, z)[0] < grow) : Math.hypot(x - p.x, z - p.z) < p.r + grow;
+    });
   const padsAt = (x: number, z: number, grow = 0) =>
     (padGrid.get(Math.floor(x / PCELL) * 100003 + Math.floor(z / PCELL)) ?? []).filter((p) =>
       p.ring ? inRingXZ(p.ring, x, z) || (grow > 0 && ringDist(p.ring, x, z)[0] < grow) : Math.hypot(x - p.x, z - p.z) < p.r * 0.98 + grow,
@@ -5141,24 +5198,52 @@ export async function buildPasirRisCourse(
         const surfY = (x: number, z: number) => jTop(id, x, z);
         if (part === 1) {
           const base = road.pos.length / 3;
-          road.pos.push(cx, surfY(cx, cz) + lift, cz);
-          road.uv.push(cx / 6, cz / 6);
-          for (const t of RINGS)
-            for (const p of ring) {
-              const x = cx + (p[0] - cx) * t;
-              const z = cz + (p[1] - cz) * t;
-              road.pos.push(x, surfY(x, z) + lift, z);
-              road.uv.push(x / 6, z / 6);
-            }
+          // (A fan from the middle, rings of it, where every side of the
+          // ring faces the middle the same way; otherwise the ring ear-
+          // clipped. Fanned, a slip road's island end, its two edges
+          // carried on past the joint as prongs, was paved out past its
+          // own outline, over the kerb beside it.)
+          let pos = 0, neg = 0;
           for (let i = 0; i < n; i++) {
-            const i1 = (i + 1) % n;
-            road.idx.push(base, base + 1 + i1, base + 1 + i);
-            for (let r = 0; r + 1 < RINGS.length; r++) {
-              const a = base + 1 + r * n;
-              const b = a + n;
-              road.idx.push(a + i, a + i1, b + i1, a + i, b + i1, b + i);
+            const a = ring[i], b = ring[(i + 1) % n];
+            const c = (a[0] - cx) * (b[1] - cz) - (a[1] - cz) * (b[0] - cx);
+            if (c > 1e-6) pos++;
+            else if (c < -1e-6) neg++;
+          }
+          const T: number[] = [];
+          if (pos && neg) {
+            for (const p of ring) {
+              road.pos.push(p[0], surfY(p[0], p[1]) + lift, p[1]);
+              road.uv.push(p[0] / 6, p[1] / 6);
+            }
+            // (Each triangle wound as the fan's would be, facing up.)
+            const S = pos >= neg ? 1 : -1;
+            for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(ring.map(([x, z]) => new THREE.Vector2(x, z)), [])) {
+              const A = ring[a], B = ring[b], C = ring[c];
+              const w = (B[0] - A[0]) * (C[1] - A[1]) - (B[1] - A[1]) * (C[0] - A[0]);
+              T.push(...(w * S < 0 ? [a, b, c] : [a, c, b]));
+            }
+          } else {
+            road.pos.push(cx, surfY(cx, cz) + lift, cz);
+            road.uv.push(cx / 6, cz / 6);
+            for (const t of RINGS)
+              for (const p of ring) {
+                const x = cx + (p[0] - cx) * t;
+                const z = cz + (p[1] - cz) * t;
+                road.pos.push(x, surfY(x, z) + lift, z);
+                road.uv.push(x / 6, z / 6);
+              }
+            for (let i = 0; i < n; i++) {
+              const i1 = (i + 1) % n;
+              T.push(0, 1 + i1, 1 + i);
+              for (let r = 0; r + 1 < RINGS.length; r++) {
+                const a = 1 + r * n;
+                const b = a + n;
+                T.push(a + i, a + i1, b + i1, a + i, b + i1, b + i);
+              }
             }
           }
+          for (const q of T) road.idx.push(base + q);
           // (On a deck the joint has an underside, as its roads have.)
           const dk = jointDeck(id);
           if (dk > 0) {
@@ -5168,15 +5253,7 @@ export async function buildPasirRisCourse(
               deck.pos.push(road.pos[v * 3], road.pos[v * 3 + 1] - lift + 0.09 - dk, road.pos[v * 3 + 2]);
               deck.uv.push(road.uv[v * 2], road.uv[v * 2 + 1]);
             }
-            for (let i = 0; i < n; i++) {
-              const i1 = (i + 1) % n;
-              deck.idx.push(db, db + 1 + i1, db + 1 + i);
-              for (let r = 0; r + 1 < RINGS.length; r++) {
-                const a = db + 1 + r * n;
-                const b = a + n;
-                deck.idx.push(a + i, a + i1, b + i1, a + i, b + i1, b + i);
-              }
-            }
+            for (const q of T) deck.idx.push(db + q);
           }
         }
         if (part === 2) {
@@ -6290,6 +6367,11 @@ export async function buildPasirRisCourse(
         const h = stripTop(o, x, z, seg - 2, seg + 2);
         if (stripOut < 0.02 && (y !== y || h > y)) y = h;
       });
+      // (And on a joint's pad where one lies there: round a pad the
+      // outline takes in, past the roads' own strips, the line lay 4 cm
+      // under it. A level pad at its level; one laid on the ground, on it.)
+      for (const p of padsAt(x, z, 0.5)) if (y !== y || (p.y > y && p.y - y < 0.5)) y = p.y;
+      if (y !== y && drapedPadAt(x, z, 0.5)) y = Math.max(rawHeight(x, z), WL + 0.15);
       return y;
     }
     /** Road o's drawn height at (x, z), by its nearest point among pieces lo..hi. */
@@ -6330,6 +6412,11 @@ export async function buildPasirRisCourse(
     // (From just short of its edge: the height between two of the mark's
     // points runs straight, and the pad's edge lies between them.)
     if (y === y && onTop) for (const p of padsAt(x, z, 0.5)) if (p.y > y && p.y - y < 0.5) y = p.y;
+    // (Or one laid on the ground, where it lies above the road's end.)
+    if (y === y && onTop && drapedPadAt(x, z, 0.5)) {
+      const g = Math.max(rawHeight(x, z), WL + 0.15);
+      if (g > y && g - y < 0.5) y = g;
+    }
     // (The same where a junction's paving of its level lies over the road's end.)
     if (y === y && onTop)
       for (const q of jointsNear(x, z)) {
@@ -8509,6 +8596,7 @@ export async function buildPasirRisCourse(
       fillY,
       surfacePoly: (i: number) => surfacePoly(i),
       outSources: () => outSources(),
+      padsAt, stripOutNow: () => stripOut, drapedPadAt, padShapeOf: (j: number) => padShape(j), padYOf: (j: number) => padY(j), padsByTile,
       outlineFillsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ corner: g.corner, lvl: g.lvl })),
       outlineRingsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => !g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ hole: g.hole, corner: g.corner, lvl: g.lvl })),
       stopsAt: (x: number, z: number, y: number) => ({ paving: inPaving(x, z, y), island: onIsland(x, z), gore: inGore(x, z) }),
