@@ -35,6 +35,8 @@ export interface JunctionIn {
   thru?: (line: number, end: 0 | 1) => boolean;
   /** Does this road, leaving joint j, climb to a flyover at its far end? (A slip road beside it parts from it as soon as the two are clear, not GAP apart: see teePart.) */
   ramp?: (line: number, j: number) => boolean;
+  /** Does an island between a slip road and its road end in a small rounded point (not square across)? */
+  round?: boolean;
   roads: SegIndex;
 }
 
@@ -860,6 +862,73 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           ring = parts[0];
           k0 = cs[0];
           more = parts.slice(1).map((r, q) => ({ ring: r, centre: cs[q + 1]!, radius: Math.max(...r.map((p) => Math.hypot(p[0] - cs[q + 1]![0], p[1] - cs[q + 1]![1]))) }));
+        }
+        // The island's end beyond the wedge: a small rounded point, its two
+        // sides tapering in over 4 m from the two roads' edges (square
+        // across, the kerb and edge lines turned two sharp corners round it).
+        // Paved as two shoulders, one from each road's edge to the point.
+        if (I.round) {
+          const sgnG = g === 0 ? 1 : -1;
+          const s = fwd ? 1 : -1;
+          const L = Math.min(4, sL - dG - 0.1);
+          // (The road's edge past the end of the line through the joint, as it was going.)
+          const eAtX = (u: number): XZ => {
+            if (u >= 0 && u <= eLen) return eAt(u);
+            const [p, q] = u < 0 ? [E[0], E[1]] : [E[E.length - 1], E[E.length - 2]];
+            const dl = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1;
+            const o = u < 0 ? -u : u - eLen;
+            return [p[0] + ((p[0] - q[0]) / dl) * o, p[1] + ((p[1] - q[1]) / dl) * o];
+          };
+          const A0 = eAt(uG), B0 = corner[g];
+          const w = Math.hypot(B0[0] - A0[0], B0[1] - A0[1]);
+          const Rn = Math.min(0.5, w / 2 - 0.05);
+          if (L >= 1 && Rn >= 0.05) {
+            /** The side road's edge at d, a little in on its strip. */
+            const sideIn = (d: number): XZ => {
+              const p = sideAt(d, sgnG), q = sideAt(d, -sgnG);
+              const t = 0.1 / (Math.hypot(q[0] - p[0], q[1] - p[1]) || 1);
+              return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+            };
+            const aL = eAtX(uG + s * L), bL = sideIn(dG + L);
+            const mx = (A0[0] + B0[0]) / 2, mz = (A0[1] + B0[1]) / 2;
+            const dl = Math.hypot((aL[0] + bL[0]) / 2 - mx, (aL[1] + bL[1]) / 2 - mz) || 1;
+            const dd: XZ = [((aL[0] + bL[0]) / 2 - mx) / dl, ((aL[1] + bL[1]) / 2 - mz) / dl];
+            // (Its point a little back from the line across, the paving
+            // round it all one piece: touching the line, the two shoulders
+            // either side met at a point and no centre could see into them.)
+            // (Clear of the line across by that much square to it: the line
+            // may lie aslant across the island.)
+            const nb = Math.abs(dd[0] * (B0[1] - A0[1]) - dd[1] * (B0[0] - A0[0])) / (w || 1);
+            const off = (Rn + 0.1) / Math.max(0.35, nb);
+            const C: XZ = [mx + dd[0] * off, mz + dd[1] * off];
+            const ua: XZ = [(A0[0] - mx) / (w || 1), (A0[1] - mz) / (w || 1)];
+            const touch = (P: XZ, side: XZ): number => {
+              const vx = P[0] - C[0], vz = P[1] - C[1];
+              const D = Math.hypot(vx, vz);
+              const base = Math.atan2(vz, vx), off = Math.acos(Math.min(1, Rn / D));
+              const t1 = base + off, t2 = base - off;
+              return Math.cos(t1) * side[0] + Math.sin(t1) * side[1] >= Math.cos(t2) * side[0] + Math.sin(t2) * side[1] ? t1 : t2;
+            };
+            const wrap = (t: number) => ((t % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+            const front = Math.atan2(-dd[1], -dd[0]);
+            const tA = touch(aL, ua), tB = touch(bL, [-ua[0], -ua[1]]);
+            // (Round the front, past the point nearest the wedge.)
+            let sweep = wrap(tB - tA);
+            if (wrap(front - tA) > sweep) sweep -= 2 * Math.PI;
+            const N = Math.max(3, Math.ceil((Math.abs(sweep) * Rn) / 0.3));
+            const arc: XZ[] = [];
+            for (let k = 0; k <= N; k++) arc.push([C[0] + Math.cos(tA + (sweep * k) / N) * Rn, C[1] + Math.sin(tA + (sweep * k) / N) * Rn]);
+            const eMid: XZ[] = [];
+            for (let k = 0; k < E.length; k++) if (s * (eCum[k] - uG) > 0.05 && s * (eCum[k] - uG) < L - 0.05) eMid.push(E[k]);
+            if (!fwd) eMid.reverse();
+            const sMid: XZ[] = [];
+            for (let d = dG + 1; d < dG + L - 0.05; d += 1) sMid.push(sideIn(d));
+            let sh: XZ[] = [A0, ...eMid, aL, ...arc, bL, ...sMid.reverse(), B0];
+            if (!ccw(sh)) sh = sh.reverse();
+            const kc = kernelOf(sh);
+            const parts = kc ? [{ ring: sh, c: kc }] : starParts(sh) ?? [];
+            for (const q of parts) more = [...(more ?? []), { ring: q.ring, centre: q.c, radius: Math.max(...q.ring.map((p) => Math.hypot(p[0] - q.c[0], p[1] - q.c[1]))) }];
+          }
         }
         c = k0 ?? eAt((uG + outU) / 2);
       } else {

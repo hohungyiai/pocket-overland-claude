@@ -1004,6 +1004,7 @@ export async function buildPasirRisCourse(
     slip: (j) => (jE[j] ?? []).length === 3 && jE[j].every((i) => /^(motorway|trunk)|_link$/.test(edges[i].cls)),
     thru: (i, end) => thruMate(i, end ? edges[i].b : edges[i].a) !== undefined,
     ramp: (i, j) => (jE[edges[i].a === j ? edges[i].b : edges[i].a] ?? []).some((o) => elevated[o]),
+    round: oneLine,
     roads,
   });
   // Junction heights above the ground: full height at a flyover's ends, then
@@ -7642,7 +7643,7 @@ export async function buildPasirRisCourse(
       lineOpen: (line: number, x: number, z: number, y: number) => !coveredBy(line, x, z, y) && !onIsland(x, z) && !inPaving(x, z, y),
       // Where any mark may stop (for the checks: no one road asked about).
       outlineAt,
-      outlineRingsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ hole: g.hole, corner: g.corner })),
+      outlineRingsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ hole: g.hole, corner: g.corner, lvl: g.lvl })),
       stopsAt: (x: number, z: number, y: number) => ({ paving: inPaving(x, z, y), island: onIsland(x, z), gore: inGore(x, z) }),
       whyClosed: (line: number, x: number, z: number, y: number) => ({ covered: coveredBy(line, x, z, y), island: onIsland(x, z), paving: inPaving(x, z, y), gore: inGore(x, z) }),
       markStops, throughEnd: (line: number, end: number) => throughEnds.has(line * 2 + end),

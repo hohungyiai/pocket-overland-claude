@@ -263,3 +263,244 @@ window.__checkMarkDepth = (all = false, TOL = 0.01) => {
   const pl = window.__finishIndex().places(bad, 4);
   return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
+
+// Every island ends in a small rounded point: where the outline turns
+// round an island's end (half a turn within 2.5 m, round the grass), no
+// straight piece of it across the end is over 0.8 m (a square end), no
+// corner of it turns more than 120 deg (a point sharper than 60 deg, a
+// spike), and no wall stops within 1 m of its point (a ramp's wall stands
+// on past the kerb as a fin). Nor does the outline cross itself anywhere
+// (two kerbs across each other).
+window.__checkNoses = (all = false) => {
+  const d = globalThis.__osm;
+  if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
+  const F = window.__finishIndex();
+  const TILE = 200;
+  const pts = [];
+  const tips = [];
+  let n = 0;
+  const cross = (ax, az, bx, bz) => ax * bz - az * bx;
+  for (const k of d.farTiles()) {
+    const [ix, iz] = k.split(',').map(Number);
+    const x0 = ix * TILE, z0 = iz * TILE;
+    const own = (x, z) => x >= x0 && x < x0 + TILE && z >= z0 && z < z0 + TILE;
+    const rings = d.outlineRingsNear(x0 + TILE / 2, z0 + TILE / 2, 1e9);
+    // (Each ring's pieces in this tile, by level, for the crossings.)
+    const segs = [];
+    rings.forEach((g, r) => {
+      // (Points within a centimetre of the last as one.)
+      const R = g.corner.filter((p, i, all) => Math.hypot(p[0] - all[(i + all.length - 1) % all.length][0], p[1] - all[(i + all.length - 1) % all.length][1]) > 0.01);
+      const N = R.length;
+      if (N < 3) return;
+      for (let i = 0; i < N; i++) {
+        const a = R[i], b = R[(i + 1) % N];
+        if (own((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)) segs.push({ a, b, r, i, N, lvl: g.lvl });
+      }
+      if (N < 6) return;
+      let A = 0;
+      for (let i = 0; i < N; i++) A += cross(R[i][0], R[i][1], R[(i + 1) % N][0], R[(i + 1) % N][1]);
+      // (Round the grass: an island's ring, or a wedge of grass into the paving.)
+      const sg = (g.hole ? A > 0 : A < 0) ? 1 : -1;
+      const turn = [], len = [];
+      for (let i = 0; i < N; i++) {
+        const a = R[(i + N - 1) % N], b = R[i], c = R[(i + 1) % N];
+        const ux = b[0] - a[0], uz = b[1] - a[1], vx = c[0] - b[0], vz = c[1] - b[1];
+        turn.push(Math.atan2(cross(ux, uz, vx, vz), ux * vx + uz * vz) * sg);
+        len.push(Math.hypot(vx, vz));
+      }
+      // Half turns: from each corner, the fewest that turn 150 deg within 2.5 m.
+      const cand = [];
+      for (let i = 0; i < N; i++) {
+        if (turn[i] <= 0) continue;
+        let t = 0, arc = 0;
+        for (let s = 0; s < N; s++) {
+          const j = (i + s) % N;
+          t += turn[j];
+          if (t >= (150 * Math.PI) / 180) {
+            cand.push({ i, s, arc });
+            break;
+          }
+          arc += len[j];
+          if (arc > 2.5 || t < -0.2) break;
+        }
+      }
+      cand.sort((p, q) => p.arc - q.arc);
+      const used = new Uint8Array(N);
+      for (const c of cand) {
+        let free = true;
+        for (let s = 0; s <= c.s; s++) if (used[(c.i + s) % N]) free = false;
+        if (!free) continue;
+        for (let s = 0; s <= c.s; s++) used[(c.i + s) % N] = 1;
+        // (Its point: the corner halfway round.)
+        let t = 0, tip = c.i, sharp = 0, flat = 0;
+        for (let s = 0; s <= c.s; s++) {
+          const j = (c.i + s) % N;
+          t += turn[j];
+          if (t < (90 * Math.PI) / 180) tip = j;
+          sharp = Math.max(sharp, turn[j]);
+          if (s < c.s) flat = Math.max(flat, len[j]);
+        }
+        const [x, z] = R[tip];
+        if (!own(x, z)) continue;
+        // (Only where a kerb runs round it: an outline with nothing drawn on it shows nothing.)
+        if (!d.outlineAt(x, z, 0.6).some((q) => q.kerb)) continue;
+        n++;
+        tips.push([x, z]);
+        if (flat > 0.8) pts.push({ x: +x.toFixed(1), z: +z.toFixed(1), value: +flat.toFixed(2), what: 'square end' });
+        const deg = (sharp * 180) / Math.PI;
+        if (deg > 120) pts.push({ x: +x.toFixed(1), z: +z.toFixed(1), value: +((deg - 120) / 60).toFixed(2), what: `corner ${deg.toFixed(0)} deg` });
+      }
+    });
+    // Crossings: two pieces of the outline of one level across each other.
+    const grid = new Map();
+    segs.forEach((s, q) => {
+      for (const c of new Set([[s.a, s.b].map((p) => Math.floor(p[0] / 4) * 100003 + Math.floor(p[1] / 4))].flat())) (grid.get(c) ?? grid.set(c, []).get(c)).push(q);
+    });
+    const seen = new Set();
+    for (const list of grid.values())
+      for (let p = 0; p < list.length; p++)
+        for (let q = p + 1; q < list.length; q++) {
+          const s = segs[list[p]], t = segs[list[q]];
+          if (s.lvl !== t.lvl) continue;
+          if (s.r === t.r && (Math.abs(s.i - t.i) <= 1 || Math.abs(s.i - t.i) === s.N - 1)) continue;
+          const key = list[p] + ',' + list[q];
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const d1 = cross(s.b[0] - s.a[0], s.b[1] - s.a[1], t.a[0] - s.a[0], t.a[1] - s.a[1]);
+          const d2 = cross(s.b[0] - s.a[0], s.b[1] - s.a[1], t.b[0] - s.a[0], t.b[1] - s.a[1]);
+          const d3 = cross(t.b[0] - t.a[0], t.b[1] - t.a[1], s.a[0] - t.a[0], s.a[1] - t.a[1]);
+          const d4 = cross(t.b[0] - t.a[0], t.b[1] - t.a[1], s.b[0] - t.a[0], s.b[1] - t.a[1]);
+          if (d1 * d2 < -1e-9 && d3 * d4 < -1e-9) {
+            const u = d1 / (d1 - d2);
+            const x = t.a[0] + (t.b[0] - t.a[0]) * u, z = t.a[1] + (t.b[1] - t.a[1]) * u;
+            pts.push({ x: +x.toFixed(1), z: +z.toFixed(1), value: 1, what: 'kerbs cross' });
+          }
+        }
+  }
+  // Wall ends near a point: an upright sheet's end that no other sheet
+  // carries on from (as the wall ends check finds them).
+  const key = (x, z) => `${Math.round(x * 20)},${Math.round(z * 20)}`;
+  const ends = new Map();
+  const near = (x, z) => tips.some((t) => Math.hypot(t[0] - x, t[1] - z) < 1.5);
+  for (const k of d.farTiles()) {
+    const r = d.tileAccs(k).deck;
+    if (!r) continue;
+    const { pos, idx } = r;
+    for (let q = 0; q < idx.length; q += 3) {
+      const v = [idx[q] * 3, idx[q + 1] * 3, idx[q + 2] * 3];
+      const det = (pos[v[1] + 2] - pos[v[2] + 2]) * (pos[v[0]] - pos[v[2]]) + (pos[v[2]] - pos[v[1]]) * (pos[v[0] + 2] - pos[v[2] + 2]);
+      if (Math.abs(det) > 1e-4) continue;
+      const ys = v.map((p) => pos[p + 1]);
+      if (Math.max(...ys) - Math.min(...ys) < 0.02) continue;
+      for (const p of v) {
+        const x = pos[p], z = pos[p + 2];
+        if (!near(x, z)) continue;
+        const kk = key(x, z);
+        const o = ends.get(kk) ?? { x, z, hi: -Infinity, n: 0 };
+        o.n++;
+        o.hi = Math.max(o.hi, pos[p + 1]);
+        ends.set(kk, o);
+      }
+    }
+  }
+  const S = window.__sheetIndex();
+  for (const o of ends.values()) {
+    if (o.n > 2 || o.hi - d.heightAt(o.x, o.z) < 0.3) continue;
+    const t = tips.find((q) => Math.hypot(q[0] - o.x, q[1] - o.z) < 1);
+    if (!t) continue;
+    let cont = false;
+    for (const i of S.near(o.x - 0.7, o.z - 0.7, o.x + 0.7, o.z + 0.7)) {
+      const s = F.sheets[i];
+      const dx = s.x1 - s.x0, dz = s.z1 - s.z0, L2 = dx * dx + dz * dz || 1;
+      const u = Math.max(0, Math.min(1, ((o.x - s.x0) * dx + (o.z - s.z0) * dz) / L2));
+      const dd = Math.hypot(s.x0 + dx * u - o.x, s.z0 + dz * u - o.z);
+      if ((dd > 0.02 && dd < 0.7 && s.hi > o.hi - 0.35) || (dd <= 0.02 && Math.min(Math.hypot(s.x0 - o.x, s.z0 - o.z), Math.hypot(s.x1 - o.x, s.z1 - o.z)) > 0.02 && s.hi > o.hi - 0.35)) {
+        cont = true;
+        break;
+      }
+    }
+    if (!cont) pts.push({ x: +t[0].toFixed(1), z: +t[1].toFixed(1), value: +(o.hi - d.heightAt(o.x, o.z)).toFixed(2), what: 'wall end at the point' });
+  }
+  const bad = F.places(pts, 2);
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm' };
+};
+
+// A kerb runs wherever an edge line has grass beyond it: no stretch over
+// 1 m where an edge line has ground beyond it (no road, no paving there)
+// and no kerb between the two. (On the ground only: a raised road has
+// its parapet.)
+window.__checkKerbBeside = (all = false) => {
+  const d = globalThis.__osm;
+  if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
+  const F = window.__finishIndex();
+  const CELL = 2;
+  const grids = { kerb: new Map(), road: new Map() };
+  const T = { kerb: [], road: [] };
+  const lines = [];
+  for (const k of d.farTiles()) {
+    const A = d.tileAccs(k);
+    for (const key of ['kerb', 'road', 'yellow']) {
+      const a = A[key];
+      if (!a) continue;
+      const P = a.pos, I = a.idx;
+      for (let t = 0; t < I.length; t += 3) {
+        const v = [];
+        for (let c = 0; c < 3; c++) v.push(P[I[t + c] * 3], P[I[t + c] * 3 + 1], P[I[t + c] * 3 + 2]);
+        if (key === 'yellow') {
+          lines.push(v);
+          continue;
+        }
+        const q = T[key].length;
+        T[key].push(v);
+        const x0 = Math.floor(Math.min(v[0], v[3], v[6]) / CELL), x1 = Math.floor(Math.max(v[0], v[3], v[6]) / CELL);
+        const z0 = Math.floor(Math.min(v[2], v[5], v[8]) / CELL), z1 = Math.floor(Math.max(v[2], v[5], v[8]) / CELL);
+        if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
+        for (let i = x0; i <= x1; i++)
+          for (let j = z0; j <= z1; j++) {
+            const c = i * 100003 + j;
+            (grids[key].get(c) ?? grids[key].set(c, []).get(c)).push(q);
+          }
+      }
+    }
+  }
+  /** Is (x, z) on a triangle of this kind, within dy of y? */
+  const on = (key, x, z, y, dy) => {
+    for (const q of grids[key].get(Math.floor(x / CELL) * 100003 + Math.floor(z / CELL)) ?? []) {
+      const t = T[key][q];
+      const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      if (Math.abs(d0) < 1e-9) continue;
+      const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
+      const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
+      if (l1 < -1e-6 || l2 < -1e-6 || 1 - l1 - l2 < -1e-6) continue;
+      if (Math.abs(l1 * t[1] + l2 * t[4] + (1 - l1 - l2) * t[7] - y) < dy) return true;
+    }
+    return false;
+  };
+  const bad = [];
+  const seen = new Set();
+  let n = 0;
+  for (const v of lines) {
+    const x = (v[0] + v[3] + v[6]) / 3, y = (v[1] + v[4] + v[7]) / 3, z = (v[2] + v[5] + v[8]) / 3;
+    const key = Math.round(x * 4) + ',' + Math.round(z * 4);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // (Along its longest side; across, either way.)
+    const E = [[0, 3], [3, 6], [6, 0]].map(([a, b]) => [v[b] - v[a], v[b + 2] - v[a + 2]]).reduce((m, e) => (Math.hypot(...e) > Math.hypot(...m) ? e : m));
+    const el = Math.hypot(...E) || 1;
+    const nx = -E[1] / el, nz = E[0] / el;
+    // (On the ground: a raised road's edge has its parapet.)
+    if (y - d.heightAt(x, z) > 1.5) continue;
+    if (window.__markStopOk(x, z, y)) continue;
+    n++;
+    for (const s of [1, -1]) {
+      const bx = x + nx * s * 1.1, bz = z + nz * s * 1.1;
+      // (Ground beyond: no road or paving drawn there, the ground near the line's height.)
+      if (on('road', bx, bz, y, 1) || Math.abs(d.heightAt(bx, bz) - y) > 1) continue;
+      if ([0.3, 0.45, 0.6].some((o) => on('kerb', x + nx * s * o, z + nz * s * o, y, 0.5))) continue;
+      bad.push({ x: +x.toFixed(1), z: +z.toFixed(1), value: 1 });
+    }
+  }
+  // (A stretch over a metre: three or more of its points a quarter metre apart, or more.)
+  const pl = F.places(bad, 1).filter((p) => (p.points ?? 1) >= 4);
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
+};
