@@ -4636,11 +4636,11 @@ export async function buildPasirRisCourse(
           // Deck sides: a concrete edge beam, an underside and parapets.
           const deck = acc('deck');
           const depth = elevated[line] ? 1.2 : 0.6;
-          // (The edge beam at the deck's edge, its top level with the deck;
-          // the parapet on the deck at the kerb's outer edge, as a raised
-          // road's wall is. Both at the deck's edge, the parapet stood 10 cm
-          // out past the kerb.)
-          const side = (sgn: number, out = 0.45) => (kk: number) => sgn * (halfAt(kk) + out);
+          // (The edge beam and the parapet on it both at the kerb's outer
+          // edge, as a raised road's wall is: one face from the underside up.
+          // At 0.45 m, the deck's old edge, the beam stood 10 cm out past the
+          // kerb, a slot open between them, and so did the parapet before.)
+          const side = (sgn: number, out = WALL_OUT) => (kk: number) => sgn * (halfAt(kk) + out);
           const y = (kk: number) => dy[kk] + 0.09;
           const ext = runsOn(line, pts);
           for (const sgn of [-1, 1]) {
@@ -4654,7 +4654,7 @@ export async function buildPasirRisCourse(
             }
             let b = a;
             while (b < k1 && !low(b)) b++;
-            strip(deck, pts, cum, a, b, (kk) => halfAt(kk) + 0.45, 0.09 - depth, { yAt });
+            strip(deck, pts, cum, a, b, (kk) => halfAt(kk) + WALL_OUT, 0.09 - depth, { yAt });
             a = b;
           }
         }
