@@ -498,8 +498,14 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         cx += (P[0] + Q[0]) * w;
         cz += (P[1] + Q[1]) * w;
       }
-      if (Math.abs(A) < 1e-9) return null;
-      return [cx / (3 * A), cz / (3 * A)];
+      // (A kernel all but nothing, a sliver along one line: its centroid by
+      // area is ill-conditioned and landed tens of metres off along that
+      // line, and the paving was drawn from there, folded over. The mean of
+      // its corners lies in it, being convex.)
+      const mean: XZ = [poly.reduce((t, p) => t + p[0], 0) / poly.length, poly.reduce((t, p) => t + p[1], 0) / poly.length];
+      if (Math.abs(A) < 2e-4) return Math.abs(A) < 1e-12 ? null : mean;
+      const c: XZ = [cx / (3 * A), cz / (3 * A)];
+      return Math.hypot(c[0] - mean[0], c[1] - mean[1]) < Math.hypot(x1 - x0, z1 - z0) ? c : mean;
     };
     /**
      * A simple outline (anticlockwise) that no one point sees all of, in
