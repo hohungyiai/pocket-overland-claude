@@ -1048,7 +1048,13 @@ export async function buildPasirRisCourse(
       for (const o of list) {
         // (Two flyover decks climb together. Two pieces of one strip are
         // not side by side: one carries on where the other ends.)
-        if (o === i || (elevated[i] && elevated[o]) || thruJoint(i, j) === o) continue;
+        // (Two flyover decks parting at a fork, though, each stood its own
+        // height above the hills under it: they reached the island's point
+        // up to 0.36 m apart, its kerb climbing between them and a wall
+        // standing up out of the lower one's paving. Redrawn maps: they
+        // share one height to the point, as roads on the ground do.)
+        const decks = elevated[i] && elevated[o];
+        if (o === i || (decks && !oneLine) || thruJoint(i, j) === o) continue;
         const ia = edges[i].a === j;
         const oa = edges[o].a === j;
         const far = Math.min(40, ELEN[i], ELEN[o]);
@@ -1061,6 +1067,27 @@ export async function buildPasirRisCourse(
           s += 1;
         }
         if (s < 2) continue;
+        // (How far along the island's point lies: where the two roads'
+        // edges are 1.8 m apart, each as wide as drawn there, as the gore
+        // between them measures it (a road's one width, wider than its
+        // drawn strip, put a gore's point 20 m short of where the hold
+        // ended). Never past 10 m short of either road's far end.)
+        const lim = Math.min(80, ELEN[i] - 10, ELEN[o] - 10);
+        const toPoint = () => {
+          let d = s;
+          while (d < lim) {
+            const [x1, z1] = along(i, ia, d + 1);
+            const [x2, z2] = along(o, oa, d + 1);
+            if (Math.hypot(x1 - x2, z1 - z2) >= halfAtS(i, ia ? d + 1 : ELEN[i] - d - 1) + halfAtS(o, oa ? d + 1 : ELEN[o] - d - 1) + 1.8) break;
+            d += 1;
+          }
+          return d;
+        };
+        if (decks) {
+          const d = toPoint();
+          if (d < lim) mates[i].push({ o, ia, oa, L: d + 1, pt: true });
+          continue;
+        }
         // (Wherever two roads part, both stay level on past the point of the
         // island between them, until their edges are 1.8 m apart: one height
         // at the point, a ramp climbing or falling only beyond it, its wall
@@ -1076,20 +1103,10 @@ export async function buildPasirRisCourse(
         let mateL = s;
         let pt = false;
         if (oneLine && !elevated[i] && !elevated[o]) {
-          let d = s;
           // (To the point, however far along it lies, leaving 10 m of each
           // road beyond it to climb or fall in: 40% of the shorter road left
           // a point 31 m along a 61 m slip road with the two 0.7 m apart.)
-          const lim = Math.min(80, ELEN[i] - 10, ELEN[o] - 10);
-          while (d < lim) {
-            const [x1, z1] = along(i, ia, d + 1);
-            const [x2, z2] = along(o, oa, d + 1);
-            // (Each as wide as drawn there, as the gore between them
-            // measures it: a road's one width, wider than its drawn strip,
-            // put a gore's point 20 m short of where the hold ended.)
-            if (Math.hypot(x1 - x2, z1 - z2) >= halfAtS(i, ia ? d + 1 : ELEN[i] - d - 1) + halfAtS(o, oa ? d + 1 : ELEN[o] - d - 1) + 1.8) break;
-            d += 1;
-          }
+          const d = toPoint();
           if (d < lim && atDeck) (mateL = d + 1), (pt = true);
           else if (d < lim) {
             if (ia) ptA[i] = Math.max(ptA[i], d + 1);
@@ -1276,7 +1293,15 @@ export async function buildPasirRisCourse(
       if (so < 0 || so > ELEN[m.o]) continue;
       const di = m.ia ? m.L : ELEN[i] - m.L;
       const dO = m.oa ? m.L : ELEN[m.o] - m.L;
-      const gap = (Math.abs(relOwn(m.o, Math.max(0, Math.min(ELEN[m.o], dO))) - relOwn(i, Math.max(0, Math.min(ELEN[i], di)))) / 2) * (mHeld ? 2 : 1);
+      // (To an island's point, what they part by is their heights' own
+      // difference there, the hills under each counted: two flyover decks
+      // at one height above the ground eased apart over 8 m at 2%.)
+      let dbL = 0;
+      if (m.pt) {
+        const ci = Math.max(0, Math.min(ELEN[i], di)), co = Math.max(0, Math.min(ELEN[m.o], dO));
+        dbL = roadBase(m.o, co, ...along(m.o, true, co)) - roadBase(i, ci, ...along(i, true, ci));
+      }
+      const gap = (Math.abs(relOwn(m.o, Math.max(0, Math.min(ELEN[m.o], dO))) + dbL - relOwn(i, Math.max(0, Math.min(ELEN[i], di)))) / 2) * (mHeld ? 2 : 1);
       const fade = Math.min(60, Math.max(8, (1.5 * gap) / (0.5 * MAX_GRADE)));
       // (Both roads are back to their own height at their far ends, where
       // other roads meet them.)
@@ -4166,6 +4191,54 @@ export async function buildPasirRisCourse(
     }
     return out;
   };
+  /**
+   * The line a nose's wall (or a deck's edge beam and parapet) runs on: round
+   * the island's point 0.3 m in from it, and on from each end to where the
+   * road's own wall begins. NP: the nose's points it is drawn from (with the
+   * road walls' ends, eA and eB, where found); NW: the wall's line.
+   */
+  const noseWall = (id: number, c: GoreCap) => {
+    const bandOut = (line: number | undefined, from: XZ): XZ | null => {
+      if (line === undefined) return null;
+      const P = EP[line];
+      let k = 0, best = Infinity;
+      P.forEach((p, q) => {
+        const dd = Math.hypot(p[0] - from[0], p[1] - from[1]);
+        if (dd < best) (best = dd), (k = q);
+      });
+      const away = (q: number) => Math.hypot(P[q][0] - c.C[0], P[q][1] - c.C[1]);
+      const dir = k + 1 < P.length && (k === 0 || away(k + 1) > away(k - 1)) ? 1 : -1;
+      for (let kk = k; kk >= 0 && kk < P.length && Math.abs(kk - k) <= 4; kk += dir) {
+        const a = P[Math.max(0, kk - 1)], b = P[Math.min(P.length - 1, kk + 1)];
+        const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+        const nx = (b[1] - a[1]) / tl, nz = -(b[0] - a[0]) / tl;
+        const sg = nx * (c.C[0] - P[kk][0]) + nz * (c.C[1] - P[kk][1]) > 0 ? 1 : -1;
+        const h = halfAtE(line, kk) + WALL_OUT;
+        const o: XZ = [P[kk][0] + nx * sg * h, P[kk][1] + nz * sg * h];
+        if (!inRingXZ(c.pave, o[0], o[1]) && !inGore(o[0], o[1])) return Math.hypot(o[0] - from[0], o[1] - from[1]) < 5 ? o : null;
+      }
+      return null;
+    };
+    const eA = bandOut(gores[id].A, c.nose[0]), eB = bandOut(gores[id].B, c.nose[c.nose.length - 1]);
+    const NP: XZ[] = [...(eA ? [eA] : []), ...c.nose, ...(eB ? [eB] : [])];
+    // (The ends of the nose's sides, on the roads' edges, out to
+    // that same line square to their road; round the point, 0.3 m
+    // in from it.)
+    const sq = (p: XZ, prev: XZ): XZ => {
+      const t = unit(p[0] - prev[0], p[1] - prev[1]);
+      const sg = -t[1] * (c.C[0] - p[0]) + t[0] * (c.C[1] - p[1]) > 0 ? 1 : -1;
+      return [p[0] - t[1] * sg * WALL_OUT, p[1] + t[0] * sg * WALL_OUT];
+    };
+    const nA = c.nose[0], nB = c.nose[c.nose.length - 1];
+    const NW = NP.map((p, q): XZ => {
+      if ((eA && q === 0) || (eB && q === NP.length - 1)) return p;
+      if (p === nA && eA) return sq(nA, c.sideA.length ? c.sideA[c.sideA.length - 1] : c.a);
+      if (p === nB && eB) return sq(nB, c.sideB.length ? c.sideB[c.sideB.length - 1] : c.b);
+      const u = unit(c.C[0] - p[0], c.C[1] - p[1]);
+      return [p[0] + u[0] * 0.3, p[1] + u[1] * 0.3];
+    });
+    return { NP, NW, eA, eB };
+  };
   {
     const byTile = new Map<string, number[]>();
     gores.forEach((g, id) => {
@@ -4197,7 +4270,7 @@ export async function buildPasirRisCourse(
             const W: XZ[] = [[c.a[0] + c.d[0] * 0.3, c.a[1] + c.d[1] * 0.3], [c.b[0] + c.d[0] * 0.3, c.b[1] + c.d[1] * 0.3]];
             const cw = [0, Math.hypot(c.a[0] - c.b[0], c.a[1] - c.b[1])];
             const yk = (q: number) => (q ? c.yb : c.ya) + 0.09;
-            if (dk > 0) {
+            if (dk > 0 && !oneLine) {
               band(deck, W, cw, 0, 1, 0, yk, dk, 0.05, () => true);
               band(deck, W, cw, 0, 1, 0, yk, 0, PARAPET_H, () => true);
             } else if (oneLine) {
@@ -4209,45 +4282,7 @@ export async function buildPasirRisCourse(
               // its first point clear of the nose's paving, 0.45 m out from
               // the road's edge. Ending 0.3 m in from the end of the nose's
               // side, the two walls jogged 0.3 m sideways there, a step.)
-              const bandOut = (line: number | undefined, from: XZ): XZ | null => {
-                if (line === undefined) return null;
-                const P = EP[line];
-                let k = 0, best = Infinity;
-                P.forEach((p, q) => {
-                  const dd = Math.hypot(p[0] - from[0], p[1] - from[1]);
-                  if (dd < best) (best = dd), (k = q);
-                });
-                const away = (q: number) => Math.hypot(P[q][0] - c.C[0], P[q][1] - c.C[1]);
-                const dir = k + 1 < P.length && (k === 0 || away(k + 1) > away(k - 1)) ? 1 : -1;
-                for (let kk = k; kk >= 0 && kk < P.length && Math.abs(kk - k) <= 4; kk += dir) {
-                  const a = P[Math.max(0, kk - 1)], b = P[Math.min(P.length - 1, kk + 1)];
-                  const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-                  const nx = (b[1] - a[1]) / tl, nz = -(b[0] - a[0]) / tl;
-                  const sg = nx * (c.C[0] - P[kk][0]) + nz * (c.C[1] - P[kk][1]) > 0 ? 1 : -1;
-                  const h = halfAtE(line, kk) + WALL_OUT;
-                  const o: XZ = [P[kk][0] + nx * sg * h, P[kk][1] + nz * sg * h];
-                  if (!inRingXZ(c.pave, o[0], o[1]) && !inGore(o[0], o[1])) return Math.hypot(o[0] - from[0], o[1] - from[1]) < 5 ? o : null;
-                }
-                return null;
-              };
-              const eA = bandOut(gores[id].A, c.nose[0]), eB = bandOut(gores[id].B, c.nose[c.nose.length - 1]);
-              const NP: XZ[] = [...(eA ? [eA] : []), ...c.nose, ...(eB ? [eB] : [])];
-              // (The ends of the nose's sides, on the roads' edges, out to
-              // that same line square to their road; round the point, 0.3 m
-              // in from it.)
-              const sq = (p: XZ, prev: XZ): XZ => {
-                const t = unit(p[0] - prev[0], p[1] - prev[1]);
-                const sg = -t[1] * (c.C[0] - p[0]) + t[0] * (c.C[1] - p[1]) > 0 ? 1 : -1;
-                return [p[0] - t[1] * sg * WALL_OUT, p[1] + t[0] * sg * WALL_OUT];
-              };
-              const nA = c.nose[0], nB = c.nose[c.nose.length - 1];
-              const NW = NP.map((p, q): XZ => {
-                if ((eA && q === 0) || (eB && q === NP.length - 1)) return p;
-                if (p === nA && eA) return sq(nA, c.sideA.length ? c.sideA[c.sideA.length - 1] : c.a);
-                if (p === nB && eB) return sq(nB, c.sideB.length ? c.sideB[c.sideB.length - 1] : c.b);
-                const u = unit(c.C[0] - p[0], c.C[1] - p[1]);
-                return [p[0] + u[0] * 0.3, p[1] + u[1] * 0.3];
-              });
+              const { NP, NW, eA, eB } = noseWall(id, c);
               const nc = NW.map((_, q) => (q ? 0 : 0));
               for (let q = 1; q < NW.length; q++) nc[q] = nc[q - 1] + Math.hypot(NW[q][0] - NW[q - 1][0], NW[q][1] - NW[q - 1][1]);
               const ny = (q: number) => c.yAt(NP[q]) + 0.09;
@@ -4259,6 +4294,15 @@ export async function buildPasirRisCourse(
               // carries it on from there however low, its top coming down to
               // the ground by the next point: it grows from nothing, where it
               // stopped square at the road wall's last point, 30 cm tall.)
+              // (Between two flyover decks, the decks' edge beam and parapet,
+              // round the point the same way. Straight across from one
+              // road's edge to the other's, 0.3 m past the wedge, they stood
+              // on the nose's paving past its point, a full parapet across.)
+              if (dk > 0) {
+                band(deck, NW, nc, 0, NW.length - 1, 0, ny, dk, 0, () => true);
+                band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, PARAPET_H, () => true);
+                continue;
+              }
               band(deck, NW, nc, 0, NW.length - 1, 0, ny, (q) => Math.max(0, nd[q]) + 0.3, (q) => wallTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > WALL_FROM || onA(q) || onB(q), [0, 0], (q) => (nd[q] > WALL_FROM ? Infinity : -nd[q]));
               band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, (q) => parapetTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > PARAPET_FROM);
             } else if (c.drop > WALL_FROM) {
@@ -4306,7 +4350,20 @@ export async function buildPasirRisCourse(
         for (const id of list)
           for (const c of goreCaps(id)) {
             const h = gores[id].deck > 0 ? PARAPET_H : parapetTop(c.drop);
-            if (h >= 0.3) barrierBox(tileBody(kit), c.a[0] + c.d[0] * 0.3, c.a[1] + c.d[1] * 0.3, c.b[0] + c.d[0] * 0.3, c.b[1] + c.d[1] * 0.3, (c.ya + c.yb) / 2 + 0.09, h);
+            if (!oneLine) {
+              if (h >= 0.3) barrierBox(tileBody(kit), c.a[0] + c.d[0] * 0.3, c.a[1] + c.d[1] * 0.3, c.b[0] + c.d[0] * 0.3, c.b[1] + c.d[1] * 0.3, (c.ya + c.yb) / 2 + 0.09, h);
+              continue;
+            }
+            // (Round the point, on the line its parapet is drawn on: straight
+            // across 0.3 m past the wedge, it stood on the nose's paving past
+            // the point, a wall the car hit where none is drawn.)
+            // (Each piece as tall as its parapet is drawn, by its own drop.)
+            const { NP, NW } = noseWall(id, c);
+            const ny = (q: number) => c.yAt(NP[q]) + 0.09;
+            for (let q = 1; q < NW.length; q++) {
+              const ph = gores[id].deck > 0 ? PARAPET_H : parapetTop(Math.max(ny(q - 1) - heightAt(NW[q - 1][0], NW[q - 1][1]), ny(q) - heightAt(NW[q][0], NW[q][1])));
+              if (ph >= 0.3) barrierBox(tileBody(kit), NW[q - 1][0], NW[q - 1][1], NW[q][0], NW[q][1], (ny(q - 1) + ny(q)) / 2, ph);
+            }
           }
       });
   }
