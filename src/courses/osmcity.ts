@@ -2182,6 +2182,13 @@ export async function buildPasirRisCourse(
   /** On a paved island? (y: at that height, for a raised road. An island on the ground is nothing to a deck that passes over it.) */
   const onIsland = (x: number, z: number, y = NaN) =>
     !!jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL))?.some((id) => JPOLY[id].fill && inRingXZ(JPOLY[id].ring, x, z) && (y !== y || Math.abs(jTop(id, x, z) - y) < 3));
+  /**
+   * Inside any joint's paving or paved island, at about height y, right up to
+   * its edge? (Beside a raised road's wall: there the joint's own wall runs
+   * round its outline, and the road's would stand on its paving.)
+   */
+  const inJoint = (x: number, z: number, y: number) =>
+    !!jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL))?.some((id) => inRingXZ(JPOLY[id].ring, x, z) && Math.abs(jTop(id, x, z) - y) < 3);
   /** Distance from (x, z) to a junction's outline (0 inside) and the nearest outline point. */
   const ringDist = (ring: XZ[], x: number, z: number): [number, number, number] => {
     let best = Infinity;
@@ -4595,6 +4602,7 @@ export async function buildPasirRisCourse(
           // where the drop is more than a kerb.
           const deck = acc('deck');
           const ext = runsOn(line, P);
+          const sec = { lo: cut.lo, hi: cut.hi, join: opt.join };
           for (const sgn of [-1, 1]) {
             const off = (kk: number) => sgn * (halfAt(kk) + WALL_OUT);
             const dr = new Float32Array(hi - lo + 1);
@@ -4643,7 +4651,7 @@ export async function buildPasirRisCourse(
               const o = off(kk) + (off(kk + 1) - off(kk)) * t + sgn * (R + 0.02 - WALL_OUT);
               const cx = a[0] + (b[0] - a[0]) * t + tz * o, cz = a[1] + (b[1] - a[1]) * t - tx * o;
               const yy = y(kk) + (y(kk + 1) - y(kk)) * t;
-              const clear = (x: number, z: number) => !coveredBy(line, x, z, yy) && !onIsland(x, z, yy) && !inPaving(x, z, yy) && !inGore(x, z) && !inNose(x, z);
+              const clear = (x: number, z: number) => !coveredBy(line, x, z, yy) && !inJoint(x, z, yy) && !inGore(x, z) && !inNose(x, z);
               if (!clear(cx, cz)) return false;
               for (let q = 0; q < 8; q++) {
                 const c = Math.cos((q * Math.PI) / 4) * R, s = Math.sin((q * Math.PI) / 4) * R;
@@ -4651,8 +4659,8 @@ export async function buildPasirRisCourse(
               }
               return true;
             };
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), openBeside);
-            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)), ext(sgn), undefined, openBeside);
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !inJoint(...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), openBeside, sec);
+            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)), ext(sgn), undefined, openBeside, sec);
           }
         }
         if (dy && isDeck[line]) {
@@ -4664,11 +4672,12 @@ export async function buildPasirRisCourse(
           // At 0.45 m, the deck's old edge, the beam stood 10 cm out past the
           // kerb, a slot open between them, and so did the parapet before.)
           const side = (sgn: number, out = WALL_OUT) => (kk: number) => sgn * (halfAt(kk) + out);
+          const sec = { lo: cut.lo, hi: cut.hi, join: opt.join };
           const y = (kk: number) => dy[kk] + 0.09;
           const ext = runsOn(line, pts);
           for (const sgn of [-1, 1]) {
-            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0, (kk) => !low(kk), ext(sgn));
-            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, 0.95, (kk) => !low(kk) && parapetClear(line, kk, side(sgn)(kk)), ext(sgn));
+            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0, (kk) => !low(kk), ext(sgn), undefined, undefined, sec);
+            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, 0.95, (kk) => !low(kk) && parapetClear(line, kk, side(sgn)(kk)), ext(sgn), undefined, undefined, sec);
           }
           for (let a = k0; a < k1; ) {
             if (low(a)) {
@@ -7057,7 +7066,7 @@ export async function buildPasirRisCourse(
    * walls overlap a little instead of leaving a hairline between them where
    * the road bends at the joint.)
    */
-  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), aboveIn: number | ((k: number) => number), keep: (k: number) => boolean, ext: [number, number] = [0, 0], endAbove?: (k: number, off: number) => number, open?: (k: number, t: number) => boolean) => {
+  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), aboveIn: number | ((k: number) => number), keep: (k: number) => boolean, ext: [number, number] = [0, 0], endAbove?: (k: number, off: number) => number, open?: (k: number, t: number) => boolean, sec?: { lo: number; hi: number; join?: (k: number) => { d: XZ; m: number } | null }) => {
     const base = acc.pos.length / 3;
     // (Kept pieces, worked out first: where a run of them ends, its top may
     // come down to endAbove there, as a wall comes out of the ground.)
@@ -7068,10 +7077,21 @@ export async function buildPasirRisCourse(
       const a = pts[Math.max(0, k - 1)];
       const b = pts[Math.min(pts.length - 1, k + 1)];
       const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-      const off = typeof offIn === 'number' ? offIn : offIn(k);
+      let off = typeof offIn === 'number' ? offIn : offIn(k);
       const along = k === 0 ? -ext[0] : k === pts.length - 1 ? ext[1] : 0;
-      const x = pts[k][0] + ((b[1] - a[1]) / tl) * off + ((b[0] - a[0]) / tl) * along;
-      const z = pts[k][1] - ((b[0] - a[0]) / tl) * off + ((b[1] - a[1]) / tl) * along;
+      let nx = (b[1] - a[1]) / tl, nz = -(b[0] - a[0]) / tl;
+      // (Beside a road: across it as its strip is drawn, out along the
+      // mitre at a bend, so the band keeps its distance from the road's
+      // edge. Square to the chord, it came in by 5 cm round a bend's
+      // outside, short of the kerb's outer edge.)
+      if (sec && k >= sec.lo && k <= sec.hi) {
+        const c = section(pts, k, sec.lo, sec.hi, sec.join);
+        nx = c.nx;
+        nz = c.nz;
+        off *= c.mm;
+      }
+      const x = pts[k][0] + nx * off + ((b[0] - a[0]) / tl) * along;
+      const z = pts[k][1] + nz * off + ((b[1] - a[1]) / tl) * along;
       const yk = y(k);
       const below = typeof belowIn === 'number' ? belowIn : belowIn(k);
       let above = typeof aboveIn === 'number' ? aboveIn : aboveIn(k);
@@ -7087,8 +7107,14 @@ export async function buildPasirRisCourse(
       const moved = new Map<number, number[]>();
       const trim = (k: number, end: 0 | 1) => {
         if (open(k, end)) return;
-        let a = 0.5, b: number = end;
-        if (!open(k, a)) return;
+        // (From the piece's other end, the run's side, to the first place
+        // the ground beside is open, then on to where it stops being.)
+        let a = -1, b: number = end;
+        for (let q = 0; q < 8 && a < 0; q++) {
+          const t = end ? q / 8 : 1 - q / 8;
+          if (open(k, t)) a = t;
+        }
+        if (a < 0) return;
         for (let it = 0; it < 10; it++) {
           const m = (a + b) / 2;
           if (open(k, m)) a = m;
