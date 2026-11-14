@@ -3816,10 +3816,29 @@ export async function buildPasirRisCourse(
     nose.push(bL);
     // (Each side's height carries on along it at the slope it had.)
     const sa = la > 0.05 ? (r.ya - q.ya) / la : 0, sb = lb > 0.05 ? (r.yb - q.yb) / lb : 0;
-    const yAt = (p: XZ) => {
+    const guess = (p: XZ) => {
       const t = Math.max(0, Math.min(1, ((p[0] - r.a[0]) * (r.b[0] - r.a[0]) + (p[1] - r.a[1]) * (r.b[1] - r.a[1])) / (w * w || 1)));
       const s = Math.max(0, (p[0] - mx) * d[0] + (p[1] - mz) * d[1]);
       return lerp(r.ya + sa * s, r.yb + sb * s, t);
+    };
+    // (As the roads either side are drawn there, the nearer counting most:
+    // carried on from the wedge's last row, on a ramp's tilted foot it lay
+    // over the road's edge and its kerb.)
+    const yAt = (p: XZ) => {
+      const g = guess(p);
+      let sw = 0, sy = 0;
+      roads.each(p[0], p[1], 12, (o, seg, u, dd) => {
+        if (JX.internal[o]) return;
+        const out = Math.max(0, dd - drawnHalf(o, seg, u));
+        if (out > 1.5) return;
+        const h = hasProfile[o] ? drawnTop(o, seg, u, p[0], p[1]) : dropAt(p[0], p[1]);
+        if (!(Math.abs(h - g) < 1)) return;
+        const wt = 1 / (out + 0.05) ** 2;
+        sw += wt;
+        sy += wt * h;
+      });
+      // (Never above its own carrying on: a hair under the roads, as the wedge is, so it never covers their kerbs.)
+      return sw > 0 ? Math.min(g, sy / sw) : g;
     };
     return { nose, C, yAt };
   };
@@ -5594,6 +5613,15 @@ export async function buildPasirRisCourse(
         const h = paveY(q, x, z);
         if (h > y && h - y < 0.5) y = h;
       }
+    // (And a nose's paving round its point, which lies over both roads'
+    // edges: an edge line round it went under it.)
+    if (y === y && onTop && oneLine)
+      for (const id of goresNear(x, z))
+        for (const c of goreCaps(id)) {
+          if (!inRingXZ([c.a, ...c.nose, c.b], x, z) && !c.nose.some((p, k) => k > 0 && segDist(c.nose[k - 1], p, x, z) < 0.5)) continue;
+          const h = c.yAt([x, z]) + 0.087;
+          if (h > y && h - y < 0.5) y = h;
+        }
     return y;
   };
   // (A tile's outline is worked out over several build slices, each short:
