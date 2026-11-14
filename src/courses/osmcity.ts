@@ -1037,6 +1037,9 @@ export async function buildPasirRisCourse(
   };
   const sepA = new Float32Array(edges.length);
   const sepB = new Float32Array(edges.length);
+  // (Held to an island's point: may run past 40% of the road; see TRIM_A.)
+  const ptA = new Float32Array(edges.length);
+  const ptB = new Float32Array(edges.length);
   const mates = edges.map(() => [] as { o: number; ia: boolean; oa: boolean; L: number }[]);
   jE.forEach((list, j) => {
     if (list.length < 2) return;
@@ -1057,30 +1060,44 @@ export async function buildPasirRisCourse(
           s += 1;
         }
         if (s < 2) continue;
-        // (Where one of the two climbs to a flyover, both stay level on past
-        // the point of the island between them, until their edges are 1.8 m
-        // apart: one height at the point, the ramp climbing only beyond it,
-        // its wall growing from nothing there. Each held as far as its own
-        // edge runs beside the other's, and no further than 40 m.)
-        const climbs = (q: number, qa: boolean) => (jE[qa ? edges[q].b : edges[q].a] ?? []).some((t) => elevated[t]);
-        if (oneLine && !elevated[i] && !elevated[o] && (climbs(i, ia) || climbs(o, oa))) {
+        // (Wherever two roads part, both stay level on past the point of the
+        // island between them, until their edges are 1.8 m apart: one height
+        // at the point, a ramp climbing or falling only beyond it, its wall
+        // growing from nothing there. Each held as far as its own edge runs
+        // beside the other's, and no further than 40 m. Not only where one
+        // climbs to a flyover: a slip road rising to meet a deck further on,
+        // or one falling with the ground, parted 0.7 m apart at the point.)
+        // (At a flyover's end the two come off its deck side by side: held
+        // level there, a ramp lost half its length and the roads beyond
+        // shifted under the next flyover. They share one height to the
+        // point instead, as roads overlapping do: see relAlong.)
+        const atDeck = (jE[j] ?? []).some((t) => elevated[t]);
+        let mateL = s;
+        if (oneLine && !elevated[i] && !elevated[o]) {
           let d = s;
-          const lim = Math.min(40, ELEN[i] * 0.4, ELEN[o] * 0.4);
+          // (To the point, however far along it lies, leaving 10 m of each
+          // road beyond it to climb or fall in: 40% of the shorter road left
+          // a point 31 m along a 61 m slip road with the two 0.7 m apart.)
+          const lim = Math.min(80, ELEN[i] - 10, ELEN[o] - 10);
           while (d < lim) {
             const [x1, z1] = along(i, ia, d + 1);
             const [x2, z2] = along(o, oa, d + 1);
-            if (Math.hypot(x1 - x2, z1 - z2) >= wide(i, ia, d + 1) + wide(o, oa, d + 1) + 1.8) break;
+            // (Each as wide as drawn there, as the gore between them
+            // measures it: a road's one width, wider than its drawn strip,
+            // put a gore's point 20 m short of where the hold ended.)
+            if (Math.hypot(x1 - x2, z1 - z2) >= halfAtS(i, ia ? d + 1 : ELEN[i] - d - 1) + halfAtS(o, oa ? d + 1 : ELEN[o] - d - 1) + 1.8) break;
             d += 1;
           }
-          if (d < lim) {
-            if (ia) sepA[i] = Math.max(sepA[i], d + 1);
-            else sepB[i] = Math.max(sepB[i], d + 1);
+          if (d < lim && atDeck) mateL = d + 1;
+          else if (d < lim) {
+            if (ia) ptA[i] = Math.max(ptA[i], d + 1);
+            else ptB[i] = Math.max(ptB[i], d + 1);
           }
         }
         // Two roads on the ground (or ramps) share one height where they
         // overlap (see relAlong); beside a flyover deck, a road stays level.
         if (!elevated[i] && !elevated[o]) {
-          mates[i].push({ o, ia, oa, L: s });
+          mates[i].push({ o, ia, oa, L: mateL });
           // (A road running through the joint as one strip stays level
           // beside a road that leaves it there, for as far as that road is
           // level: out to its mouth. The two are one surface until then.)
@@ -1097,8 +1114,12 @@ export async function buildPasirRisCourse(
   });
   // (Worked out once for every road: the ground's height is asked of these
   // tens of thousands of times for each tile built.)
-  const TRIM_A = Float64Array.from(edges, (_, i) => Math.min(Math.max(elevated[i] ? 0 : JX.trimA[i] || 0, sepA[i]), ELEN[i] * 0.4));
-  const TRIM_B = Float64Array.from(edges, (_, i) => Math.min(Math.max(elevated[i] ? 0 : JX.trimB[i] || 0, sepB[i]), ELEN[i] * 0.4));
+  // (Held to an island's point as far along as it lies, so long as 10 m of
+  // the road is left to climb or fall in between the two ends' holds.)
+  const TRIM_A0 = Float64Array.from(edges, (_, i) => Math.min(Math.max(elevated[i] ? 0 : JX.trimA[i] || 0, sepA[i]), ELEN[i] * 0.4));
+  const TRIM_B0 = Float64Array.from(edges, (_, i) => Math.min(Math.max(elevated[i] ? 0 : JX.trimB[i] || 0, sepB[i]), ELEN[i] * 0.4));
+  const TRIM_A = Float64Array.from(edges, (_, i) => Math.max(TRIM_A0[i], Math.min(ptA[i], ELEN[i] - 10 - Math.max(TRIM_B0[i], ptB[i] > 0 ? Math.min(ptB[i], (ELEN[i] - 10) / 2) : 0))));
+  const TRIM_B = Float64Array.from(edges, (_, i) => Math.max(TRIM_B0[i], Math.min(ptB[i], ELEN[i] - 10 - TRIM_A[i])));
   const RUN_LEN = Float64Array.from(edges, (_, i) => Math.max(0, ELEN[i] - TRIM_A[i] - TRIM_B[i]));
   const trimA = (i: number) => TRIM_A[i];
   const trimB = (i: number) => TRIM_B[i];
@@ -4509,8 +4530,18 @@ export async function buildPasirRisCourse(
             // nothing, and the parapet rises to its full height as the drop
             // passes that of a kerb, as a crash barrier's end ramps up. Neither
             // begins or ends as a square stub standing on the verge.)
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn));
-            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && parapetClear(line, kk, off(kk)), ext(sgn));
+            // (Nor, wall or parapet, where either end of the piece stands on
+            // a nose's or a wedge's paving: a piece whose middle is on the
+            // island ran on past the island's point and stood there as a
+            // blade. The nose's own wall stands round the point.)
+            const endAt = (kk: number): XZ => {
+              const a = P[Math.max(0, kk - 1)], b = P[Math.min(P.length - 1, kk + 1)];
+              const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+              return [P[kk][0] + ((b[1] - a[1]) / tl) * off(kk), P[kk][1] - ((b[0] - a[0]) / tl) * off(kk)];
+            };
+            const endOff = (kk: number) => inNose(...endAt(kk)) || inGore(...endAt(kk));
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn));
+            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)), ext(sgn));
           }
         }
         if (dy && isDeck[line]) {
@@ -7880,7 +7911,7 @@ export async function buildPasirRisCourse(
       halfAtE,
       halfNear,
       cutOf,
-      jointWalls, jointDeck, onTeeOf, isDeckSplit: (j: number) => deckSplits.has(j), needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, relOwn, stripShape, landOver, trims: (i: number) => [trimA(i), trimB(i)], mates, jE, ELEN, tiltAt, crossDrop, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
+      jointWalls, jointDeck, onTeeOf, isDeckSplit: (j: number) => deckSplits.has(j), needs, jCap, jCeil, deckEnd, sepA, sepB, ptA, ptB, thruJoint, relAlong, relOwn, stripShape, landOver, trims: (i: number) => [trimA(i), trimB(i)], mates, jE, ELEN, tiltAt, crossDrop, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
       fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       stripTop, oneLine, edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads, jointsOf, drape, PCUM, pathDeck };
