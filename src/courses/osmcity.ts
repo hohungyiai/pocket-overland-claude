@@ -4628,8 +4628,31 @@ export async function buildPasirRisCourse(
               return [P[kk][0] + ((b[1] - a[1]) / tl) * off(kk), P[kk][1] - ((b[0] - a[0]) / tl) * off(kk)];
             };
             const endOff = (kk: number) => inNose(...endAt(kk)) || inGore(...endAt(kk));
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]));
-            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)), ext(sgn));
+            // (Is the wall, a fraction t along piece kk, still beside the
+            // grass its kerb runs round? The grass is the ground no road,
+            // joint, island, gore or nose paves, less what the outline paves
+            // in rounding its points: a point is in it while a circle the
+            // size of a nose's round fits there clear of all paving, the
+            // circle reaching to the road's edge. Where a run of wall ends,
+            // it is cut back to there.)
+            const openBeside = (kk: number, t: number) => {
+              const a = P[kk], b = P[kk + 1];
+              const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+              const tx = (b[0] - a[0]) / tl, tz = (b[1] - a[1]) / tl;
+              const R = NOSE_R - 0.02;
+              const o = off(kk) + (off(kk + 1) - off(kk)) * t + sgn * (R + 0.02 - WALL_OUT);
+              const cx = a[0] + (b[0] - a[0]) * t + tz * o, cz = a[1] + (b[1] - a[1]) * t - tx * o;
+              const yy = y(kk) + (y(kk + 1) - y(kk)) * t;
+              const clear = (x: number, z: number) => !coveredBy(line, x, z, yy) && !onIsland(x, z, yy) && !inPaving(x, z, yy) && !inGore(x, z) && !inNose(x, z);
+              if (!clear(cx, cz)) return false;
+              for (let q = 0; q < 8; q++) {
+                const c = Math.cos((q * Math.PI) / 4) * R, s = Math.sin((q * Math.PI) / 4) * R;
+                if (!clear(cx + tx * c + tz * s * sgn, cz + tz * c - tx * s * sgn)) return false;
+              }
+              return true;
+            };
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), openBeside);
+            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)), ext(sgn), undefined, openBeside);
           }
         }
         if (dy && isDeck[line]) {
@@ -7034,12 +7057,13 @@ export async function buildPasirRisCourse(
    * walls overlap a little instead of leaving a hairline between them where
    * the road bends at the joint.)
    */
-  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), aboveIn: number | ((k: number) => number), keep: (k: number) => boolean, ext: [number, number] = [0, 0], endAbove?: (k: number, off: number) => number) => {
+  const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), aboveIn: number | ((k: number) => number), keep: (k: number) => boolean, ext: [number, number] = [0, 0], endAbove?: (k: number, off: number) => number, open?: (k: number, t: number) => boolean) => {
     const base = acc.pos.length / 3;
     // (Kept pieces, worked out first: where a run of them ends, its top may
     // come down to endAbove there, as a wall comes out of the ground.)
     const kept: boolean[] = [];
     for (let k = k0; k < k1; k++) kept[k - k0] = keep(k);
+    const V: number[][] = [];
     for (let k = k0; k <= k1; k++) {
       const a = pts[Math.max(0, k - 1)];
       const b = pts[Math.min(pts.length - 1, k + 1)];
@@ -7052,7 +7076,39 @@ export async function buildPasirRisCourse(
       const below = typeof belowIn === 'number' ? belowIn : belowIn(k);
       let above = typeof aboveIn === 'number' ? aboveIn : aboveIn(k);
       if (endAbove && k > k0 && k < k1 && kept[k - k0 - 1] !== kept[k - k0]) above = Math.min(above, endAbove(k, kept[k - k0] ? k - 1 : k));
-      acc.pos.push(x, yk - below, z, x, yk + above, z);
+      V.push([x, yk - below, z, yk + above]);
+    }
+    // (Where a run of kept pieces ends inside this stretch, its last piece is
+    // kept for its middle, and ran on past where the ground beside it stops:
+    // a wall's last metres stood on the next road's paving past an island's
+    // point, out beyond its kerb. The run's end is brought back to where the
+    // ground beside it is last open, `open` asked along the piece.)
+    if (open) {
+      const moved = new Map<number, number[]>();
+      const trim = (k: number, end: 0 | 1) => {
+        if (open(k, end)) return;
+        let a = 0.5, b: number = end;
+        if (!open(k, a)) return;
+        for (let it = 0; it < 10; it++) {
+          const m = (a + b) / 2;
+          if (open(k, m)) a = m;
+          else b = m;
+        }
+        const P0 = V[k - k0], P1 = V[k + 1 - k0];
+        moved.set(k + end, P0.map((v, q) => v + (P1[q] - v) * a));
+      };
+      for (let k = k0; k < k1; k++) {
+        if (!kept[k - k0]) continue;
+        // (At the ends of this stretch too: the road's next stretch, drawn
+        // apart, cuts its own wall back from the same point.)
+        if (k === k0 || !kept[k - 1 - k0]) trim(k, 0);
+        if (k + 1 === k1 || !kept[k + 1 - k0]) trim(k, 1);
+      }
+      for (const [k, v] of moved) V[k - k0] = v;
+    }
+    for (let k = k0; k <= k1; k++) {
+      const [x, yb, z, yt] = V[k - k0];
+      acc.pos.push(x, yb, z, x, yt, z);
       acc.uv.push(0, cum[k] / 6, 1, cum[k] / 6);
     }
     for (let k = k0; k < k1; k++) {
