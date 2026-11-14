@@ -142,6 +142,8 @@ const MAX_SETBACK = 45;
 const SPILL = 5.5; // furthest a junction's edge may reach from its roads' kerbs
 
 const cross = (a: XZ, b: XZ) => a[0] * b[1] - a[1] * b[0];
+/** 0 below 0, 1 above 1, easing in and out between. */
+const smooth01 = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 
 /** Point and segment index at distance s along a polyline (clamped). */
 function along(pts: XZ[], cum: number[], s: number): { p: XZ; seg: number } {
@@ -703,12 +705,39 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       if (R < (openAt >= 0 ? 0.1 : 0.4)) return no('no room for the corners');
       const M = makeMouth(sLine, sEnd, sharp ? dG : openAt >= 0 ? openAt : dMax + R, true);
       // The through road's edge on the side road's side, as one line through the joint.
+      // (Where the road's strip draws its edge: out along the mitre at a
+      // bend of more than 20 degrees, and at the joint along the mitre the
+      // two pieces share. Square to the chord, the edge ran up to 28 cm
+      // inside the drawn one at a bend, a step in the kerb and edge line.)
       const edgeLine = (o: (typeof legs)[number], flip: number): XZ[] =>
         o.P.map((p, k) => {
-          const a = o.P[Math.max(0, k - 1)], b = o.P[Math.min(o.P.length - 1, k + 1)];
+          const n = o.P.length;
+          const a = o.P[Math.max(0, k - 1)], b = o.P[Math.min(n - 1, k + 1)];
           const dl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-          const h = Math.max(0, o.H[k] - INSET) * flip;
-          return [p[0] - ((b[1] - a[1]) / dl) * h, p[1] + ((b[0] - a[0]) / dl) * h] as XZ;
+          let tx = (b[0] - a[0]) / dl, tz = (b[1] - a[1]) / dl;
+          let mm = 1;
+          if (I.round && k === 0) {
+            const other = legs.find((q) => q !== o);
+            if (other && other.P.length > 1) {
+              const u = (q: XZ, r: XZ): XZ => {
+                const l = Math.hypot(r[0] - q[0], r[1] - q[1]) || 1;
+                return [(r[0] - q[0]) / l, (r[1] - q[1]) / l];
+              };
+              const ti = u(o.P[0], o.P[1]), to = u(other.P[0], other.P[1]);
+              const dd = Math.hypot(ti[0] - to[0], ti[1] - to[1]) || 1;
+              const d: XZ = [(ti[0] - to[0]) / dd, (ti[1] - to[1]) / dd];
+              const c = d[0] * ti[0] + d[1] * ti[1];
+              if (c > 0.5) (tx = d[0]), (tz = d[1]), (mm = 1 / c);
+            }
+          } else if (I.round && k < n - 1) {
+            const q = o.P[k - 1], r = o.P[k + 1];
+            const l1 = Math.hypot(p[0] - q[0], p[1] - q[1]), l2 = Math.hypot(r[0] - p[0], r[1] - p[1]);
+            const c = l1 < 1e-3 || l2 < 1e-3 ? 1 : ((p[0] - q[0]) * (r[0] - p[0]) + (p[1] - q[1]) * (r[1] - p[1])) / (l1 * l2);
+            const ch = Math.sqrt(Math.max(0, (1 + c) / 2));
+            if (ch < Math.cos((10 * Math.PI) / 180)) mm = 1 / Math.max(0.5, ch);
+          }
+          const h = Math.max(0, o.H[k] * mm - INSET) * flip;
+          return [p[0] - tz * h, p[1] + tx * h] as XZ;
         });
       const sDir: XZ = [M.q[0] - junctions[j][0], M.q[1] - junctions[j][1]];
       const flipOf = (o: (typeof legs)[number]) => (cross([o.P[1][0] - o.P[0][0], o.P[1][1] - o.P[0][1]], sDir) > 0 ? 1 : -1);
@@ -838,7 +867,16 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           const O0 = even(outer, fine), L0 = even(lower, fine);
           let end = fine;
           while (end > 2 && Math.hypot(O0[end][0] - L0[end][0], O0[end][1] - L0[end][1]) < 0.2) end--;
-          const oCut = O0.slice(0, end + 1), lCut = L0.slice(0, end + 1);
+          // (And it closes there onto the road's edge, a point, easing in
+          // over its last 4 m or so: cut square across, the 0.2 m or more
+          // left stood out past the road's edge as a step in the kerb and
+          // the edge line round it.)
+          const easeN = Math.min(end - 1, Math.max(1, Math.round((4 * fine) / Math.max(1, lenOf(outer)))));
+          const oCut = O0.slice(0, end + 1).map((p, k): XZ => {
+            const t = smooth01((k - (end - easeN)) / easeN);
+            return t <= 0 ? p : [p[0] + (L0[k][0] - p[0]) * t, p[1] + (L0[k][1] - p[1]) * t];
+          });
+          const lCut = L0.slice(0, end + 1);
           const lenO = lenOf(oCut);
           let parts: XZ[][] = [];
           let cs: (XZ | null)[] = [null];
