@@ -90,6 +90,7 @@ const CHECKS = [
   // redrawn map replaces it.)
   ['An edge line never jumps sideways or breaks off and starts again', 'marks.js', '__checkEdgeBreaks', 0],
   ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0, { trial: 2 }],
+  ['Every marking lies on the surface drawn under it, never under it (1 cm clear)', 'marks.js', '__checkMarkDepth', 0],
 ];
 
 (async () => {

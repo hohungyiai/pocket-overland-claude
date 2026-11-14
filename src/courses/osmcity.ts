@@ -2934,6 +2934,13 @@ export async function buildPasirRisCourse(
        * so they keep their rhythm from one road of it to the next).
        */
       dash?: { from: (s: number) => number; period: number; on: number };
+      /**
+       * With sub: lies on this surface (its height at x, z), every point of
+       * it, cut into lengths of `sub` metres however straight: a mark on a
+       * road as the road's strip is drawn, not on the ground the strip's
+       * corners lie on (straight between them, the strip lies over hollows).
+       */
+      yXZ?: (x: number, z: number) => number;
     } = {},
   ) => {
     const base = acc.pos.length / 3;
@@ -2961,6 +2968,10 @@ export async function buildPasirRisCourse(
           const [tk, rk] = o.tilt(k);
           // (As tiltY: from the middle of the road's line.)
           if (tk > 0) yk = oneLine ? yk + tk * crossDrop(x, z, px, pz) : lerp(yk, Math.max(rawHeight(x, z), WL + 0.15) + rk, tk);
+        }
+        if (o.yXZ) {
+          const h = o.yXZ(x, z);
+          if (h === h) yk = h;
         }
         acc.pos.push(x, (yk === yk ? yk : (o.y ?? Math.max((o.ground ?? rawHeight)(x, z) + rise, WL + 0.15))) + lift, z);
         acc.uv.push(((sgn + 1) / 2) * ((half * 2) / 6), cum[k] / 6);
@@ -3013,7 +3024,7 @@ export async function buildPasirRisCourse(
           for (let m = Math.floor(lo / dash.period) * dash.period; m < hi; m += dash.period)
             for (const e of [m, m + dash.on]) if (e > lo && e < hi) dashCuts.push((e - r0) / (r1 - r0));
         }
-        const whole = !dashCuts.length && (!dash || dashOn((s0 + s1) / 2)) && s0 >= lo_s && s1 <= hi_s && (!clearAt || (corner(a) && corner(a + 1) && corner(a + 2) && corner(a + 3))) && okAt(at(0), 0) && okAt(at(0.5), 0.5) && okAt(at(1), 1);
+        const whole = !(o.yXZ && s1 - s0 > sub) && !dashCuts.length && (!dash || dashOn((s0 + s1) / 2)) && s0 >= lo_s && s1 <= hi_s && (!clearAt || (corner(a) && corner(a + 1) && corner(a + 2) && corner(a + 3))) && okAt(at(0), 0) && okAt(at(0.5), 0.5) && okAt(at(1), 1);
         if (!whole) {
           if (dash && !dashCuts.length && !dashOn((s0 + s1) / 2)) continue;
           const n = Math.max(2, Math.ceil((s1 - s0) / sub));
@@ -3027,6 +3038,11 @@ export async function buildPasirRisCourse(
           for (const t of ts) {
             const sAt = lerp(s0, s1, t);
             const v = at(t);
+            if (o.yXZ) {
+              const ya = o.yXZ(v[0], v[2]), yb = o.yXZ(v[3], v[5]);
+              if (ya === ya) v[1] = ya + lift;
+              if (yb === yb) v[4] = yb + lift;
+            }
             // (Between dashes: the last point ends one, this one may start the next.)
             if (dash && prev >= 0 && !dashOn(lerp(s0, s1, (tPrev + t) / 2))) prev = -1;
             tPrev = t;
@@ -4393,6 +4409,8 @@ export async function buildPasirRisCourse(
         const fit = (side: number, solidLine: boolean) => ({
           span,
           sub: 0.5,
+          // (On the road's strip as drawn: 2 cm over it, its lift over the road's.)
+          yXZ: (x: number, z: number) => stripTop(line, x, z),
           clearAt: lineClear,
           clearInner: (x: number, y: number, z: number) => !nearBox(x, z, 0.3) && !inPaving(x, z, dy ? y : NaN) && !coveredBy(line, x, z, dy ? y : NaN),
           clearMid: (x: number, y: number, z: number, cx: number, cz: number) => !onIsland(x, z, dy ? y : NaN) && !(solidLine && openXZ(x + cx * side * 0.8, z + cz * side * 0.8)),
@@ -5577,15 +5595,96 @@ export async function buildPasirRisCourse(
     return lerp(at(seg), at(k1), u);
   };
   /**
+   * Road o's surface at (x, z) exactly as its strip is drawn (on the ground):
+   * its corners where the strip puts them, the surface flat across each of
+   * the strip's two triangles between them. (A mark laid on the ground, or
+   * straight along the road's line, lay under it wherever the ground dips
+   * between the strip's corners.) Without the strip's lift.
+   */
+  const cornerMemo = new Map<number, [number, number, number, number, number, number]>();
+  const stripTop = (o: number, x: number, z: number, from = 0, to = Infinity) => {
+    const cut = cutOf(o);
+    const P = cut.pts;
+    const lo = cut.lo, hi = cut.hi;
+    const dy = hasProfile[o] ? deckY(o) : null;
+    const cum = ECUM[o];
+    const join = joinOf(o);
+    /** Point k's two corners [xl, zl, yl, xr, zr, yr]. */
+    const corners = (k: number) => {
+      const key = o * 4096 + k;
+      let c = cornerMemo.get(key);
+      if (c) return c;
+      const { nx, nz, mm } = section(P, k, lo, hi, join);
+      const half = halfAtE(o, k) * mm;
+      const [px, pz] = P[k];
+      const v: number[] = [];
+      for (const sgn of [-1, 1]) {
+        const cx = px + nx * sgn * half, cz = pz + nz * sgn * half;
+        let yk = !dy ? NaN : k === lo && cut.ylo === cut.ylo ? cut.ylo : k === hi && cut.yhi === cut.yhi ? cut.yhi : dy[k];
+        if (yk === yk && !elevated[o]) {
+          const tk = tiltAt(o, cum[k]);
+          if (tk > 0) yk = oneLine ? yk + tk * crossDrop(cx, cz, px, pz) : lerp(yk, Math.max(rawHeight(cx, cz), WL + 0.15) + relAlong(o, cum[k]), tk);
+        }
+        v.push(cx, cz, yk === yk ? yk : Math.max(rawHeight(cx, cz), WL + 0.15));
+      }
+      cornerMemo.set(key, (c = v as [number, number, number, number, number, number]));
+      return c;
+    };
+    let best = Infinity, bk = Math.max(lo, Math.min(hi - 1, from));
+    for (let k = Math.max(lo, from); k < Math.min(hi, to + 1); k++) {
+      const d = segDist(P[k], P[k + 1], x, z);
+      if (d < best) (best = d), (bk = k);
+    }
+    // (The strip's two triangles: left k, left k+1, right k; right k, left k+1, right k+1.)
+    const plane = (p: number[], q: number[], r: number[]) => {
+      const d0 = (q[1] - r[1]) * (p[0] - r[0]) + (r[0] - q[0]) * (p[1] - r[1]);
+      if (Math.abs(d0) < 1e-9) return null;
+      const l1 = ((q[1] - r[1]) * (x - r[0]) + (r[0] - q[0]) * (z - r[1])) / d0;
+      const l2 = ((r[1] - p[1]) * (x - r[0]) + (p[0] - r[0]) * (z - r[1])) / d0;
+      return { y: l1 * p[2] + l2 * q[2] + (1 - l1 - l2) * r[2], out: Math.max(0, -l1, -l2, l1 + l2 - 1) };
+    };
+    // (The piece nearest the point's line, or either beside it: at a bend
+    // a point by the outside of it lies in the next piece's quad.)
+    let t: { y: number; out: number } | null = null;
+    for (const k of [bk, bk - 1, bk + 1]) {
+      if (k < lo || k >= hi) continue;
+      const A = corners(k), B = corners(k + 1);
+      const L0 = [A[0], A[1], A[2]], R0 = [A[3], A[4], A[5]], L1 = [B[0], B[1], B[2]], R1 = [B[3], B[4], B[5]];
+      for (const q of [plane(L0, L1, R0), plane(R0, L1, R1)]) if (q && (!t || q.out < t.out)) t = q;
+      if (t && t.out === 0) break;
+    }
+    stripOut = t ? t.out : Infinity;
+    if (t) return t.y;
+    const A = corners(bk);
+    return lerp(A[2], A[5], 0.5);
+  };
+  /** How far outside the strip's nearest triangle the last stripTop's point lay (0 on it; in shares of the triangle). */
+  let stripOut = 0;
+  /**
    * The height a mark at (x, z) lies on. onTop (an edge line): on whatever
    * is drawn on top there, a joint's level pad or paving too. (Not a kerb:
    * its inner part lies under the asphalt, and lifted onto a pad beside the
    * road it showed through the road as a lump.)
    */
   const yOn = (m: OutMark, x: number, z: number, onTop = false) => {
-    if (m.flat) return NaN;
+    // (On the ground where no raised road is near: on the strips of the
+    // roads there as they are drawn, straight between their corners, not
+    // on the ground itself, which dips between them.)
+    if (m.flat) {
+      if (!onTop) return NaN;
+      let y = NaN;
+      roads.each(x, z, 12, (o, seg, u, d) => {
+        if (lvlOf(o) !== m.lvl || !outlined[o] || JX.internal[o] || d > drawnHalf(o, seg, u) + 0.4) return;
+        const h = stripTop(o, x, z, seg - 2, seg + 2);
+        if (stripOut < 0.02 && (y !== y || h > y)) y = h;
+      });
+      return y;
+    }
     /** Road o's drawn height at (x, z), by its nearest point among pieces lo..hi. */
     const at = (o: number, lo: number, hi: number) => {
+      const h = stripTop(o, x, z, lo, hi);
+      if (stripOut < 0.02) return h;
+      // (Off its strip, past where it is cut back: as its nearest point has it.)
       const P = EP[o];
       let best = Infinity, bs = 0, bu = 0;
       for (let s = Math.max(0, lo); s <= Math.min(P.length - 2, hi); s++) {
@@ -5601,9 +5700,16 @@ export async function buildPasirRisCourse(
     let y = m.joint >= 0 ? paveY(m.joint, x, z) : m.road >= 0 ? at(m.road, m.seg - 4, m.seg + 4) : NaN;
     // (Where raised pieces of the same level overlap, as a ramp leaves a
     // road, the one on top is what shows: the mark lies on it.)
+    // (A road laid on the ground too, an edge line on its strip: where it
+    // lies over the ground between its corners, or over the paving.)
     roads.each(x, z, 12, (o, seg, u, d) => {
-      if ((o === m.road && m.joint < 0) || !hasProfile[o] || lvlOf(o) !== m.lvl || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
-      const h = at(o, seg, seg);
+      if ((o === m.road && m.joint < 0) || (!hasProfile[o] && !onTop) || JX.internal[o] || lvlOf(o) !== m.lvl || !outlined[o] || d > drawnHalf(o, seg, u) + 0.4) return;
+      let h: number;
+      if (hasProfile[o]) h = at(o, seg, seg);
+      else {
+        h = stripTop(o, x, z, seg - 1, seg + 1);
+        if (stripOut >= 0.02) return;
+      }
       if (y !== y || (h > y && h - y < (m.joint >= 0 ? 0.5 : 1.5))) y = h;
     });
     // (And where a joint's level pad reaches over the end of a climbing
@@ -5615,7 +5721,7 @@ export async function buildPasirRisCourse(
     // (The same where a junction's paving of its level lies over the road's end.)
     if (y === y && onTop)
       for (const q of jointsNear(x, z)) {
-        if (q === m.joint || (m.lvl < 0 ? jDeck(q) > 0 : jLvlM(q) !== m.lvl) || ringDist(JPOLY[q].ring, x, z)[0] > 0.5) continue;
+        if (q === m.joint || (m.lvl < 0 ? jDeck(q) > 0 : jLvlM(q) !== m.lvl) || (ringDist(JPOLY[q].ring, x, z)[0] > 0.5 && !inRingXZ(JPOLY[q].ring, x, z))) continue;
         const h = paveY(q, x, z);
         if (h > y && h - y < 0.5) y = h;
       }
@@ -5874,7 +5980,7 @@ export async function buildPasirRisCourse(
               const j0 = at2[J0], j1 = at2[J1 + 1] - 1;
               for (let v = j0; v <= j1 + 1; v++) {
                 const mm = markAt(of2[v]);
-                if (!mm || mm.flat) {
+                if (!mm) {
                   hY[v] = NaN;
                   continue;
                 }
@@ -5898,7 +6004,20 @@ export async function buildPasirRisCourse(
               };
               const isKerb = (j: number) => !!mk(j)?.kerb, isLine = (j: number) => !!mk(j)?.line;
               runs(Q, J0, J1, (a) => a, isKerb, (lo, hi, a, b) => strip(kerb, Q, qc, a, b, 0.25, 0.07, { lo, hi, off: -0.1, yAt: (j) => hK[j], bisect: true }));
-              runs(Q2, j0, j1, (a) => of2[a], isLine, (lo, hi, a, b) => strip(yellow, Q2, qc2, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true }));
+              // (A line on whatever is drawn under it at every half metre, by the
+              // mark of its nearest point: between two of its points it may
+              // pass over a kink in the road, or onto the edge of another
+              // road merging with it.)
+              const lineY = (a: number, b: number) => (x: number, z: number) => {
+                let best = Infinity, bv = a;
+                for (let v = a; v <= b; v++) {
+                  const d = (Q2[v][0] - x) ** 2 + (Q2[v][1] - z) ** 2;
+                  if (d < best) (best = d), (bv = v);
+                }
+                const mm = markAt(of2[Math.min(bv, b - 1)]);
+                return mm ? yOn(mm, x, z, true) : NaN;
+              };
+              runs(Q2, j0, j1, (a) => of2[a], isLine, (lo, hi, a, b) => strip(yellow, Q2, qc2, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true, sub: 0.5, yXZ: lineY(a, b) }));
             });
             j0 = j1;
           }
@@ -7555,7 +7674,7 @@ export async function buildPasirRisCourse(
       jointWalls, jointDeck, onTeeOf, isDeckSplit: (j: number) => deckSplits.has(j), needs, jCap, jCeil, deckEnd, sepA, sepB, relAlong, relOwn, stripShape, landOver, trims: (i: number) => [trimA(i), trimB(i)], mates, jE, ELEN, tiltAt, crossDrop, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
       fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
-      oneLine, edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads, jointsOf, drape, PCUM, pathDeck };
+      stripTop, oneLine, edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads, jointsOf, drape, PCUM, pathDeck };
   return {
     name: opts.name ?? 'Pasir Ris & Tampines',
     styles: true,

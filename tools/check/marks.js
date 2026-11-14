@@ -184,3 +184,82 @@ window.__checkKerbLines = (all = false) => {
   const pl = window.__finishIndex().places(bad.map((b) => ({ ...b, value: b.over })), 4);
   return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
+
+// Every marking, white or yellow, lies on top of the surface drawn under
+// it: no point of any of its triangles (corners, the middles of its sides,
+// its centre) lies under a road's, a deck's or a paving's drawn surface
+// within half a metre of it (a ramp's tilted foot, a pad, a nose).
+// (Redrawn maps only, as the checks above: today's map keeps its old lines.)
+window.__checkMarkDepth = (all = false, TOL = 0.01) => {
+  const d = globalThis.__osm;
+  if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
+  const CELL = 2;
+  const grid = new Map();
+  const S = [];
+  const marks = [];
+  for (const k of d.farTiles()) {
+    const A = d.tileAccs(k);
+    for (const [key, a] of Object.entries(A)) {
+      const mark = key === 'white' || key === 'yellow';
+      if (!mark && key !== 'road' && key !== 'deck') continue;
+      const P = a.pos, I = a.idx;
+      for (let t = 0; t < I.length; t += 3) {
+        const tri = [];
+        for (let c = 0; c < 3; c++) tri.push(P[I[t + c] * 3], P[I[t + c] * 3 + 1], P[I[t + c] * 3 + 2]);
+        if (mark) {
+          tri.push(key);
+          marks.push(tri);
+          continue;
+        }
+        // (Not a sliver under 2 cm across, where a polygon's points run in a
+        // line: nothing of it shows.)
+        const cr = Math.abs((tri[3] - tri[0]) * (tri[8] - tri[2]) - (tri[5] - tri[2]) * (tri[6] - tri[0]));
+        const long = Math.max(Math.hypot(tri[3] - tri[0], tri[5] - tri[2]), Math.hypot(tri[6] - tri[3], tri[8] - tri[5]), Math.hypot(tri[0] - tri[6], tri[2] - tri[8]));
+        if (cr / (long || 1) < 0.02) continue;
+        const q = S.length;
+        tri.push(key);
+        S.push(tri);
+        const x0 = Math.floor(Math.min(tri[0], tri[3], tri[6]) / CELL), x1 = Math.floor(Math.max(tri[0], tri[3], tri[6]) / CELL);
+        const z0 = Math.floor(Math.min(tri[2], tri[5], tri[8]) / CELL), z1 = Math.floor(Math.max(tri[2], tri[5], tri[8]) / CELL);
+        if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
+        for (let i = x0; i <= x1; i++)
+          for (let j = z0; j <= z1; j++) {
+            const c = i * 100003 + j;
+            (grid.get(c) ?? grid.set(c, []).get(c)).push(q);
+          }
+      }
+    }
+  }
+  /** The highest drawn surface at (x, z) within half a metre of y. */
+  const topAt = (x, z, y) => {
+    let best = -Infinity;
+    for (const q of grid.get(Math.floor(x / CELL) * 100003 + Math.floor(z / CELL)) ?? []) {
+      const t = S[q];
+      const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      if (Math.abs(d0) < 1e-9) continue;
+      const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
+      const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
+      const l3 = 1 - l1 - l2;
+      if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
+      const h = l1 * t[1] + l2 * t[4] + l3 * t[7];
+      if (Math.abs(h - y) < 0.5 && h > best) (best = h), (topAt.key = t[9]);
+    }
+    return best;
+  };
+  const bad = [];
+  let n = 0;
+  for (const t of marks) {
+    const pts = [[t[0], t[1], t[2]], [t[3], t[4], t[5]], [t[6], t[7], t[8]]];
+    for (const [a, b] of [[0, 1], [1, 2], [2, 0]]) pts.push([(pts[a][0] + pts[b][0]) / 2, (pts[a][1] + pts[b][1]) / 2, (pts[a][2] + pts[b][2]) / 2]);
+    pts.push([(t[0] + t[3] + t[6]) / 3, (t[1] + t[4] + t[7]) / 3, (t[2] + t[5] + t[8]) / 3]);
+    let worst = -Infinity, wx = 0, wz = 0, wy = 0, on = '';
+    for (const [x, y, z] of pts) {
+      n++;
+      const h = topAt(x, z, y);
+      if (h - y > worst) (worst = h - y), (wx = x), (wz = z), (wy = y), (on = topAt.key);
+    }
+    if (worst > -TOL) bad.push({ x: +wx.toFixed(1), z: +wz.toFixed(1), value: +(worst + TOL).toFixed(3), what: `${t[9]} at ${wy.toFixed(2)} on ${on}` });
+  }
+  const pl = window.__finishIndex().places(bad, 4);
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
+};
