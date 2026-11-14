@@ -146,8 +146,27 @@ window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
   const pts = [];
   let n = 0;
   const caps = [];
-  window.__eachMesh(['kerb'], (_k, _kind, pos, idx) => {
+  // (A kerb drawn across a tile's edge is one kerb: where its two tiles'
+  // pieces meet on one edge, at one height, that edge is no end. Read tile
+  // by tile, a piece of kerb shorter than 1.2 m alone in its tile had its
+  // sides taken for ends.)
+  const meshes = [];
+  const ek = (e) => {
+    const a = `${Math.round(e[0] * 1000)},${Math.round(e[2] * 1000)}`, b = `${Math.round(e[3] * 1000)},${Math.round(e[5] * 1000)}`;
+    return a < b ? a + '|' + b : b + '|' + a;
+  };
+  const byEdge = new Map();
+  window.__eachMesh(['kerb'], (k, _kind, pos, idx) => {
     const E = window.__openEdges(pos, idx);
+    meshes.push({ k, pos, idx, E });
+    for (const e of E) {
+      const key = ek(e);
+      (byEdge.get(key) ?? byEdge.set(key, []).get(key)).push({ k, y: (e[1] + e[4]) / 2 });
+    }
+  });
+  const shared = (k, e) => (byEdge.get(ek(e)) ?? []).some((o) => o.k !== k && Math.abs(o.y - (e[1] + e[4]) / 2) <= STEP);
+  for (const { k, pos, idx, E: E0 } of meshes) {
+    const E = E0.filter((e) => !shared(k, e));
     // (Each corner's open edges, to tell a cap from a side.)
     const byV = new Map();
     const vk = (x, z) => `${Math.round(x * 1000)},${Math.round(z * 1000)}`;
@@ -191,7 +210,7 @@ window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
       const over = at(x, z).reduce((m, f) => (f.kind === 'road' && f.h > y + 0.01 && f.h < y + 0.3 ? Math.max(m, f.h - y) : m), 0);
       if (over) pts.push({ what: 'hidden under paving', x: +x.toFixed(2), z: +z.toFixed(2), value: +over.toFixed(2) });
     }
-  });
+  }
   const grid = new Map();
   const C = 1;
   caps.forEach((p, q) => {
