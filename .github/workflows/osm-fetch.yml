@@ -8,6 +8,11 @@ on:
     branches: ['osm-data*']
     paths: ['tools/osm/*.overpassql']
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Fetch only these query files (space separated paths); empty = every query'
+        required: false
+        default: ''
 permissions:
   contents: write
 jobs:
@@ -32,6 +37,8 @@ jobs:
           elif [ "${{ github.event_name }}" = "push" ]; then
             # (A new branch: what it changed since it left main.)
             queries=$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD -- 'tools/osm/*.overpassql')
+          elif [ -n "${{ github.event.inputs.only }}" ]; then
+            queries="${{ github.event.inputs.only }}"
           else
             queries=$(ls tools/osm/*.overpassql)
           fi
