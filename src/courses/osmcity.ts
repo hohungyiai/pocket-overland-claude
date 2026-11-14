@@ -5448,6 +5448,9 @@ export async function buildPasirRisCourse(
     let why = r ? `road ${r.i} past ${r.past.toFixed(2)}` : 'no road';
     /** The joint whose paving's side this is (not a road's). */
     const jointSide = r && Math.abs(r.past) > 0.2 ? jointsNear(mx, mz).find((q) => jLvlM(q) === lvl && inRingXZ(JPOLY[q].ring, mx + nx * 0.05, mz + nz * 0.05) && !inRingXZ(JPOLY[q].ring, mx - nx * 0.05, mz - nz * 0.05)) : undefined;
+    // (Its kerbs stop short of the roads' edges, where each road's own
+    // kerb once ran: an edge line along a kerbed road keeps its kerb there.)
+    const kerbAlong = kerb;
     if (jointSide !== undefined) {
       if (kerb) kerb = JPOLY[jointSide].kerbs.some((F) => F.some((p, w) => w > 0 && segDist(F[w - 1], p, mx, mz) < 0.6));
       why += ` joint ${jointSide}`;
@@ -5482,6 +5485,9 @@ export async function buildPasirRisCourse(
     // (And round a nose's point, between the two roads' edge lines: it lies
     // up to 0.75 m out from either road's edge, in the middle of the wedge.)
     const nose = lined < 0 && !wedge && !thru && !island && kerb && lvl < 0 && onNose(mx, mz) && [...near].some(([i]) => rankOf(edges[i].cls) >= 2);
+    // (A kerb runs wherever an edge line has ground beyond it: the outline
+    // leaves a road's side only where another road leaves it.)
+    if (!kerb && kerbAlong && ((lined >= 0 && (kerbedRoad(edges[lined]) || hasProfile[lined])) || wedge)) (kerb = true), (why += ' kept');
     why += ` lined ${lined} off ${off.toFixed(2)}${wedge ? ' wedge' : ''}${thru ? ' through' : ''}${island ? ' island' : ''}${nose ? ' nose' : ''}`;
     return { ...base, kerb, line: lined >= 0 || wedge || thru || island || nose, stop: false, why, lr: lined, ls };
   };
