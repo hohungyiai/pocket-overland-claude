@@ -258,7 +258,8 @@ window.__checkMarkDepth = (all = false, TOL = 0.01) => {
       const h = topAt(x, z, y);
       if (h - y > worst) (worst = h - y), (wx = x), (wz = z), (wy = y), (on = topAt.key);
     }
-    if (worst > -TOL) bad.push({ x: +wx.toFixed(1), z: +wz.toFixed(1), value: +(worst + TOL).toFixed(3), what: `${t[9]} at ${wy.toFixed(2)} on ${on}` });
+    // (More than TOL under the surface: a hair under it, or on it, still shows. The user's call, 2026-11-14.)
+    if (worst > TOL) bad.push({ x: +wx.toFixed(1), z: +wz.toFixed(1), value: +(worst - TOL).toFixed(3), what: `${t[9]} at ${wy.toFixed(2)} on ${on}` });
   }
   const pl = window.__finishIndex().places(bad, 4);
   return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };

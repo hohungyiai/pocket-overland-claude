@@ -915,7 +915,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
             // (Round the front, past the point nearest the wedge.)
             let sweep = wrap(tB - tA);
             if (wrap(front - tA) > sweep) sweep -= 2 * Math.PI;
-            const N = Math.max(3, Math.ceil((Math.abs(sweep) * Rn) / 0.3));
+            const N = Math.max(3, Math.ceil(Math.abs(sweep) / (Math.PI / 12)), Math.ceil((Math.abs(sweep) * Rn) / 0.3));
             const arc: XZ[] = [];
             for (let k = 0; k <= N; k++) arc.push([C[0] + Math.cos(tA + (sweep * k) / N) * Rn, C[1] + Math.sin(tA + (sweep * k) / N) * Rn]);
             const eMid: XZ[] = [];
@@ -1131,7 +1131,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         let sw = Math.atan2(to[1] - Cq[1], to[0] - Cq[0]) - t0;
         while (sw > Math.PI) sw -= 2 * Math.PI;
         while (sw < -Math.PI) sw += 2 * Math.PI;
-        const N = Math.max(3, Math.ceil((Math.abs(sw) * r) / 0.3));
+        const N = Math.max(3, Math.ceil(Math.abs(sw) / (Math.PI / 12)), Math.ceil((Math.abs(sw) * r) / 0.3));
         const o: XZ[] = [];
         for (let k = 0; k <= N; k++) o.push([Cq[0] + Math.cos(t0 + (sw * k) / N) * r, Cq[1] + Math.sin(t0 + (sw * k) / N) * r]);
         return o;

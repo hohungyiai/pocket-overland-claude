@@ -1057,6 +1057,26 @@ export async function buildPasirRisCourse(
           s += 1;
         }
         if (s < 2) continue;
+        // (Where one of the two climbs to a flyover, both stay level on past
+        // the point of the island between them, until their edges are 1.8 m
+        // apart: one height at the point, the ramp climbing only beyond it,
+        // its wall growing from nothing there. Each held as far as its own
+        // edge runs beside the other's, and no further than 40 m.)
+        const climbs = (q: number, qa: boolean) => (jE[qa ? edges[q].b : edges[q].a] ?? []).some((t) => elevated[t]);
+        if (oneLine && !elevated[i] && !elevated[o] && (climbs(i, ia) || climbs(o, oa))) {
+          let d = s;
+          const lim = Math.min(40, ELEN[i] * 0.4, ELEN[o] * 0.4);
+          while (d < lim) {
+            const [x1, z1] = along(i, ia, d + 1);
+            const [x2, z2] = along(o, oa, d + 1);
+            if (Math.hypot(x1 - x2, z1 - z2) >= wide(i, ia, d + 1) + wide(o, oa, d + 1) + 1.8) break;
+            d += 1;
+          }
+          if (d < lim) {
+            if (ia) sepA[i] = Math.max(sepA[i], d + 1);
+            else sepB[i] = Math.max(sepB[i], d + 1);
+          }
+        }
         // Two roads on the ground (or ramps) share one height where they
         // overlap (see relAlong); beside a flyover deck, a road stays level.
         if (!elevated[i] && !elevated[o]) {
@@ -1501,7 +1521,7 @@ export async function buildPasirRisCourse(
       const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
       return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
     };
-    type Hit = { i: number; k: number; o: number; so: number; dot: number; yi: number; yo: number; bo: number };
+    type Hit = { i: number; k: number; o: number; so: number; dot: number; yi: number; yo: number; bo: number; beside: boolean };
     const hitsNow = () => {
       const hits: Hit[] = [];
       edges.forEach((_, i) => {
@@ -1510,7 +1530,11 @@ export async function buildPasirRisCourse(
         for (let k = 0; k < P.length; k++) {
           const yi = roadBase(i, ECUM[i][k], P[k][0], P[k][1]) + relAlong(i, ECUM[i][k]);
           roads.each(P[k][0], P[k][1], EHALF[i] + 12, (o, seg, u, dd) => {
-            if (o === i || elevated[o] || shares(i, o) || dd > halfK(i, k) + halfNear(o, seg, u) - 0.3) return;
+            // (Overlapping by 0.3 m or more: under it. Touching, or nearly: a
+            // slip road beside it, which may only merge, one surface with it
+            // until the two part, never be held down or cleared.)
+            if (o === i || elevated[o] || shares(i, o) || dd > halfK(i, k) + halfNear(o, seg, u) + (oneLine ? 0.3 : -0.3)) return;
+            const beside = dd > halfK(i, k) + halfNear(o, seg, u) - 0.3;
             const c = ECUM[o];
             const Q = EP[o];
             const q = Q[Math.min(Q.length - 1, seg + 1)];
@@ -1522,7 +1546,7 @@ export async function buildPasirRisCourse(
             if (yi - yo < 0.3) return;
             const d1 = dirAt(i, k);
             const d2 = dirAt(o, seg, u);
-            hits.push({ i, k, o, so, dot: Math.abs(d1[0] * d2[0] + d1[1] * d2[1]), yi, yo, bo });
+            hits.push({ i, k, o, so, dot: Math.abs(d1[0] * d2[0] + d1[1] * d2[1]), yi, yo, bo, beside });
           });
         }
       });
@@ -1564,13 +1588,13 @@ export async function buildPasirRisCourse(
       };
       // Roads crossing under first (they set the caps), then the merges that
       // the caps still allow; a slip road that can't climb in time stays down.
-      for (const h of hits) if (!merges(h)) hold(h);
+      for (const h of hits) if (!merges(h) && !h.beside) hold(h);
       for (const h of hits) {
         if (!merges(h)) continue;
         if (canRise(h.o, h.so, h.yi - h.bo)) {
           needs[h.o].push({ s: h.so, rel: h.yi - h.bo });
           changed = true;
-        } else hold(h);
+        } else if (!h.beside) hold(h);
       }
       // (A merge accepted before a later cap may no longer be reachable.)
       needs.forEach((list, i) => {
@@ -3824,7 +3848,8 @@ export async function buildPasirRisCourse(
     const wrap = (t: number) => ((t % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
     let sweep = wrap(tB - tA);
     if (wrap(front - tA) > sweep) sweep -= 2 * Math.PI;
-    const N = Math.max(3, Math.ceil((Math.abs(sweep) * R) / 0.3));
+    // (A point every 15° at least, and every 0.3 m: no facets on a small point.)
+    const N = Math.max(3, Math.ceil(Math.abs(sweep) / (Math.PI / 12)), Math.ceil((Math.abs(sweep) * R) / 0.3));
     const nose: XZ[] = [aL];
     for (let k = 0; k <= N; k++) {
       const t = tA + (sweep * k) / N;
@@ -5743,7 +5768,7 @@ export async function buildPasirRisCourse(
   type OutRing = { P: XZ[]; cum: number[]; n: number; drawn: boolean[]; corner: XZ[]; edge: number[]; at: number[]; samples: (OutMark | null)[][]; hole: boolean; lvl: number };
   const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[]; drawW: number[]; linePart?: number[] }>();
   const OUT_PARTS = 6;
-  const OUT_LINES = 3;
+  const OUT_LINES = 4;
   const OUT_DRAW = 6;
   /** How many places along a side of the outline are asked (one every 4 m or so). */
   const sidePlaces = (a: XZ, b: XZ) => Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
@@ -5963,7 +5988,8 @@ export async function buildPasirRisCourse(
             if (j === Q.length - 1) break;
             const mm = mk(j);
             const L = qc[j + 1] - qc[j];
-            if (!mm || L < 0.75) continue;
+            // (Only under a line: the kerbs are drawn on Q's own points.)
+            if (!mm || !mm.line || L < 0.75) continue;
             let near = false;
             if (!mm.flat && L >= 1.5) {
               const n1 = Math.ceil(L);
@@ -5979,7 +6005,7 @@ export async function buildPasirRisCourse(
               // (The piece's start as the last piece's end had it, by the same mark.)
               const ya = endY && endY[0] === j && endY[1] === mm ? endY[2] : yAtT(0), yb = yAtT(1);
               endY = [j + 1, mm, yb];
-              near = ya === ya && yb === yb && [0.5, ...(L > 1 ? [0.25, 0.75] : [])].some((t) => yAtT(t) - lerp(ya, yb, t) > 0.001);
+              near = ya === ya && yb === yb && [0.5, ...(L > 3 ? [0.25, 0.75] : [])].some((t) => yAtT(t) - lerp(ya, yb, t) > 0.001);
             }
             if (!near) continue;
             const cnt = Math.ceil(L / 0.5);
