@@ -3365,6 +3365,18 @@ export async function buildPasirRisCourse(
   };
   /** In a gore (the paved wedge where two roads split or join, or the paved strip between two running side by side)? */
   const inGore = (x: number, z: number) => !!goreGrid.get(Math.floor(x / GCELL) * 100003 + Math.floor(z / GCELL))?.some((id) => inRingXZ(gores[id].ring, x, z));
+  /** On a nose's outline (its point and tapering sides)? */
+  // (A nose reaches up to NOSE_L past its wedge's ring, perhaps into the next cell: the cells round about too.)
+  const goresNear = (x: number, z: number) => {
+    const cx = Math.floor(x / GCELL), cz = Math.floor(z / GCELL);
+    const out = new Set<number>();
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (const id of goreGrid.get((cx + a) * 100003 + cz + b) ?? []) out.add(id);
+    return [...out];
+  };
+  const onNose = (x: number, z: number) => goresNear(x, z).some((id) => goreCaps(id).some((c) => c.nose.some((p, k) => k > 0 && segDist(c.nose[k - 1], p, x, z) < 0.15)));
+  /** On a nose's paving (past the wedge's last row, round to the island's point)? */
+  const inNose = (x: number, z: number) =>
+    oneLine && goresNear(x, z).some((id) => goreCaps(id).some((c) => inRingXZ([c.a, ...c.nose, c.b], x, z)));
   {
     /** Road i's drawn height at distance s along it, at (x, z). */
     const roadY = (i: number, k: number, u: number, s: number, x: number, z: number) => {
@@ -3760,7 +3772,7 @@ export async function buildPasirRisCourse(
   // parapet carried across too (on a deck, its edge beam). So the kerbs and
   // walls of the two roads start from one nose, not each from its own
   // square end with a hole between them.
-  interface GoreCap { a: XZ; b: XZ; ya: number; yb: number; d: XZ; drop: number; nose: XZ[]; yAt: (p: XZ) => number }
+  interface GoreCap { a: XZ; b: XZ; ya: number; yb: number; d: XZ; drop: number; nose: XZ[]; C: XZ; yAt: (p: XZ) => number }
   // A nose: the island the two roads part round ends in a small rounded
   // point, not square across the wedge. The paving runs on NOSE_L m along
   // both roads' edges past the wedge's last row, and the island's end is a
@@ -3771,7 +3783,7 @@ export async function buildPasirRisCourse(
   const NOSE_R = 0.5;
   const NOSE_L = 4;
   /** The nose's outline from A's edge round to B's, past the row r (q the row before it; d out of the wedge), and the paving's height there. */
-  const noseOf = (r: GoreRow, q: GoreRow, d: XZ): { nose: XZ[]; yAt: (p: XZ) => number } => {
+  const noseOf = (r: GoreRow, q: GoreRow, d: XZ): { nose: XZ[]; C: XZ; yAt: (p: XZ) => number } => {
     const mx = (r.a[0] + r.b[0]) / 2, mz = (r.a[1] + r.b[1]) / 2;
     const w = Math.hypot(r.a[0] - r.b[0], r.a[1] - r.b[1]);
     const ua = unit(r.a[0] - mx, r.a[1] - mz);
@@ -3809,7 +3821,7 @@ export async function buildPasirRisCourse(
       const s = Math.max(0, (p[0] - mx) * d[0] + (p[1] - mz) * d[1]);
       return lerp(r.ya + sa * s, r.yb + sb * s, t);
     };
-    return { nose, yAt };
+    return { nose, C, yAt };
   };
   const goreCapCache = new Map<number, GoreCap[]>();
   const goreCaps = (id: number) => {
@@ -3866,6 +3878,21 @@ export async function buildPasirRisCourse(
             if (dk > 0) {
               band(deck, W, cw, 0, 1, 0, yk, dk, 0.05, () => true);
               band(deck, W, cw, 0, 1, 0, yk, 0, PARAPET_H, () => true);
+            } else if (oneLine) {
+              // (Round the nose's point, 0.3 m into the island, from one
+              // road's wall to the other's: one wall, no fin standing at its
+              // end. Each point's own drop: none where the island is up at
+              // the roads' level.)
+              const NW = c.nose.map((p): XZ => {
+                const u = unit(c.C[0] - p[0], c.C[1] - p[1]);
+                return [p[0] + u[0] * 0.3, p[1] + u[1] * 0.3];
+              });
+              const nc = NW.map((_, q) => (q ? 0 : 0));
+              for (let q = 1; q < NW.length; q++) nc[q] = nc[q - 1] + Math.hypot(NW[q][0] - NW[q - 1][0], NW[q][1] - NW[q - 1][1]);
+              const ny = (q: number) => c.yAt(c.nose[q]) + 0.09;
+              const nd = NW.map((p, q) => ny(q) - heightAt(p[0], p[1]));
+              band(deck, NW, nc, 0, NW.length - 1, 0, ny, (q) => Math.max(0, nd[q]) + 0.3, (q) => wallTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > WALL_FROM);
+              band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, (q) => parapetTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > PARAPET_FROM);
             } else if (c.drop > WALL_FROM) {
               band(deck, W, cw, 0, 1, 0, yk, Math.max(0, c.drop) + 0.3, wallTop(c.drop), () => true);
               if (c.drop > PARAPET_FROM) band(deck, W, cw, 0, 1, 0, yk, 0, parapetTop(c.drop), () => true);
@@ -4289,7 +4316,7 @@ export async function buildPasirRisCourse(
             // nothing, and the parapet rises to its full height as the drop
             // passes that of a kerb, as a crash barrier's end ramps up. Neither
             // begins or ends as a square stub standing on the verge.)
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn));
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn));
             band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && parapetClear(line, kk, off(kk)), ext(sgn));
           }
         }
@@ -5433,8 +5460,11 @@ export async function buildPasirRisCourse(
     // (An island's kerb, among lined roads: the edge line follows it all
     // the way round, as it does round a divider's nose.)
     const island = lined < 0 && !wedge && !thru && hole && kerb && [...near].some(([i]) => rankOf(edges[i].cls) >= 2);
-    why += ` lined ${lined} off ${off.toFixed(2)}${wedge ? ' wedge' : ''}${thru ? ' through' : ''}${island ? ' island' : ''}`;
-    return { ...base, kerb, line: lined >= 0 || wedge || thru || island, stop: false, why, lr: lined, ls };
+    // (And round a nose's point, between the two roads' edge lines: it lies
+    // up to 0.75 m out from either road's edge, in the middle of the wedge.)
+    const nose = lined < 0 && !wedge && !thru && !island && kerb && lvl < 0 && onNose(mx, mz) && [...near].some(([i]) => rankOf(edges[i].cls) >= 2);
+    why += ` lined ${lined} off ${off.toFixed(2)}${wedge ? ' wedge' : ''}${thru ? ' through' : ''}${island ? ' island' : ''}${nose ? ' nose' : ''}`;
+    return { ...base, kerb, line: lined >= 0 || wedge || thru || island || nose, stop: false, why, lr: lined, ls };
   };
   /** How far is (x, z) from the nearest through road's edge line across a junction (on the ground)? */
   let thruGrid: Map<number, [XZ, XZ, number][]> | null = null;
