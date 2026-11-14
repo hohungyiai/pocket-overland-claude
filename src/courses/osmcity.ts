@@ -5444,12 +5444,15 @@ export async function buildPasirRisCourse(
     // (A dead end's round pad: its turning circle is the road's end, the
     // kerb running round it. Left out, the outline ended square across the
     // road and the pad lay past the kerb, the kerb hidden under it.)
+    // (Every pad drawn, as drawn: at a bend or a plain joint too, its disc
+    // stood out past the roads' edges, the kerb running on under it.)
     for (const all of padsByTile.values())
       for (const j of all) {
-        if (jDegree[j] !== 1 || !outlined[jEdges[j][0]]) continue;
+        if (!jEdges[j].some((i) => outlined[i])) continue;
         const { x, z, r, ring } = padShape(j);
-        if (ring) continue;
-        rings.push([Array.from({ length: 24 }, (_, q): XZ => [x + Math.cos((q / 24) * Math.PI * 2) * r, z + Math.sin((q / 24) * Math.PI * 2) * r]), -1]);
+        const d = jEdges[j].find((i) => isDeck[i]);
+        const lvl = d === undefined ? -1 : lvlOf(d, edges[d].a === j ? 0 : EP[d].length - 2);
+        rings.push([ring ?? Array.from({ length: 24 }, (_, q): XZ => [x + Math.cos((q / 24) * Math.PI * 2) * r, z + Math.sin((q / 24) * Math.PI * 2) * r]), lvl]);
       }
     gores.forEach((g, id) => {
       // (With its noses: the island's rounded point is the outline's.)
