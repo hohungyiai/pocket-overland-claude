@@ -1949,7 +1949,7 @@ export async function buildPasirRisCourse(
   });
 
   // Everything paved at junctions: the shapes, and islands filled in.
-  const JPOLY = [...JX.shapes.map((sh) => ({ ...sh, fill: false })), ...JX.fills.map((f) => ({ ...f, mouths: [] as typeof JX.shapes[number]['mouths'], kerbs: [] as XZ[][], fill: true }))];
+  const JPOLY = [...JX.shapes.map((sh) => ({ ...sh, fill: false })), ...JX.fills.map((f) => ({ ...f, mouths: [] as typeof JX.shapes[number]['mouths'], kerbs: f.kerbs ?? ([] as XZ[][]), fill: true }))];
   const JCELL = 64;
   const jGrid = new Map<number, number[]>();
   JPOLY.forEach((sh, id) => {

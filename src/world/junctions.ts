@@ -125,7 +125,7 @@ export interface JunctionOut {
   fallback: number[];
   /** Islands inside big crossings (between slip lanes and the main roads), paved over. */
   /** Ground paved over that is no junction's own outline: islands roads enclose, and the far parts of a slip road's long wedge (`tee`: the joint it belongs to). */
-  fills: { ring: XZ[]; centre: XZ; radius: number; tee?: number; slip?: boolean }[];
+  fills: { ring: XZ[]; centre: XZ; radius: number; tee?: number; slip?: boolean; kerbs?: XZ[][] }[];
   /** Junctions paved as the hull of their mouths. */
   hulls: number;
   /** Why each fallback group was not shaped (for checks). */
@@ -1077,12 +1077,111 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       const t = teeShape(nodes[0]);
       if (t) return t;
     }
+    // A median's end. Where two roads leave a junction side by side, the
+    // same way (a divided road's two sides), the ground between them ends
+    // in a rounded end, not square across: the paving runs a little way on
+    // along both roads' edges and round a half circle as wide as the
+    // median (up to 2 m round), its point a hair back from the line across.
+    // (Square, its two corners turned the kerb and edge lines through two
+    // sharp corners each.)
+    const medianEnd = (A: Mouth, B: Mouth): { ring: XZ[]; centre: XZ; radius: number; kerbs?: XZ[][] }[] => {
+      if (!I.round || A.t[0] * B.t[0] + A.t[1] * B.t[1] < 0.9) return [];
+      const p0 = A.left, p2 = B.right;
+      const w = Math.hypot(p2[0] - p0[0], p2[1] - p0[1]);
+      if (w < 0.9 || w > 6) return [];
+      const tl = Math.hypot(A.t[0] + B.t[0], A.t[1] + B.t[1]) || 1;
+      const t: XZ = [(A.t[0] + B.t[0]) / tl, (A.t[1] + B.t[1]) / tl];
+      // Each corner rounded by a circle r round, touching the road's edge
+      // and a line 0.1 m out beyond the line across (its "front"); as wide
+      // as the median allows, the two make one half circle. (Worked out from
+      // the two lines it touches, so it meets each without a turn however
+      // the roads' edges or the line across lie aslant.)
+      const e: XZ = [(p2[0] - p0[0]) / w, (p2[1] - p0[1]) / w];
+      let n: XZ = [-e[1], e[0]];
+      if (n[0] * t[0] + n[1] * t[1] < 0) n = [-n[0], -n[1]];
+      const inward = (d: XZ, toward: XZ): XZ => {
+        const m: XZ = [-d[1], d[0]];
+        return m[0] * toward[0] + m[1] * toward[1] >= 0 ? m : [-m[0], -m[1]];
+      };
+      const nA = inward(A.t, e), nB = inward(B.t, [-e[0], -e[1]]);
+      // C with (C - P)·m = a and (C - P)·n = b.
+      const solve = (P: XZ, m: XZ, a: number, b: number): XZ | null => {
+        const det = m[0] * n[1] - m[1] * n[0];
+        if (Math.abs(det) < 0.2) return null;
+        return [P[0] + (a * n[1] - b * m[1]) / det, P[1] + (b * m[0] - a * n[0]) / det];
+      };
+      const FRONT = 0.1;
+      const fillet = (r: number) => {
+        const CA = solve(p0, nA, r, FRONT + r), CB = solve(p2, nB, r, FRONT + r);
+        if (!CA || !CB) return null;
+        const ta: XZ = [CA[0] - nA[0] * r, CA[1] - nA[1] * r], fa: XZ = [CA[0] - n[0] * r, CA[1] - n[1] * r];
+        const tb: XZ = [CB[0] - nB[0] * r, CB[1] - nB[1] * r], fb: XZ = [CB[0] - n[0] * r, CB[1] - n[1] * r];
+        const sa = (fa[0] - p0[0]) * e[0] + (fa[1] - p0[1]) * e[1], sb = (fb[0] - p0[0]) * e[0] + (fb[1] - p0[1]) * e[1];
+        return { CA, CB, ta, fa, tb, fb, ok: sa <= sb + 1e-6 };
+      };
+      let r = Math.min(2, w / 2);
+      let f = fillet(r);
+      for (let it = 0; it < 30 && f && !f.ok; it++) f = fillet((r *= 0.95));
+      if (!f || !f.ok || r < 0.3) return [];
+      const { CA, CB, ta, fa, tb, fb } = f;
+      const dA = (ta[0] - p0[0]) * A.t[0] + (ta[1] - p0[1]) * A.t[1], dB = (tb[0] - p2[0]) * B.t[0] + (tb[1] - p2[1]) * B.t[1];
+      if (dA < 0.05 || dB < 0.05 || A.s + dA > len[A.line] * 0.5 || B.s + dB > len[B.line] * 0.5) return [];
+      const arcOf = (Cq: XZ, from: XZ, to: XZ): XZ[] => {
+        const t0 = Math.atan2(from[1] - Cq[1], from[0] - Cq[0]);
+        let sw = Math.atan2(to[1] - Cq[1], to[0] - Cq[0]) - t0;
+        while (sw > Math.PI) sw -= 2 * Math.PI;
+        while (sw < -Math.PI) sw += 2 * Math.PI;
+        const N = Math.max(3, Math.ceil((Math.abs(sw) * r) / 0.3));
+        const o: XZ[] = [];
+        for (let k = 0; k <= N; k++) o.push([Cq[0] + Math.cos(t0 + (sw * k) / N) * r, Cq[1] + Math.sin(t0 + (sw * k) / N) * r]);
+        return o;
+      };
+      // (Its straight sides a little in on each road, so they lie under the
+      // road's own edge, never a hair beside it.)
+      const IN = 0.05;
+      const midA: XZ[] = [], midB: XZ[] = [];
+      for (let d = 1; d < dA - 0.3; d += 1) midA.push([p0[0] + A.t[0] * d - nA[0] * IN, p0[1] + A.t[1] * d - nA[1] * IN]);
+      for (let d = 1; d < dB - 0.3; d += 1) midB.push([p2[0] + B.t[0] * d - nB[0] * IN, p2[1] + B.t[1] * d - nB[1] * IN]);
+      const q0: XZ = [p0[0] - nA[0] * IN, p0[1] - nA[1] * IN], q2: XZ = [p2[0] - nB[0] * IN, p2[1] - nB[1] * IN];
+      // Paved as two halves, each from its road's edge round to the middle
+      // of the front and straight back to the line across (as one, a thin
+      // strip joins two scoops and no centre may see the whole).
+      const Mf: XZ = [(fa[0] + fb[0]) / 2, (fa[1] + fb[1]) / 2];
+      const Ml: XZ = [Mf[0] - n[0] * FRONT, Mf[1] - n[1] * FRONT];
+      const near = (p: XZ, q: XZ) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.02;
+      const arcA = arcOf(CA, ta, fa), arcB = arcOf(CB, fb, tb);
+      const inCorner = (P: XZ, a: XZ, b: XZ): XZ => {
+        const la = Math.hypot(a[0] - P[0], a[1] - P[1]) || 1, lb = Math.hypot(b[0] - P[0], b[1] - P[1]) || 1;
+        return [P[0] + ((a[0] - P[0]) / la + (b[0] - P[0]) / lb) * 0.05, P[1] + ((a[1] - P[1]) / la + (b[1] - P[1]) / lb) * 0.05];
+      };
+      const halves: [XZ[], XZ][] = [
+        [[q0, ...midA, ...arcA, ...(near(fa, Mf) ? [] : [Mf]), Ml], inCorner(q0, midA[0] ?? ta, Ml)],
+        [[Ml, ...(near(fb, Mf) ? [] : [Mf]), ...arcB, ...midB.reverse(), q2], inCorner(q2, midB[0] ?? tb, Ml)],
+      ];
+      // (Kerbed round its end, from each road's edge to the middle of the
+      // front: not along its straight sides, which lie under the roads.)
+      const kerbed = hasKerb(A.line) || hasKerb(B.line);
+      const kerbOf = [[...arcA, Mf], [Mf, ...arcB]];
+      const parts: { ring: XZ[]; c: XZ; kerb: XZ[] }[] = [];
+      for (let hi = 0; hi < 2; hi++) {
+        let [h, hc] = halves[hi];
+        let area = 0;
+        for (let k = 0; k < h.length; k++) area += cross(h[k], h[(k + 1) % h.length]);
+        if (Math.abs(area) < 1e-4) continue;
+        if (area < 0) h = h.reverse();
+        const kc = sees(h, hc) > 1e-6 ? hc : kernelOf(h);
+        if (kc) parts.push({ ring: h, c: kc, kerb: kerbOf[hi] });
+        else parts.push(...(starParts(h) ?? []).map((q) => ({ ...q, kerb: kerbOf[hi] })));
+      }
+      return parts.map((q) => ({ ring: q.ring, centre: q.c, radius: Math.max(...q.ring.map((p) => Math.hypot(p[0] - q.c[0], p[1] - q.c[1]))), ...(kerbed ? { kerbs: [q.kerb] } : {}) }));
+    };
     const tryCentre = (c: XZ, byDir: boolean, search = false) => {
       const key = (m: Mouth) => (byDir ? Math.atan2(m.t[1], m.t[0]) : Math.atan2(m.q[1] - c[1], m.q[0] - c[0]));
       const ms = [...mouths].sort((p, q) => key(p) - key(q));
       const ring: XZ[] = [];
       const corners: XZ[][] = [];
       const kerbs: XZ[][] = [];
+      const ends: { ring: XZ[]; centre: XZ; radius: number; kerbs?: XZ[][] }[] = [];
       // Two roads that leave overlapping (OSM sometimes draws a pair of
       // lanes closer than their widths) share one wide mouth.
       // So do two that leave at a narrow angle with their end lines crossing
@@ -1187,6 +1286,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         for (let k = 1; k < curve.length - 1; k++) ring.push(curve[k]);
         corners.push(curve);
         if (hasKerb(A.line) || hasKerb(B.line)) kerbs.push(curve);
+        if (curve.length === 2) ends.push(...medianEnd(A, B));
       }
       // Star-shaped around c: every outline step turns the same way.
       // (A curved corner can fold a hair as seen from the middle of the
@@ -1198,7 +1298,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         if (sees(ring, c) <= 1e-6) return null;
       }
       if (spills(ring)) return null;
-      return { ms, ring, corners, kerbs, c };
+      return { ms, ring, corners, kerbs, c, ends };
     };
     const c1 = mean(nodes.map((j) => junctions[j]));
     const c2 = mean(mouths.map((m) => m.q));
@@ -1222,6 +1322,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // the sides across a mouth are open.
       const pts: XZ[] = mouths.flatMap((m) => [m.right, m.left]);
       const hull = convexHull(pts);
+      const hullEnds: { ring: XZ[]; centre: XZ; radius: number; kerbs?: XZ[][] }[] = [];
       if (hull.length < 3) return 'star';
       const ring: XZ[] = [];
       const corners: XZ[][] = [];
@@ -1239,6 +1340,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         const A = mouths.find((m) => same(m.left, a));
         const B = mouths.find((m) => same(m.right, b));
         if (A && B && A !== B) edge = eased(A, B, edge, I.sideBySide?.(A.line, A.end, B.line, B.end));
+        if (A && B && A !== B && edge.length === 2) hullEnds.push(...medianEnd(A, B));
         ring.push(...edge.slice(0, -1));
         corners.push(edge);
         const Ma = ownerOf(a);
@@ -1251,11 +1353,11 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // the middle of the hull, the paving is filled from the point that
       // sees it best instead.)
       if (sees(ring, centre) <= 1e-6) centre = seesBest(ring, centre);
-      got = { ms: mouths, ring, corners, kerbs, c: centre };
+      got = { ms: mouths, ring, corners, kerbs, c: centre, ends: hullEnds };
       isHull = true;
     }
     const radius = Math.max(...got.ring.map((p) => Math.hypot(p[0] - centre[0], p[1] - centre[1])));
-    return { nodes, centre, radius, ring: got.ring, kerbs: got.kerbs, corners: got.corners, mouths: got.ms, internal, hull: isHull };
+    return { nodes, centre, radius, ring: got.ring, kerbs: got.kerbs, corners: got.corners, mouths: got.ms, internal, hull: isHull, ...(got.ends.length ? { more: got.ends } : {}) };
   };
 
   // Shape every group; where two shapes still overlap (two junctions on a
@@ -1606,7 +1708,7 @@ interface Built {
   /** Openings at this joint with nothing to pave (see JX.bare). */
   bare?: number[];
   /** More paving that belongs to this junction, each part filled from its own centre. */
-  more?: { ring: XZ[]; centre: XZ; radius: number; slip?: boolean }[];
+  more?: { ring: XZ[]; centre: XZ; radius: number; slip?: boolean; kerbs?: XZ[][] }[];
   slip?: boolean;
 }
 
