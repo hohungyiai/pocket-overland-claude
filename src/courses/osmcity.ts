@@ -5982,6 +5982,11 @@ export async function buildPasirRisCourse(
           if (l < 1) continue;
           // (The paving on the left, the hole on the right: x east, z south.)
           const x = (a[0] + b[0]) / 2 - ((b[1] - a[1]) / l) * 0.3, z = (a[1] + b[1]) / 2 + ((b[0] - a[0]) / l) * 0.3;
+          // (Only where this tile sees all the paving: outside its margin a
+          // piece it was not given leaves a false way out of the hole, and a
+          // block's ring reaching out there was dropped by one tile and kept
+          // by the next, its kerb stopping at the tile's edge.)
+          if (x < bx0 + 1 || x > bx1 - 1 || z < bz0 + 1 || z > bz1 - 1) continue;
           if (!inRingXZ(corner, x, z)) continue;
           const near: Near = new Map([...nearRoads(x, z)].filter(([i, h]) => onLvl(i, h.seg, lvl)));
           const r = edgeRoadOf(near, (i) => !JX.internal[i]);
@@ -6505,7 +6510,15 @@ export async function buildPasirRisCourse(
   /** How many places along a side of the outline are asked (one every 4 m or so). */
   const sidePlaces = (a: XZ, b: XZ) => Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
   if (oneLine) {
-    for (const k of roadRuns.keys()) {
+    // (Every tile any of the outline's pieces may lie in, not only those a
+    // road's own points do: a piece whose middle lay in a tile no road had
+    // a point in was drawn by no tile, and its kerb and line stopped short
+    // at the tile's edge.)
+    const outTiles = new Set(roadRuns.keys());
+    for (const s of outSources())
+      for (let ix = Math.floor(s.x0 / TILE); ix <= Math.floor(s.x1 / TILE); ix++)
+        for (let iz = Math.floor(s.z0 / TILE); iz <= Math.floor(s.z1 / TILE); iz++) outTiles.add(`${ix},${iz}`);
+    for (const k of outTiles) {
       const [ix, iz] = k.split(',').map(Number);
       const inTile = (x: number, z: number) => Math.floor(x / TILE) === ix && Math.floor(z / TILE) === iz;
       // (Traced in one slice, laid out for asking in the next.)
