@@ -1041,6 +1041,18 @@ export async function buildPasirRisCourse(
   // (Held to an island's point: may run past 40% of the road; see TRIM_A.)
   const ptA = new Float32Array(edges.length);
   const ptB = new Float32Array(edges.length);
+  // (How much of a road held from one end is left to climb or fall in
+  // before its other end: 10 m, or 4 m where that end carries straight on
+  // into one road on the ground, which climbs on from there. A slip road
+  // whose island's point lay in its last 10 m, the rest of it on beyond
+  // the joint, was not held to it, and reached it 40 cm below the road
+  // it left, its edge line round the point buried under the higher one.)
+  const restAt = (q: number, j: number) => {
+    const on = (jE[j] ?? []).filter((t) => t !== q);
+    return on.length === 1 && !elevated[on[0]] && !elevated[q] ? 4 : 10;
+  };
+  const restA = (q: number) => restAt(q, edges[q].a);
+  const restB = (q: number) => restAt(q, edges[q].b);
   const mates = edges.map(() => [] as { o: number; ia: boolean; oa: boolean; L: number; pt?: boolean }[]);
   jE.forEach((list, j) => {
     if (list.length < 2) return;
@@ -1072,7 +1084,7 @@ export async function buildPasirRisCourse(
         // between them measures it (a road's one width, wider than its
         // drawn strip, put a gore's point 20 m short of where the hold
         // ended). Never past 10 m short of either road's far end.)
-        const lim = Math.min(80, ELEN[i] - 10, ELEN[o] - 10);
+        const lim = Math.min(80, ELEN[i] - (ia ? restB(i) : restA(i)), ELEN[o] - (oa ? restB(o) : restA(o)));
         const toPoint = () => {
           let d = s;
           while (d < lim) {
@@ -1137,8 +1149,8 @@ export async function buildPasirRisCourse(
   // the road is left to climb or fall in between the two ends' holds.)
   const TRIM_A0 = Float64Array.from(edges, (_, i) => Math.min(Math.max(elevated[i] ? 0 : JX.trimA[i] || 0, sepA[i]), ELEN[i] * 0.4));
   const TRIM_B0 = Float64Array.from(edges, (_, i) => Math.min(Math.max(elevated[i] ? 0 : JX.trimB[i] || 0, sepB[i]), ELEN[i] * 0.4));
-  const TRIM_A = Float64Array.from(edges, (_, i) => Math.max(TRIM_A0[i], Math.min(ptA[i], ELEN[i] - 10 - Math.max(TRIM_B0[i], ptB[i] > 0 ? Math.min(ptB[i], (ELEN[i] - 10) / 2) : 0))));
-  const TRIM_B = Float64Array.from(edges, (_, i) => Math.max(TRIM_B0[i], Math.min(ptB[i], ELEN[i] - 10 - TRIM_A[i])));
+  const TRIM_A = Float64Array.from(edges, (_, i) => Math.max(TRIM_A0[i], Math.min(ptA[i], ELEN[i] - restB(i) - Math.max(TRIM_B0[i], ptB[i] > 0 ? Math.min(ptB[i], (ELEN[i] - 10) / 2) : 0))));
+  const TRIM_B = Float64Array.from(edges, (_, i) => Math.max(TRIM_B0[i], Math.min(ptB[i], ELEN[i] - restA(i) - TRIM_A[i])));
   const RUN_LEN = Float64Array.from(edges, (_, i) => Math.max(0, ELEN[i] - TRIM_A[i] - TRIM_B[i]));
   const trimA = (i: number) => TRIM_A[i];
   const trimB = (i: number) => TRIM_B[i];
