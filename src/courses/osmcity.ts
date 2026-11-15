@@ -5981,6 +5981,40 @@ export async function buildPasirRisCourse(
       let fa = ka + 1, fc = kc + 1;
       while (fa < Math.min(24, n / 2 - 1) && dist(at(-fa), at(-ka)) < 1.5 * OUT_S) fa++;
       while (fc < Math.min(24, n / 2 - 1) && dist(at(fc), at(kc)) < 1.5 * OUT_S) fc++;
+      // (And on, while the side runs straight on, within 6 degrees, to 8 m,
+      // where the nose would else be under half a metre across and no kerb
+      // runs round it, the roads either side plain lanes: a long thin
+      // island's sides in short pieces gave its nose no room, and its point
+      // stayed a sliver of grass a few centimetres across, nothing at its
+      // edge to show it. A kerbed one shows its kerb.)
+      const straightOn = (sg: number, s0: number, f: number) => {
+        const S = at(sg * s0), F = at(sg * f);
+        const fx = F.x - S.x, fy = F.y - S.y, fl = Math.hypot(fx, fy) || 1;
+        while (f < Math.min(24, n / 2 - 1)) {
+          const Q = at(sg * (f + 1));
+          const qx = Q.x - S.x, qy = Q.y - S.y, ql = Math.hypot(qx, qy) || 1;
+          if (ql > 8 * OUT_S || (fx * qx + fy * qy) / (fl * ql) < Math.cos((6 * Math.PI) / 180)) break;
+          f++;
+        }
+        return f;
+      };
+      {
+        const A0 = at(-ka), B0 = at(-fa), C0 = at(kc), D0 = at(fc);
+        const l1 = dist(A0, B0) || 1, l2 = dist(C0, D0) || 1;
+        const cs = ((B0.x - A0.x) * (D0.x - C0.x) + (B0.y - A0.y) * (D0.y - C0.y)) / (l1 * l2);
+        const tn = Math.tan(Math.acos(Math.max(-1, Math.min(1, cs))) / 2);
+        const room = 0.9 * Math.min(l1, l2);
+        // (Every road whose edge passes within 2 m of its point, and one at least.)
+        let plain = 0;
+        roads.each(at(0).x / OUT_S, at(0).y / OUT_S, 12, (o, seg, u, d) => {
+          if (!outlined[o] || JX.internal[o] || d - drawnHalf(o, seg, u) > 2) return;
+          plain = plain < 0 || kerbedRoad(edges[o]) || hasProfile[o] ? -1 : 1;
+        });
+        if (plain > 0 && tn > 1e-3 && room < (NOSE_R * OUT_S) / tn && 2 * room * tn < 0.5 * OUT_S) {
+          fa = straightOn(-1, ka, fa);
+          fc = straightOn(1, kc, fc);
+        }
+      }
       const SA = at(-ka), FA = at(-fa), SC = at(kc), FC = at(fc);
       const la = dist(SA, FA) || 1, lc = dist(SC, FC) || 1;
       const ux = (FA.x - SA.x) / la, uy = (FA.y - SA.y) / la, wx = (FC.x - SC.x) / lc, wy = (FC.y - SC.y) / lc;
