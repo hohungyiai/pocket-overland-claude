@@ -6265,7 +6265,9 @@ export async function buildPasirRisCourse(
     }
     let why = r ? `road ${r.i} past ${r.past.toFixed(2)}` : 'no road';
     /** The joint whose paving's side this is (not a road's). */
-    const jointSide = r && Math.abs(r.past) > 0.2 ? jointsNear(mx, mz).find((q) => jLvlM(q) === lvl && inRingXZ(JPOLY[q].ring, mx + nx * 0.05, mz + nz * 0.05) && !inRingXZ(JPOLY[q].ring, mx - nx * 0.05, mz - nz * 0.05)) : undefined;
+    // (Or no road's at all: a joint's paving reaching further than any
+    // road near it, its kerb stopped on the verge where no road was near.)
+    const jointSide = !r || Math.abs(r.past) > 0.2 ? jointsNear(mx, mz).find((q) => jLvlM(q) === lvl && inRingXZ(JPOLY[q].ring, mx + nx * 0.05, mz + nz * 0.05) && !inRingXZ(JPOLY[q].ring, mx - nx * 0.05, mz - nz * 0.05)) : undefined;
     // (Its kerbs stop short of the roads' edges, where each road's own
     // kerb once ran: an edge line along a kerbed road keeps its kerb there.)
     const kerbAlong = kerb;
