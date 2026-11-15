@@ -6195,7 +6195,16 @@ export async function buildPasirRisCourse(
           // by the next, its kerb stopping at the tile's edge.)
           if (x < bx0 + 1 || x > bx1 - 1 || z < bz0 + 1 || z > bz1 - 1) continue;
           if (!inRingXZ(corner, x, z)) continue;
-          const near: Near = new Map([...nearRoads(x, z)].filter(([i, h]) => onLvl(i, h.seg, lvl)));
+          // (A road where it is drawn: not where it is cut back at a
+          // shaped junction, the junction's paving drawn there instead. Taken
+          // as drawn to its full width up to its joint, a median beside a
+          // junction was dropped as paving the union missed, and paved over
+          // by one tile while the next kept its kerbs, buried under it.)
+          const drawn = ([i, h]: [number, { seg: number; u: number }]) => {
+            const s = ECUM[i][h.seg] + h.u * (ECUM[i][h.seg + 1] - ECUM[i][h.seg]);
+            return s >= (JX.trimA[i] || 0) - 0.05 && s <= ELEN[i] - (JX.trimB[i] || 0) + 0.05;
+          };
+          const near: Near = new Map([...nearRoads(x, z)].filter(([i, h]) => onLvl(i, h.seg, lvl) && drawn([i, h])));
           const r = edgeRoadOf(near, (i) => !JX.internal[i]);
           if (r && r.past < -0.1) paved = true;
         }
