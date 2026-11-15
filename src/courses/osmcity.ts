@@ -4238,7 +4238,14 @@ export async function buildPasirRisCourse(
       // (Only where the verge really begins: not where another road, a junction or the next wedge takes over.)
       const x = mx + d[0] * 0.8, z = mz + d[1] * 0.8;
       if (drawnRoadAt(x, z, y) || inGore(x, z) || inPaving(x, z, y) || onIsland(x, z, y) || jGrid.get(Math.floor(x / JCELL) * 100003 + Math.floor(z / JCELL))?.some((k) => inRingXZ(JPOLY[k].ring, x, z) && Math.abs(jTop(k, x, z) - y) < 3)) continue;
-      out.push({ a: r.a, b: r.b, ya: r.ya, yb: r.yb, d, drop: deck > 0 ? 99 : deck < 0 ? 0 : y + 0.09 - heightAt(mx + d[0] * 1.05, mz + d[1] * 1.05), ...noseOf(r, q, d, gores[id]) });
+      const nz = noseOf(r, q, d, gores[id]);
+      // (Its sides running on ahead of its point, as an island's do: where
+      // two roads' edges cross at a shallow angle, a wedge of two rows lay
+      // lengthwise, and one side ran back past the point, a disc of a nose
+      // standing beside the island's own point, the edge line hooked round.)
+      const ahead = (p: XZ) => (p[0] - nz.C[0]) * d[0] + (p[1] - nz.C[1]) * d[1] > 0;
+      if (!ahead(nz.nose[0]) || !ahead(nz.nose[nz.nose.length - 1])) continue;
+      out.push({ a: r.a, b: r.b, ya: r.ya, yb: r.yb, d, drop: deck > 0 ? 99 : deck < 0 ? 0 : y + 0.09 - heightAt(mx + d[0] * 1.05, mz + d[1] * 1.05), ...nz });
     }
     return out;
   };
@@ -6355,6 +6362,15 @@ export async function buildPasirRisCourse(
     if (r && !kerb && Math.abs(r.past) < 0.15) {
       const k = edgeRoadOf(near, (i) => !JX.internal[i] && (kerbedRoad(edges[i]) || hasProfile[i]));
       if (k && Math.abs(k.past) < 0.15) kerb = true;
+    }
+    // (And round a point between a kerbed road and one without, its kerb
+    // runs on round the point to where the other road's own side begins:
+    // past that road's edge, the outline is the point's, not its side.
+    // Taken for the plain road's side round the rounded point, the kerb
+    // stopped on the verge a metre short of it.)
+    if (r && !kerb && r.past > 0.1) {
+      const k = edgeRoadOf(near, (i) => !JX.internal[i] && (kerbedRoad(edges[i]) || hasProfile[i]));
+      if (k && Math.abs(k.past) < 3) kerb = true;
     }
     let why = r ? `road ${r.i} past ${r.past.toFixed(2)}` : 'no road';
     /** The joint whose paving's side this is (not a road's). */
@@ -8829,6 +8845,7 @@ export async function buildPasirRisCourse(
         });
         return hit;
       },
+      goreInfo: (x: number, z: number) => goresNear(x, z).map((id) => ({ id, A: gores[id].A, B: gores[id].B, deck: gores[id].deck, ring: gores[id].ring, caps: goreCaps(id).map((c) => ({ nose: c.nose, pave: c.pave })) })),
       jxInfo: (i: number) => ({ internal: JX.internal[i], hidden: internalHidden[i], outlined: outlined[i], tee: JX.tee[i], shapeA: JX.shapeOf[edges[i].a], shapeB: JX.shapeOf[edges[i].b], trimA: JX.trimA[i], trimB: JX.trimB[i], half: [EP[i].map((_, k) => halfAtE(i, k))] }),
       jpolyAt: (x: number, z: number) => JPOLY.map((sh, id) => ({ id, sh })).filter(({ sh }) => inRingXZ(sh.ring, x, z)).map(({ id, sh }) => ({ id, fill: sh.fill, n: sh.ring.length, centre: sh.centre, radius: sh.radius, kerbs: sh.kerbs.length, near: jointsNear(x, z).includes(id), lvl: jLvlM(id), deck: jDeck(id) })),
       outlineFillsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ corner: g.corner, lvl: g.lvl })),
