@@ -4104,7 +4104,7 @@ export async function buildPasirRisCourse(
     if (runA) aL = runA[runA.length - 1];
     if (runB) bL = runB[runB.length - 1];
     const sideA = runA ? runA.slice(1, -1) : [], sideB = runB ? runB.slice(1, -1) : [];
-    const R = Math.min(NOSE_R, w / 2 - 0.05);
+    let R = Math.min(NOSE_R, w / 2 - 0.05);
     // (The circle just past the row; or further on, a quarter metre at a
     // time, until the island's sides back from the 4 m points to it cross
     // neither road's edge: where the two roads part fast, the circle at
@@ -4137,10 +4137,30 @@ export async function buildPasirRisCourse(
       // (Paved as one piece, its triangles found by ear clipping: from the
       // row along A's edge, round the point and back along B's.)
       const pave: XZ[] = [r.a, ...sideA, ...nose, ...[...sideB].reverse(), r.b];
-      return { C, nose, pave };
+      return { C, nose, pave, sweep };
     };
+    // (Nor round more than three quarters of the circle: where one road's
+    // edge 4 m on came back within the circle, the two touching points
+    // were one and the nose ran all the way round, a disc the outline
+    // paved and the paving left as grass.)
+    const bad = (q: ReturnType<typeof shape>) => ringCrosses(q.pave) || Math.abs(q.sweep) > 1.5 * Math.PI;
     let got = shape(R);
-    for (let set = R + 0.25; set < NOSE_L - R && ringCrosses(got.pave); set += 0.25) got = shape(set);
+    for (let set = R + 0.25; set < NOSE_L - R && bad(got); set += 0.25) got = shape(set);
+    // (Where the two roads' edges come together again within the 4 m, a
+    // circle no wider than the gap left between their ends there; none,
+    // the island coming to a point, where they meet.)
+    const gap = Math.hypot(aL[0] - bL[0], aL[1] - bL[1]);
+    if (bad(got) && gap < 2 * R) {
+      const R0 = R;
+      R = gap / 2 - 0.02;
+      const small = R >= 0.05 ? shape(R) : null;
+      if (small && !bad(small)) got = small;
+      else {
+        R = R0;
+        const C: XZ = [(aL[0] + bL[0]) / 2, (aL[1] + bL[1]) / 2];
+        got = { C, nose: [aL, bL], pave: [r.a, ...sideA, aL, bL, ...[...sideB].reverse(), r.b], sweep: 0 };
+      }
+    }
     const { C, nose, pave } = got;
     const tris = THREE.ShapeUtils.triangulateShape(pave.map((p) => new THREE.Vector2(p[0], p[1])), []) as [number, number, number][];
     // (Each side's height carries on along it at the slope it had.)
