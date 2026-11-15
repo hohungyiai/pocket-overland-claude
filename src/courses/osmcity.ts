@@ -4759,11 +4759,21 @@ export async function buildPasirRisCourse(
             // median-end fill and a pad where two roads of different widths
             // meet, standing up through their paving 0.3 to 0.5 m in from
             // the kerb. Their own edges carry the kerb there.)
+            // (Asked at three places along the piece, not only its middle: a
+            // sharp tee's wedge flares out past the slip road's edge from
+            // its mouth, and a 2 m piece of the road's wall ran on slantwise
+            // under it, the wedge's own wall standing beyond.)
             const wallOnPaving = (kk: number) => {
               if (!oneLine) return false;
-              const [x, z] = besideMid(line, kk, off(kk));
-              const yy = (y(kk) + y(kk + 1)) / 2;
-              return onPaved(x, z, yy) || coveredBy(line, x, z, yy);
+              const a = EP[line][kk], b = EP[line][kk + 1];
+              const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+              const nx = (b[1] - a[1]) / tl, nz = -(b[0] - a[0]) / tl;
+              return [0.25, 0.5, 0.75].some((t) => {
+                const o = lerp(off(kk), off(kk + 1), t);
+                const x = lerp(a[0], b[0], t) + nx * o, z = lerp(a[1], b[1], t) + nz * o;
+                const yy = lerp(y(kk), y(kk + 1), t);
+                return onPaved(x, z, yy) || coveredBy(line, x, z, yy);
+              });
             };
             // (Is the wall, a fraction t along piece kk, still beside the
             // grass its kerb runs round? The grass is the ground no road,
