@@ -3965,6 +3965,9 @@ export async function buildPasirRisCourse(
     const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
     return [(a[0] + b[0]) / 2 + ((b[1] - a[1]) / tl) * off, (a[1] + b[1]) / 2 - ((b[0] - a[0]) / tl) * off];
   };
+  /** Paving at about height y at (x, z) besides a road's own: a paved island, a junction's paving, a joint's pad (raised, or on the ground at that level). */
+  const onPaved = (x: number, z: number, y: number) =>
+    onIsland(x, z, y) || inJoint(x, z, y) || padsAt(x, z).some((p) => Math.abs(p.y - y) < 0.5) || (drapedPadAt(x, z) && Math.abs(heightAt(x, z) + ROAD_LIFT + UNDER - y) < 0.5);
   const parapetClear = (line: number, kk: number, off: number) => {
     const [x, z] = besideMid(line, kk, off);
     const y = hasProfile[line] ? (deckY(line)[kk] + deckY(line)[kk + 1]) / 2 : NaN;
@@ -4749,6 +4752,19 @@ export async function buildPasirRisCourse(
               return [P[kk][0] + ((b[1] - a[1]) / tl) * off(kk), P[kk][1] - ((b[0] - a[0]) / tl) * off(kk)];
             };
             const endOff = (kk: number) => inNose(...endAt(kk)) || inGore(...endAt(kk));
+            // (Nor where the wall's own line lies on paving at the road's
+            // level: another road's, a paved island, a junction's paving or
+            // a joint's pad.
+            // Tested only beside, 0.3 m out, a wall ran on into a junction's
+            // median-end fill and a pad where two roads of different widths
+            // meet, standing up through their paving 0.3 to 0.5 m in from
+            // the kerb. Their own edges carry the kerb there.)
+            const wallOnPaving = (kk: number) => {
+              if (!oneLine) return false;
+              const [x, z] = besideMid(line, kk, off(kk));
+              const yy = (y(kk) + y(kk + 1)) / 2;
+              return onPaved(x, z, yy) || coveredBy(line, x, z, yy);
+            };
             // (Is the wall, a fraction t along piece kk, still beside the
             // grass its kerb runs round? The grass is the ground no road,
             // joint, island, gore or nose paves, less what the outline paves
@@ -4764,7 +4780,7 @@ export async function buildPasirRisCourse(
               const o = off(kk) + (off(kk + 1) - off(kk)) * t + sgn * (R + 0.02 - WALL_OUT);
               const cx = a[0] + (b[0] - a[0]) * t + tz * o, cz = a[1] + (b[1] - a[1]) * t - tx * o;
               const yy = y(kk) + (y(kk + 1) - y(kk)) * t;
-              const clear = (x: number, z: number) => !coveredBy(line, x, z, yy) && !inJoint(x, z, yy) && !inGore(x, z) && !inNose(x, z);
+              const clear = (x: number, z: number) => !coveredBy(line, x, z, yy) && !inJoint(x, z, yy) && !inGore(x, z) && !inNose(x, z) && !(oneLine && onPaved(x, z, yy));
               if (!clear(cx, cz)) return false;
               for (let q = 0; q < 8; q++) {
                 const c = Math.cos((q * Math.PI) / 4) * R, s = Math.sin((q * Math.PI) / 4) * R;
@@ -4772,8 +4788,8 @@ export async function buildPasirRisCourse(
               }
               return true;
             };
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !inJoint(...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), openBeside, sec);
-            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)), ext(sgn), undefined, openBeside, sec);
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !inJoint(...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)) && !wallOnPaving(kk), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), openBeside, sec);
+            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)) && !wallOnPaving(kk), ext(sgn), undefined, openBeside, sec);
           }
         }
         if (dy && isDeck[line]) {
