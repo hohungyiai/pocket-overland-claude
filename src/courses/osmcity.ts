@@ -4100,7 +4100,35 @@ export async function buildPasirRisCourse(
       // (Only where that is the edge the wedge's row lies on.)
       return run && Math.hypot(run[0][0] - p[0], run[0][1] - p[1]) < 0.05 ? run : null;
     };
-    const runA = runOf(g.A, r.a, q.a, r.b), runB = runOf(g.B, r.b, q.b, r.a);
+    // (Where the road's strip is not drawn there, inside a junction: along
+    // its middle line, as far out from it as the row's end. Straight on, a
+    // bending road's edge left it: the island's side stood 0.4 m out past
+    // the road's edge, and the kerb stepped out and back round it.)
+    const offRun = (i: number | undefined, p: XZ, p0: XZ): XZ[] | null => {
+      if (i === undefined) return null;
+      const s1 = sAlong(i, p[0], p[1]), s0 = sAlong(i, p0[0], p0[1]);
+      if (Math.abs(s1 - s0) < 0.05) return null;
+      const P = EP[i], cum = ECUM[i];
+      const mid = (sq: number) => {
+        let k = 0;
+        while (k < P.length - 2 && cum[k + 1] <= sq) k++;
+        const u = Math.max(0, Math.min(1, (sq - cum[k]) / (cum[k + 1] - cum[k] || 1)));
+        const [tx, tz] = unit(P[k + 1][0] - P[k][0], P[k + 1][1] - P[k][1]);
+        return { c: [lerp(P[k][0], P[k + 1][0], u), lerp(P[k][1], P[k + 1][1], u)] as XZ, tx, tz };
+      };
+      const m1 = mid(s1);
+      const off = m1.tx * (p[1] - m1.c[1]) - m1.tz * (p[0] - m1.c[0]);
+      const dir = Math.sign(s1 - s0);
+      const out: XZ[] = [p];
+      for (let m = 1; m <= NOSE_L + 1e-6; m += 1) {
+        const sq = s1 + dir * m;
+        if (sq < 0 || sq > ELEN[i]) return null;
+        const { c, tx, tz } = mid(sq);
+        out.push([c[0] - tz * off, c[1] + tx * off]);
+      }
+      return out;
+    };
+    const runA = runOf(g.A, r.a, q.a, r.b) ?? offRun(g.A, r.a, q.a), runB = runOf(g.B, r.b, q.b, r.a) ?? offRun(g.B, r.b, q.b);
     if (runA) aL = runA[runA.length - 1];
     if (runB) bL = runB[runB.length - 1];
     const sideA = runA ? runA.slice(1, -1) : [], sideB = runB ? runB.slice(1, -1) : [];
