@@ -253,6 +253,21 @@ window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
 // No wall or parapet beside a kerb stands out past it. Along every upright
 // sheet beside a kerb (within 0.6 m of one, that it stands up past), the
 // kerb must reach to within 2 cm of it.
+// (Places the user looked at, in pictures from the driver's seat and from
+// above, and passed as they are, 15 Nov: a wall holding up a raised road
+// beside a lower road, and two ramp walls at a short slip road's point.)
+// (Each a stretch from a to b, and r about it.)
+const UPRIGHTS_SEEN = [
+  { a: [-2788.0, 2252.8], b: [-2801.0, 2258.1], r: 1 },
+  { a: [-2068.72, -1071.77], b: [-2068.72, -1071.77], r: 3 },
+  { a: [1789.93, 2072.64], b: [1789.93, 2072.64], r: 3 },
+];
+const uprightSeen = (x, z) =>
+  UPRIGHTS_SEEN.some(({ a, b, r }) => {
+    const dx = b[0] - a[0], dz = b[1] - a[1], L = dx * dx + dz * dz;
+    const t = L ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / L)) : 0;
+    return Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t) <= r;
+  });
 window.__checkUprightsInKerb = (all = false, OUT = 0.02) => {
   const F = window.__finishIndex();
   const at = window.__flatIndex(['kerb']);
@@ -281,7 +296,8 @@ window.__checkUprightsInKerb = (all = false, OUT = 0.02) => {
         for (let o = 0; o <= OUT + 1e-9; o += 0.01) if (at(x + nx * sg * o, z + nz * sg * o).some((f) => f.h > s.hi - 0.01 && f.h <= s.hi + 0.05)) return true;
         return false;
       });
-      if (r > OUT && !flush) pts.push({ x: +x.toFixed(2), z: +z.toFixed(2), out: +r.toFixed(2), value: +r.toFixed(2) });
+      const seen = uprightSeen(x, z);
+      if (r > OUT && !flush && !seen) pts.push({ x: +x.toFixed(2), z: +z.toFixed(2), out: +r.toFixed(2), value: +r.toFixed(2) });
     }
   }
   const bad = F.places(pts, 2);
