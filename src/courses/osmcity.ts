@@ -7190,7 +7190,11 @@ export async function buildPasirRisCourse(
               return c;
             };
             let work = cost(j0);
-            while (j1 + 1 <= m && dr(j1 + 1) && j1 - j0 < 12 && work + cost(j1 + 1) <= 24) work += cost(++j1);
+            // (A piece under half a metre goes with the run before it: drawn by
+            // itself, at a tile's edge round an island's nose, its line's ends
+            // met the next tile's askew.)
+            const short = (J: number) => J + 1 < Q.length && Math.hypot(Q[J + 1][0] - Q[J][0], Q[J + 1][1] - Q[J][1]) < 0.5;
+            while (j1 + 1 <= m && dr(j1 + 1) && j1 - j0 < 12 && (work + cost(j1 + 1) <= 24 || short(j1 + 1))) work += cost(++j1);
             const J0 = j0, J1 = j1;
             w.draws.push((kerb, yellow) => {
               // (Heights where the ground does not lie as the strips drape it,
