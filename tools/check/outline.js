@@ -11,7 +11,8 @@
 //                          a plain lane (a driveway) begins; and nothing
 //                          drawn lies over it, so its whole width shows
 //   __checkUprightsInKerb  no wall or parapet beside a kerb stands more than
-//                          2 cm out past the kerb's outer edge
+//                          2 cm out past the kerb's outer edge (one standing
+//                          at a kerb level with its top is that kerb's face)
 
 /** Every triangle of the given drawn kinds, one tile at a time: f(tileKey, kind, pos, idx). */
 window.__eachMesh = (kinds, f) => {
@@ -272,7 +273,15 @@ window.__checkUprightsInKerb = (all = false, OUT = 0.02) => {
       const r = Math.min(reach(1), reach(-1));
       if (r === Infinity) continue;
       n++;
-      if (r > OUT) pts.push({ x: +x.toFixed(2), z: +z.toFixed(2), out: +r.toFixed(2), value: +r.toFixed(2) });
+      // (A sheet standing right at a kerb whose top is level with its own,
+      // within 2 cm, is that kerb's own face: it stands out past nothing.
+      // Passed over for being level with it, the reach ran on across the
+      // grass to another road's kerb, lower, and took that for its own.)
+      const flush = [1, -1].some((sg) => {
+        for (let o = 0; o <= OUT + 1e-9; o += 0.01) if (at(x + nx * sg * o, z + nz * sg * o).some((f) => f.h > s.hi - 0.01 && f.h <= s.hi + 0.05)) return true;
+        return false;
+      });
+      if (r > OUT && !flush) pts.push({ x: +x.toFixed(2), z: +z.toFixed(2), out: +r.toFixed(2), value: +r.toFixed(2) });
     }
   }
   const bad = F.places(pts, 2);
