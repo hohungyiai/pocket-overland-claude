@@ -5921,7 +5921,25 @@ export async function buildPasirRisCourse(
         return -Math.atan2(ux * wy - uy * wx, ux * wx + uy * wy);
       };
       const r0 = right(0);
-      if (r0 < (30 * Math.PI) / 180) continue;
+      // (Read on from here, an end as the eye reads one: corners turning a
+      // half turn within 2.5 m, the way back no more than a little, with a
+      // straight piece over 0.8 m across them; its last corner, or none.
+      // Its turn spread over many small corners and one flat, a long round
+      // end cut off flat, it was missed below and stood square.)
+      const flatEnd = (): number => {
+        let t = 0, len = 0, flat = 0;
+        for (let q = 0; q < n; q++) {
+          t += right(q);
+          if (t >= (150 * Math.PI) / 180) return flat > 0.8 * OUT_S ? q : -1;
+          const l = dist(at(q), at(q + 1));
+          flat = Math.max(flat, l);
+          len += l;
+          if (len > 2.5 * OUT_S || t < -0.2) return -1;
+        }
+        return -1;
+      };
+      const fe = r0 > 0 ? flatEnd() : -1;
+      if (r0 < (30 * Math.PI) / 180 && fe < 0) continue;
       // (The point and the bends in the grass's favour beside it, within
       // 3 m: one nose, rounded as one.)
       let ka = 0, kc = 0;
@@ -5945,7 +5963,11 @@ export async function buildPasirRisCourse(
           sum += right(k);
           if (k !== 0 && (right(k) > r0 || (right(k) === r0 && k < 0))) top = false;
         }
-        if (!top || sum < (150 * Math.PI) / 180) continue;
+        if (!top || sum < (150 * Math.PI) / 180) {
+          if (fe < 0) continue;
+          ka = 0;
+          kc = fe;
+        }
       }
       // (Each side's line: from the nose's last point out 1.5 m or more, past short pieces.)
       let fa = ka + 1, fc = kc + 1;
