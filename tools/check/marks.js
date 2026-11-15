@@ -178,7 +178,23 @@ window.__checkKerbLines = (all = false) => {
     n++;
     const g = near(x, z, y);
     if (g <= 0.75) continue;
-    if (!lined(x, z)) continue;
+    // (Asked of the road the kerb edges: the one whose edge lies nearest
+    // it, within 0.6 m, and a lined road within a metre of it. A
+    // side street's kerb where it meets a lined road was asked for that
+    // road's line, which ends where that road does. The user's call, 15 Nov.)
+    // (Each road's edge at its nearest piece: a piece's clamped end, at a
+    // bend, lies further than the road itself.)
+    const nearest = new Map();
+    d.roads.each(x, z, 15, (o, seg, u, dd) => {
+      if (nearest.has(o) && nearest.get(o).dd <= dd) return;
+      nearest.set(o, { dd, h: d.halfAtE(o, seg) + (d.halfAtE(o, seg + 1) - d.halfAtE(o, seg)) * u });
+    });
+    // (Where a side street's kerb meets the lined road's, at the corner, it
+    // edges both, within 15 cm: the side street's.)
+    let edged = -1, eb = 0.6;
+    for (const [o, { dd, h }] of nearest) if (Math.abs(dd - h) < eb) (eb = Math.abs(dd - h)), (edged = o);
+    const plainBeside = [...nearest].some(([o, { dd, h }]) => Math.abs(dd - h) < 0.15 && d.rankOf(d.edges[o].cls) < 2);
+    if ((edged >= 0 && (plainBeside || d.rankOf(d.edges[edged].cls) < 2)) || !lined(x, z)) continue;
     bad.push({ x: +x.toFixed(1), z: +z.toFixed(1), over: g === Infinity ? 1 : +g.toFixed(2) });
   }
   const pl = window.__finishIndex().places(bad.map((b) => ({ ...b, value: b.over })), 4);
