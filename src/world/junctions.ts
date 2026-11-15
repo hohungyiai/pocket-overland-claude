@@ -880,10 +880,12 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           const lenO = lenOf(oCut);
           let parts: XZ[][] = [];
           let cs: (XZ | null)[] = [null];
+          let paved: XZ[] = oCut;
           // (Shorter lengths where the road curves too much for these.)
           for (let K = Math.max(2, Math.ceil(lenO / 12)); K <= 64 && cs.some((x) => !x); K *= 2) {
             const m = Math.max(2, Math.ceil(lenO / K / 2.5));
             const O = even(oCut, K * m), Lw = even(lCut, K * m);
+            paved = O;
             parts = [];
             for (let q = 0; q < K; q++) {
               const a = q * m, b = (q + 1) * m;
@@ -906,6 +908,12 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           ring = parts[0];
           k0 = cs[0];
           more = parts.slice(1).map((r, q) => ({ ring: r, centre: cs[q + 1]!, radius: Math.max(...r.map((p) => Math.hypot(p[0] - cs[q + 1]![0], p[1] - cs[q + 1]![1]))) }));
+          // (Its kerb along the outside as these lengths pave it, eased onto
+          // the road's edge at the far end. Along the outside as first laid
+          // out, it ran up to 8 cm off the paving's edge, and the wall below
+          // it stood out past the kerb drawn there, which follows the paving.)
+          const outerP = paved.filter(clearOfRoad);
+          if (outerP.length >= 2) kerbLines = (turned ? [[...noseK].reverse(), [...outerP].reverse()] : [outerP, noseK]).filter((k) => k.length >= 2);
         }
         // The island's end beyond the wedge: a small rounded point, its two
         // sides tapering in over 4 m from the two roads' edges (square
