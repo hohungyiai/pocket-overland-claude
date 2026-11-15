@@ -7159,6 +7159,14 @@ export async function buildPasirRisCourse(
                 }
                 const { nx: sx, nz: sz } = section(Q2, v, 0, Q2.length - 1, undefined, true);
                 hY[v] = yOn(mm, Q2[v][0] + sx * 0.35, Q2[v][1] + sz * 0.35, true);
+                // (Round an island's point or by a junction, across its
+                // whole width: a road there climbing away beside the point
+                // reached over the line's outer half, 3 cm above its middle.)
+                if (hY[v] === hY[v] && (goresNear(Q2[v][0], Q2[v][1]).length || jointsNear(Q2[v][0], Q2[v][1]).some((q) => q !== mm.joint)))
+                  for (const o of [0.27, 0.43]) {
+                    const h = yOn(mm, Q2[v][0] + sx * o, Q2[v][1] + sz * o, true);
+                    if (h === h && h > hY[v] && h - hY[v] < 0.1) hY[v] = h;
+                  }
               }
               // (Each kerb and line by itself, square across at its ends: at a
               // bend in the outline where it stops, a cross-section on the
