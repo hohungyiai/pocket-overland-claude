@@ -5920,12 +5920,26 @@ export async function buildPasirRisCourse(
         if (Math.hypot(ux, uy) < 1 || Math.hypot(wx, wy) < 1) return 0;
         return -Math.atan2(ux * wy - uy * wx, ux * wx + uy * wy);
       };
-      if (right(0) <= TIP) continue;
+      const r0 = right(0);
+      if (r0 < (30 * Math.PI) / 180) continue;
       // (The point and the bends in the grass's favour beside it, within
       // 3 m: one nose, rounded as one.)
       let ka = 0, kc = 0;
       while (ka < 6 && right(-ka - 1) >= (10 * Math.PI) / 180 && dist(at(-ka - 1), at(0)) < 3 * OUT_S) ka++;
       while (kc < 6 && right(kc + 1) >= (10 * Math.PI) / 180 && dist(at(kc + 1), at(0)) < 3 * OUT_S) kc++;
+      // (Or no one sharp point, but an end cut off in two or three corners,
+      // the grass turning a half turn or more within 3 m between them: a
+      // small island's end, faceted, rounded too. Asked at its sharpest
+      // corner only. Left so, its ends stood out square across.)
+      if (r0 <= TIP) {
+        let sum = 0;
+        let top = true;
+        for (let k = -ka; k <= kc; k++) {
+          sum += right(k);
+          if (k !== 0 && (right(k) > r0 || (right(k) === r0 && k < 0))) top = false;
+        }
+        if (!top || sum < (160 * Math.PI) / 180) continue;
+      }
       // (Each side's line: from the nose's last point out 1.5 m or more, past short pieces.)
       let fa = ka + 1, fc = kc + 1;
       while (fa < Math.min(24, n / 2 - 1) && dist(at(-fa), at(-ka)) < 1.5 * OUT_S) fa++;
