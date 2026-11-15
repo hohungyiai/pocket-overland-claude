@@ -1922,7 +1922,8 @@ export async function buildPasirRisCourse(
   const CROSS_FROM = 1; // metres out from the mouth
   const CROSS_W = 3;
   const STOP_AT = CROSS_FROM + CROSS_W + 1;
-  type Crossing = { line: number; end: 0 | 1; s: number; half: number; c: XZ; t: XZ; inbound: number; group: number; light: XZ | null };
+  /** span: where a road's two ways share one zebra, the stripes' reach either side of c (to the left of t), on one of them; null on the other. */
+  type Crossing = { line: number; end: 0 | 1; s: number; half: number; c: XZ; t: XZ; inbound: number; group: number; light: XZ | null; span?: [number, number] | null };
   const crossings: Crossing[] = [];
   const crossCand: { cr: Crossing; lightOpts: XZ[] }[] = [];
   const crossEnd = new Map<string, Crossing>();
@@ -2015,7 +2016,13 @@ export async function buildPasirRisCourse(
     if (!signalNear(at.c[0], at.c[1], reach) && ms.length < 4 && !big) return;
     const axis = Math.atan2(ms[0].t[1], ms[0].t[0]);
     const cands: (typeof crossCand)[number][] = [];
-    for (const m of ms) {
+    // (And a narrow one-way carriageway beside its twin, the road's other
+    // way, that has one: a zebra crosses the whole road, both its ways. On
+    // Tampines Central 1 the one-lane way out had none, the zebra across the
+    // two-lane way in stopped half way over the road.)
+    const twinOf = (m: Arm) => edges[m.line].one && !!edges[m.line].name && ms.some((o) => o.line !== m.line && edges[o.line].one && edges[o.line].name === edges[m.line].name);
+    const crossed = mouths.filter((m) => ms.includes(m) || (!hasProfile[m.line] && rankOf(edges[m.line].cls) >= 1 && m.half >= 1.5 && ELEN[m.line] > m.s + STOP_AT + 4 && twinOf(m)));
+    for (const m of crossed) {
       const e = edges[m.line];
       const P = EP[m.line];
       const cum = ECUM[m.line];
@@ -2342,6 +2349,34 @@ export async function buildPasirRisCourse(
       cr.light = lightOpts.find(([x, z]) => !onOther(x, z, -1, 0.3) && !inPoly(x, z, true)) ?? null;
       crossings.push(cr);
       crossEnd.set(`${cr.line}:${cr.end}`, cr);
+    }
+    // A road's two ways side by side, paved between them, each with its
+    // zebra lined up with the other's: one zebra across them both, its
+    // stripes even all the way over (each way's own left a gap between
+    // them, and read as half a zebra). Each keeps its own stop line.
+    for (const cr of crossings) {
+      if (cr.span !== undefined || !edges[cr.line].one || !edges[cr.line].name) continue;
+      const left: XZ = [-cr.t[1], cr.t[0]];
+      for (const o of crossings) {
+        if (o === cr || o.span !== undefined || !edges[o.line].one || edges[o.line].name !== edges[cr.line].name) continue;
+        if (o.t[0] * cr.t[0] + o.t[1] * cr.t[1] < 0.98) continue;
+        const dx = o.c[0] - cr.c[0], dz = o.c[1] - cr.c[1];
+        const lat = dx * left[0] + dz * left[1];
+        const gap = Math.abs(lat) - cr.half - o.half;
+        if (Math.abs(dx * cr.t[0] + dz * cr.t[1]) > 0.6 || gap > 4 || gap < -0.5) continue;
+        let paved = true;
+        const sg = Math.sign(lat);
+        for (const a of [-1, 0, 1])
+          for (const f of [0.25, 0.5, 0.75]) {
+            const off = sg * (cr.half + Math.max(0, gap) * f);
+            const x = cr.c[0] + cr.t[0] * a * (CROSS_W / 2) + left[0] * off, z = cr.c[1] + cr.t[1] * a * (CROSS_W / 2) + left[1] * off;
+            if (gap > 0 && !inPoly(x, z, true) && !onOther(x, z, -1, 0)) paved = false;
+          }
+        if (!paved) continue;
+        cr.span = [Math.min(-cr.half, lat - o.half), Math.max(cr.half, lat + o.half)];
+        o.span = null;
+        break;
+      }
     }
     // The yellow box, from corner to corner of the junction just inside its
     // kerbs, and an X across it. (Each corner where two roads' kerbs would
@@ -5515,7 +5550,14 @@ export async function buildPasirRisCourse(
         const left: XZ = [-cr.t[1], cr.t[0]];
         // Stripes 0.5 m wide, 0.5 m apart, running along the road.
         const w = cr.half - 0.4;
-        for (let o = -w + 0.25; o <= w - 0.25; o += 1) quad(white, cr.c[0] + left[0] * o, cr.c[1] + left[1] * o, cr.t, CROSS_W / 2, 0.25, 0.115);
+        if (cr.span) {
+          // (Across both ways: as many stripes as fit, centred.)
+          const lo = cr.span[0] + 0.4, hi = cr.span[1] - 0.4;
+          const n = Math.floor((hi - lo + 0.5) / 1);
+          const o0 = (lo + hi) / 2 - (n - 1) / 2;
+          for (let q = 0; q < n; q++) quad(white, cr.c[0] + left[0] * (o0 + q), cr.c[1] + left[1] * (o0 + q), cr.t, CROSS_W / 2, 0.25, 0.115);
+        } else if (cr.span === undefined)
+          for (let o = -w + 0.25; o <= w - 0.25; o += 1) quad(white, cr.c[0] + left[0] * o, cr.c[1] + left[1] * o, cr.t, CROSS_W / 2, 0.25, 0.115);
         if (!cr.inbound) continue;
         // The stop line, across the lanes coming in.
         const sx = cr.c[0] + cr.t[0] * (STOP_AT - CROSS_FROM - CROSS_W / 2);
