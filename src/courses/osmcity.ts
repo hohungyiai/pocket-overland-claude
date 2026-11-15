@@ -4805,8 +4805,18 @@ export async function buildPasirRisCourse(
           const y = (kk: number) => dy[kk] + 0.09;
           const ext = runsOn(line, pts);
           for (const sgn of [-1, 1]) {
-            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0, (kk) => !low(kk), ext(sgn), undefined, undefined, sec);
-            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, 0.95, (kk) => !low(kk) && parapetClear(line, kk, side(sgn)(kk)), ext(sgn), undefined, undefined, sec);
+            // (Nor on paving at the deck's level along the beam's own line:
+            // another road's, a junction's or a pad. Where a low bridge's
+            // slip road joins the road beside it, its beam ran on inside the
+            // other's paving, 0.5 m in from the kerb, its top showing.)
+            const onPaving = (kk: number) => {
+              if (!oneLine) return false;
+              const [x, z] = besideMid(line, kk, side(sgn)(kk));
+              const yy = (y(kk) + y(kk + 1)) / 2;
+              return onPaved(x, z, yy) || coveredBy(line, x, z, yy);
+            };
+            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0, (kk) => !low(kk) && !onPaving(kk), ext(sgn), undefined, undefined, sec);
+            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, 0.95, (kk) => !low(kk) && parapetClear(line, kk, side(sgn)(kk)) && !onPaving(kk), ext(sgn), undefined, undefined, sec);
           }
           for (let a = k0; a < k1; ) {
             if (low(a)) {
