@@ -5612,7 +5612,7 @@ export async function buildPasirRisCourse(
   /** Is road i, about piece seg, traced in level lvl? (Either side of where its level changes, both: the outline's corner there is each's.) */
   const onLvl = (i: number, seg: number, lvl: number) => lvlOf(i, seg) === lvl || (deckGrp[i] >= 0 && (lvlOf(i, seg - 1) === lvl || lvlOf(i, seg + 1) === lvl));
   /** Road i's drawn surface as a polygon: its two sides from mouth to mouth (or from k0 to k1), as the road's strip draws them. */
-  const surfacePoly = (i: number, k0 = -1, k1 = -1): XZ[] => {
+  const surfacePoly = (i: number, k0 = -1, k1 = -1, bare = false): XZ[] => {
     const cut = cutOf(i);
     const P = cut.pts;
     const join = joinOf(i);
@@ -5634,7 +5634,7 @@ export async function buildPasirRisCourse(
       const mine = end < 0 ? lvlOf(i, 0) : lvlOf(i, EP[i].length - 2);
       const others = end && jDegree[j] > 1 ? jEdges[j].filter((o) => o !== i && outlined[o]) : [];
       const apart = others.length > 0 && (end < 0 ? cut.lo === 0 : cut.hi === P.length - 1) && others.every((o) => lv(o) !== mine);
-      if (end && !apart && (jDegree[j] > 1 || (end < 0 ? cut.lo > 0 || JX.trimA[i] > 0 : cut.hi < P.length - 1 || JX.trimB[i] > 0))) {
+      if (!bare && end && !apart && (jDegree[j] > 1 || (end < 0 ? cut.lo > 0 || JX.trimA[i] > 0 : cut.hi < P.length - 1 || JX.trimB[i] > 0))) {
         const o = P[end < 0 ? k + 1 : k - 1];
         const l = Math.hypot(P[k][0] - o[0], P[k][1] - o[1]) || 1;
         ex = ((P[k][0] - o[0]) / l) * 0.05;
@@ -5645,7 +5645,7 @@ export async function buildPasirRisCourse(
     }
     return [...L, ...R.reverse()];
   };
-  type OutSrc = { ring: XZ[]; lvl: number; x0: number; z0: number; x1: number; z1: number };
+  type OutSrc = { ring: XZ[]; bare: XZ[]; lvl: number; x0: number; z0: number; x1: number; z1: number };
   let outSrcs: OutSrc[] | null = null;
   /** A joint's level: the ground, or the flyover its deck pieces belong to. */
   const jLvl = (id: number) => {
@@ -5666,16 +5666,17 @@ export async function buildPasirRisCourse(
   };
   const outSources = () => {
     if (outSrcs) return outSrcs;
-    const rings: [XZ[], number][] = [];
+    // (A road piece's also as its strip draws it, without the 5 cm on: see outlineRings' fills.)
+    const rings: [XZ[], number, XZ[]?][] = [];
     edges.forEach((_, i) => {
       if (!outlined[i]) return;
-      if (deckGrp[i] < 0) return rings.push([surfacePoly(i), -1]);
+      if (deckGrp[i] < 0) return rings.push([surfacePoly(i), -1, surfacePoly(i, -1, -1, true)]);
       // (A flyover a piece at a time: the ground's where it is down on it.)
       const { lo, hi } = cutOf(i);
       let k0 = lo;
       for (let k = lo; k < hi; k++)
         if (k + 1 === hi || lvlOf(i, k + 1) !== lvlOf(i, k)) {
-          rings.push([surfacePoly(i, k0, k + 1), lvlOf(i, k)]);
+          rings.push([surfacePoly(i, k0, k + 1), lvlOf(i, k), surfacePoly(i, k0, k + 1, true)]);
           k0 = k + 1;
         }
     });
@@ -5708,9 +5709,9 @@ export async function buildPasirRisCourse(
     });
     outSrcs = rings
       .filter(([r]) => r.length >= 3)
-      .map(([ring, lvl]) => {
+      .map(([ring, lvl, bare]) => {
         const xs = ring.map((p) => p[0]), zs = ring.map((p) => p[1]);
-        return { ring, lvl, x0: Math.min(...xs), z0: Math.min(...zs), x1: Math.max(...xs), z1: Math.max(...zs) };
+        return { ring, bare: bare ?? ring, lvl, x0: Math.min(...xs), z0: Math.min(...zs), x1: Math.max(...xs), z1: Math.max(...zs) };
       });
     return outSrcs;
   };
@@ -6096,6 +6097,7 @@ export async function buildPasirRisCourse(
     const bx0 = ix * TILE - M, bz0 = iz * TILE - M, bx1 = (ix + 1) * TILE + M, bz1 = (iz + 1) * TILE + M;
     // (Each level by itself: the ground, and each flyover.)
     const byLvl = new Map<number, Paths64>();
+    const bareLvl = new Map<number, Paths64>();
     for (const s of outSources()) {
       if (s.x1 < bx0 || s.x0 > bx1 || s.z1 < bz0 || s.z0 > bz1) continue;
       const p = new Path64();
@@ -6104,17 +6106,19 @@ export async function buildPasirRisCourse(
       // their windings would cancel and leave a false hole.)
       if (Clipper.area(p) < 0) p.reverse();
       (byLvl.get(s.lvl) ?? byLvl.set(s.lvl, new Paths64()).get(s.lvl)!).push(p);
+      const b = new Path64();
+      for (const q of s.bare) b.push(new Point64(Math.round(q[0] * OUT_S), Math.round(q[1] * OUT_S)));
+      if (Clipper.area(b) < 0) b.reverse();
+      (bareLvl.get(s.lvl) ?? bareLvl.set(s.lvl, new Paths64()).get(s.lvl)!).push(b);
     }
     const out: { pts: XZ[]; corner: XZ[]; edge: number[]; at: number[]; hole: boolean; lvl: number; fill?: boolean; holes?: XZ[][] }[] = [];
     for (const [lvl, paths] of [...byLvl].sort((p, q) => p[0] - q[0])) {
     const U = Clipper.Union(paths, undefined, FillRule.NonZero);
-    // (As the pieces pave it, before the outline is tidied: see the end.)
-    const U0 = new Paths64();
-    for (const r of U) {
-      const c = new Path64();
-      for (const q of r) c.push(new Point64(q.x, q.y));
-      U0.push(c);
-    }
+    // (As the pieces pave it, before the outline is tidied: see the end.
+    // Each road piece as its strip draws it, not 5 cm on past its end into
+    // what it meets: where two meet at an angle, the wedge between their
+    // ends, and where one meets a fill, the 5 cm between, are the fills'.)
+    const U0 = Clipper.Union(bareLvl.get(lvl)!, undefined, FillRule.NonZero);
     const kept = new Paths64();
     const tipCuts: Path64[] = [];
     for (const r of U) {
