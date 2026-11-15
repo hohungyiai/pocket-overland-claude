@@ -5469,22 +5469,44 @@ export async function buildPasirRisCourse(
     const k = tileKey(cr.c[0], cr.c[1]);
     (crossByTile.get(k) ?? crossByTile.set(k, []).get(k)!).push(cr);
   }
-  /** A flat quad draped on the ground: centre, along (unit), half length, half width. */
+  /**
+   * A flat quad draped on the ground: centre, along (unit), half length,
+   * half width. On a redrawn map, on the roads' strips and the junctions'
+   * paving as drawn (straight between their corners, not on the ground,
+   * which dips between them: a zebra's stripes went under the road), a
+   * metre at a time along it.
+   */
   const quad = (acc: Acc, cx: number, cz: number, t: XZ, hl: number, hw: number, lift: number) => {
-    const base = acc.pos.length / 3;
     const n: XZ = [-t[1], t[0]];
-    for (const [a, b] of [
-      [-hl, -hw],
-      [hl, -hw],
-      [-hl, hw],
-      [hl, hw],
-    ]) {
-      const x = cx + t[0] * a + n[0] * b;
-      const z = cz + t[1] * a + n[1] * b;
-      acc.pos.push(x, Math.max(rawHeight(x, z), WL + 0.15) + lift, z);
-      acc.uv.push(0, 0);
+    const yAt = (x: number, z: number) => {
+      const g = Math.max(rawHeight(x, z), WL + 0.15);
+      if (!oneLine) return g + lift;
+      let y = -Infinity;
+      roads.each(x, z, 12, (o, seg, u, d) => {
+        if (elevated[o] || !outlined[o] || JX.internal[o] || d > drawnHalf(o, seg, u) + 0.05) return;
+        const h = stripTop(o, x, z, seg - 1, seg + 1);
+        if (stripOut < 0.02 && h > y) y = h;
+      });
+      for (const q of jointsNear(x, z)) if (jDeck(q) <= 0 && inRingXZ(JPOLY[q].ring, x, z)) y = Math.max(y, paveY(q, x, z));
+      return y > -Infinity && y + ROAD_LIFT - g < 0.5 ? Math.max(g + lift, y + ROAD_LIFT + lift - 0.09) : g + lift;
+    };
+    const cnt = oneLine ? Math.max(1, Math.ceil((2 * hl) / 1)) : 1;
+    for (let c = 0; c < cnt; c++) {
+      const a0 = -hl + (2 * hl * c) / cnt, a1 = -hl + (2 * hl * (c + 1)) / cnt;
+      const base = acc.pos.length / 3;
+      for (const [a, b] of [
+        [a0, -hw],
+        [a1, -hw],
+        [a0, hw],
+        [a1, hw],
+      ]) {
+        const x = cx + t[0] * a + n[0] * b;
+        const z = cz + t[1] * a + n[1] * b;
+        acc.pos.push(x, yAt(x, z), z);
+        acc.uv.push(0, 0);
+      }
+      acc.idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
     }
-    acc.idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
   };
   for (const [k, list] of crossByTile)
     onTile('far', k, 'crossings', (_kit, acc) => {
