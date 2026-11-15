@@ -7127,6 +7127,7 @@ export async function buildPasirRisCourse(
             }
           }
           const qc2 = [0];
+          const busy2 = Q2.map(([x, z], v) => goresNear(x, z).length > 0 || jointsNear(x, z).some((q) => q !== mk(of2[v])?.joint));
           for (let j = 1; j < Q2.length; j++) qc2.push(qc2[j - 1] + Math.hypot(Q2[j][0] - Q2[j - 1][0], Q2[j][1] - Q2[j - 1][1]));
           for (let j0 = 1; j0 <= m; j0++) {
             if (!dr(j0)) continue;
@@ -7136,7 +7137,18 @@ export async function buildPasirRisCourse(
             // one run all round it held a frame up for 110 ms, one of 40
             // points beside a busy junction for 100 ms. Each run's ends carry
             // on as the next has it, as across a tile's edge.)
-            while (j1 + 1 <= m && dr(j1 + 1) && j1 - j0 < 12) j1++;
+            // (And no more work than 24 of the line's points, a point every
+            // half metre where it lies over a joint's paving or a bend in the
+            // road; one by a joint or an island's point, where each asks the
+            // paving about it, as three: 6 kerb points round a joint beside
+            // Simei's slip roads, 22 of the line's, held one up for 80 ms.)
+            const cost = (J: number) => {
+              let c = 0;
+              for (let v = at2[J]; v < (at2[J + 1] ?? Q2.length); v++) c += busy2[v] ? 3 : 1;
+              return c;
+            };
+            let work = cost(j0);
+            while (j1 + 1 <= m && dr(j1 + 1) && j1 - j0 < 12 && work + cost(j1 + 1) <= 24) work += cost(++j1);
             const J0 = j0, J1 = j1;
             w.draws.push((kerb, yellow) => {
               // (Heights where the ground does not lie as the strips drape it,
