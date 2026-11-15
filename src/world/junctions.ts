@@ -1202,7 +1202,11 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       // of the front and straight back to the line across (as one, a thin
       // strip joins two scoops and no centre may see the whole).
       const Mf: XZ = [(fa[0] + fb[0]) / 2, (fa[1] + fb[1]) / 2];
-      const Ml: XZ = [Mf[0] - n[0] * FRONT, Mf[1] - n[1] * FRONT];
+      // (Its halves meet 0.3 m back past the line across, in the junction's
+      // own paving: on the line itself, where the junction's side lay a
+      // little back of it, the outline dipped in there between the halves
+      // and the kerb round the end crossed itself in a notch.)
+      const Ml: XZ = [Mf[0] - n[0] * (FRONT + 0.3), Mf[1] - n[1] * (FRONT + 0.3)];
       const near = (p: XZ, q: XZ) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.02;
       const arcA = arcOf(CA, ta, fa), arcB = arcOf(CB, fb, tb);
       const inCorner = (P: XZ, a: XZ, b: XZ): XZ => {
