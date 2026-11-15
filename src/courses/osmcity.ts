@@ -5963,6 +5963,27 @@ export async function buildPasirRisCourse(
         return -Math.atan2(ux * wy - uy * wx, ux * wx + uy * wy);
       };
       const r0 = right(0);
+      // (A short sharp grass spike out of a straight run of verge, between
+      // two roads' ends: under 1.2 m across its foot and 2 m long, the verge
+      // running on straight past it either side. No island: cut off at its
+      // foot, paved. Rounded, a half circle across its foot stood out into
+      // the road as a knob of kerb.)
+      if (r0 > TIP) {
+        const A = at(-1), C = at(1), Z = at(-2), D = at(2);
+        const foot = dist(A, C);
+        const dir = (p: { x: number; y: number }, q: { x: number; y: number }) => { const l = dist(p, q) || 1; return [(q.x - p.x) / l, (q.y - p.y) / l]; };
+        const [ix, iy] = dir(Z, A), [ox, oy] = dir(C, D), [fx, fy] = dir(A, C);
+        const cos45 = Math.SQRT1_2;
+        const len = Math.abs((C.x - A.x) * (at(0).y - A.y) - (C.y - A.y) * (at(0).x - A.x)) / (foot || 1);
+        if (foot > 0.05 * OUT_S && foot < 1.2 * OUT_S && len < 2 * OUT_S && dist(Z, A) > 0.5 * OUT_S && dist(C, D) > 0.5 * OUT_S && ix * ox + iy * oy > cos45 && ix * fx + iy * fy > cos45 && fx * ox + fy * oy > cos45) {
+          const piece = new Path64();
+          for (const p of [A, at(0), C]) piece.push(new Point64(p.x, p.y));
+          cuts.push(piece);
+          r.splice(b, 1);
+          b--;
+          continue;
+        }
+      }
       // (Read on from here, an end as the eye reads one: corners turning a
       // half turn within 2.5 m, the way back no more than a little, with a
       // straight piece over 0.8 m across them; its last corner, or none.
