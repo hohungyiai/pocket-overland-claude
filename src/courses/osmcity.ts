@@ -6181,7 +6181,13 @@ export async function buildPasirRisCourse(
       b = keep.indexOf(arc[arc.length - 1]);
     }
   };
-  const outlineRings = (ix: number, iz: number) => {
+  /**
+   * The outline's first half for tile (ix, iz), in a build slice of its own:
+   * its pieces gathered and joined, each level by itself, both as the
+   * outline takes them and as their strips draw them. (In one slice with
+   * the rest, a busy tile's outline held a frame up for 158 ms.)
+   */
+  const outlineUnions = (ix: number, iz: number) => {
     const M = 30;
     const bx0 = ix * TILE - M, bz0 = iz * TILE - M, bx1 = (ix + 1) * TILE + M, bz1 = (iz + 1) * TILE + M;
     // (Each level by itself: the ground, and each flyover.)
@@ -6200,14 +6206,29 @@ export async function buildPasirRisCourse(
       if (Clipper.area(b) < 0) b.reverse();
       (bareLvl.get(s.lvl) ?? bareLvl.set(s.lvl, new Paths64()).get(s.lvl)!).push(b);
     }
+    return {
+      ix,
+      iz,
+      lv: [...byLvl]
+        .sort((p, q) => p[0] - q[0])
+        .map(([lvl, paths]) => ({
+          lvl,
+          U: Clipper.Union(paths, undefined, FillRule.NonZero),
+          // (As the pieces pave it, before the outline is tidied: see the
+          // end. Each road piece as its strip draws it, not 5 cm on past its
+          // end into what it meets: where two meet at an angle, the wedge
+          // between their ends, and where one meets a fill, the 5 cm
+          // between, are the fills'.)
+          U0: Clipper.Union(bareLvl.get(lvl)!, undefined, FillRule.NonZero),
+        })),
+    };
+  };
+  /** The outline round tile (ix, iz), and 30 m beyond, from its pieces joined (outlineUnions). */
+  const outlineFinish = ({ ix, iz, lv }: ReturnType<typeof outlineUnions>) => {
+    const M = 30;
+    const bx0 = ix * TILE - M, bz0 = iz * TILE - M, bx1 = (ix + 1) * TILE + M, bz1 = (iz + 1) * TILE + M;
     const out: { pts: XZ[]; corner: XZ[]; edge: number[]; at: number[]; hole: boolean; lvl: number; fill?: boolean; holes?: XZ[][] }[] = [];
-    for (const [lvl, paths] of [...byLvl].sort((p, q) => p[0] - q[0])) {
-    const U = Clipper.Union(paths, undefined, FillRule.NonZero);
-    // (As the pieces pave it, before the outline is tidied: see the end.
-    // Each road piece as its strip draws it, not 5 cm on past its end into
-    // what it meets: where two meet at an angle, the wedge between their
-    // ends, and where one meets a fill, the 5 cm between, are the fills'.)
-    const U0 = Clipper.Union(bareLvl.get(lvl)!, undefined, FillRule.NonZero);
+    for (const { lvl, U, U0 } of lv) {
     const kept = new Paths64();
     const tipCuts: Path64[] = [];
     for (const r of U) {
@@ -6336,6 +6357,7 @@ export async function buildPasirRisCourse(
     }
     return out;
   };
+  const outlineRings = (ix: number, iz: number) => outlineFinish(outlineUnions(ix, iz));
   /** Road i's half width as its strip draws it, at a SegIndex hit (halfNear is the width other things go by). */
   const drawnHalf = (i: number, seg: number, u: number) => halfAtS(i, lerp(ECUM[i][seg], ECUM[i][Math.min(ECUM[i].length - 1, seg + 1)], u));
   type Near = Map<number, { seg: number; u: number; d: number }>;
@@ -6846,10 +6868,15 @@ export async function buildPasirRisCourse(
     for (const k of outTiles) {
       const [ix, iz] = k.split(',').map(Number);
       const inTile = (x: number, z: number) => Math.floor(x / TILE) === ix && Math.floor(z / TILE) === iz;
-      // (Traced in one slice, laid out for asking in the next.)
+      // (Joined in one slice, traced in the next, laid out for asking in the next.)
+      let joined: ReturnType<typeof outlineUnions> | null = null;
       let traced: ReturnType<typeof outlineRings> | null = null;
+      onTile('far', k, 'outline join', () => {
+        joined = outlineUnions(ix, iz);
+      });
       onTile('far', k, 'outline', () => {
-        traced = outlineRings(ix, iz);
+        traced = outlineFinish(joined ?? outlineUnions(ix, iz));
+        joined = null;
       });
       onTile('far', k, 'outline', (_kit, acc) => {
         const rings: OutRing[] = [];
