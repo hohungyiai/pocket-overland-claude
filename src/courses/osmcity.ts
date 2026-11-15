@@ -5932,13 +5932,20 @@ export async function buildPasirRisCourse(
       // small island's end, faceted, rounded too. Asked at its sharpest
       // corner only. Left so, its ends stood out square across.)
       if (r0 <= TIP) {
+        // (Its corners all those within 3 m turning the grass's way at
+        // all: a near straight piece of a few degrees between two of them
+        // split one end into two.)
+        ka = 0;
+        kc = 0;
+        while (ka < 8 && right(-ka - 1) >= (2 * Math.PI) / 180 && dist(at(-ka - 1), at(0)) < 3 * OUT_S) ka++;
+        while (kc < 8 && right(kc + 1) >= (2 * Math.PI) / 180 && dist(at(kc + 1), at(0)) < 3 * OUT_S) kc++;
         let sum = 0;
         let top = true;
         for (let k = -ka; k <= kc; k++) {
           sum += right(k);
           if (k !== 0 && (right(k) > r0 || (right(k) === r0 && k < 0))) top = false;
         }
-        if (!top || sum < (160 * Math.PI) / 180) continue;
+        if (!top || sum < (150 * Math.PI) / 180) continue;
       }
       // (Each side's line: from the nose's last point out 1.5 m or more, past short pieces.)
       let fa = ka + 1, fc = kc + 1;
@@ -5988,7 +5995,9 @@ export async function buildPasirRisCourse(
         const piece = new Path64();
         piece.push(new Point64(arc[0].x, arc[0].y));
         for (let k = -fa + 1; k < fc; k++) {
-          if ((k < -ka || k > kc) && dot(at(k)) >= sc) return false;
+          // (A side's points back past the half circle stay: an island
+          // whose sides curve has points there, and its end was left square.)
+          if ((k < -ka || k > kc) && dot(at(k)) >= sc) continue;
           gone.add((((b + k) % n) + n) % n);
           piece.push(new Point64(at(k).x, at(k).y));
         }
@@ -6004,7 +6013,7 @@ export async function buildPasirRisCourse(
         b = keep.indexOf(arc[arc.length - 1]);
         return true;
       };
-      if (total >= (160 * Math.PI) / 180 && blunt()) continue;
+      if (total >= ((r0 <= TIP ? 150 : 160) * Math.PI) / 180 && blunt()) continue;
       // (Where the two lines meet: the point the nose rounds.)
       const den = ux * wy - uy * wx;
       if (Math.abs(den) < 1e-6) continue;
