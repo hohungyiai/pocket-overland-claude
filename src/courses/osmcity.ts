@@ -3169,7 +3169,12 @@ export async function buildPasirRisCourse(
   // Jobs add meshes to the tile, or fill the tile's shared buffers (one
   // mesh per material per tile, made once all jobs are done: fewer draws).
   type AccFor = (key: AccKey) => Acc;
-  type Job = ((kit: TileKit, acc: AccFor) => void) & { what?: string };
+  /**
+   * One slice of a tile's building. A job with more to do than fits in one
+   * slice hands back an iterator instead, and each of its steps is a slice
+   * of its own (yielded between, timed as the job's kind).
+   */
+  type Job = ((kit: TileKit, acc: AccFor) => void | Iterator<unknown>) & { what?: string };
   const jobs = { near: new Map<string, Job[]>(), far: new Map<string, Job[]>(), horizon: new Map<string, Job[]>() };
   const tileKey = (x: number, z: number) => `${Math.floor(x / TILE)},${Math.floor(z / TILE)}`;
   const onTile = (layer: Layer, k: string, what: string, job: Job) => {
@@ -3198,7 +3203,14 @@ export async function buildPasirRisCourse(
   const tileBodies = new WeakMap<TileKit, ReturnType<TileKit['body']>>();
   const tileBody = (kit: TileKit) => tileBodies.get(kit) ?? tileBodies.set(kit, kit.body()).get(kit)!;
   /** One job per `size` items, so each build step stays short. */
-  const inChunks = <T>(layer: Layer, k: string, what: string, items: T[], size: number, job: (part: T[], kit: TileKit, acc: AccFor) => void) => {
+  /** A job's steps all at once, and what it comes to. */
+  const drain = <T>(g: Generator<unknown, T>) => {
+    for (;;) {
+      const r = g.next();
+      if (r.done) return r.value;
+    }
+  };
+  const inChunks = <T>(layer: Layer, k: string, what: string, items: T[], size: number, job: (part: T[], kit: TileKit, acc: AccFor) => void | Iterator<unknown>) => {
     for (let s = 0; s < items.length; s += size) {
       const part = items.slice(s, s + size);
       onTile(layer, k, what, (kit, acc) => job(part, kit, acc));
@@ -4397,7 +4409,8 @@ export async function buildPasirRisCourse(
   const JOINT_DECK_FROM = 2;
   /** Is piece q of a joint's wall a deck's edge? */
   const deckPiece = (w: JointWall, q: number) => Math.min(w.drop[q], w.drop[q + 1]) >= 99;
-  const jointWalls = (id: number) => {
+  /** (Worked out a kerb point at a time when built, each a slice of its own: see Job.) */
+  function* jointWallsIn(id: number) {
     let out = jointWallCache.get(id);
     if (out) return out;
     out = [];
@@ -4422,7 +4435,9 @@ export async function buildPasirRisCourse(
       const cum: number[] = [];
       const y: number[] = [];
       const drop: number[] = [];
-      F.forEach((p, q) => {
+      for (let q = 0; q < F.length; q++) {
+        yield;
+        const p = F[q];
         const [nx, nz] = nrm(q);
         W.push([p[0] + nx * sgn * WALL_OUT, p[1] + nz * sgn * WALL_OUT]);
         cum.push(q ? cum[q - 1] + Math.hypot(p[0] - F[q - 1][0], p[1] - F[q - 1][1]) : 0);
@@ -4432,9 +4447,10 @@ export async function buildPasirRisCourse(
         // ground's, as on any raised road.)
         const real = y[q] - heightAt(p[0] + nx * sgn * 1.05, p[1] + nz * sgn * 1.05);
         drop.push(deck && real >= JOINT_DECK_FROM ? 99 : real);
-      });
+      }
       const keep: boolean[] = [];
       for (let q = 0; q + 1 < F.length; q++) {
+        yield;
         const [nx, nz] = nrm(q);
         const x = (W[q][0] + W[q + 1][0]) / 2, z = (W[q][1] + W[q + 1][1]) / 2, ym = (y[q] + y[q + 1]) / 2;
         const along = (t: number) => inPaving(lerp(F[q][0], F[q + 1][0], t), lerp(F[q][1], F[q + 1][1], t), NaN, id);
@@ -4443,7 +4459,8 @@ export async function buildPasirRisCourse(
       if (keep.some(Boolean)) out.push({ W, cum, y, drop, keep });
     }
     return out;
-  };
+  }
+  const jointWalls = (id: number) => jointWallCache.get(id) ?? drain(jointWallsIn(id));
   // The nose of a split. Where the paved wedge between two roads ends and
   // the verge between them begins, the end is closed: a kerb across it from
   // one road's edge to the other's and, between raised roads, their wall and
@@ -5085,14 +5102,15 @@ export async function buildPasirRisCourse(
   const roadRuns = runsOf(EP);
   // A run is drawn a few pieces at a time, each its own build slice: by
   // ramps and flyovers, where working out the ground takes longest, 2 road
-  // pieces (about 8 m) to a slice; elsewhere 24. (r0 to r1 is the whole
+  // pieces (about 8 m) to a slice; elsewhere 8 (24 held one up for 80 ms
+  // by the Upper Changi Road East interchange). (r0 to r1 is the whole
   // run in the tile, k0 to k1 the part drawn in this slice.)
   const inSlices = (all: { line: number; k0: number; k1: number }[]) => {
     const out: { line: number; r0: number; r1: number; k0: number; k1: number }[] = [];
     for (const { line, k0, k1 } of all) {
       let ramp = false;
       for (let k = k0; k <= k1 && !ramp; k++) ramp = nearRamp(EP[line][k][0], EP[line][k][1]);
-      const n = ramp ? 2 : 24;
+      const n = ramp ? 2 : 8;
       for (let a = k0; a < k1; a += n) out.push({ line, r0: k0, r1: k1, k0: a, k1: Math.min(k1, a + n) });
     }
     return out;
@@ -5678,7 +5696,7 @@ export async function buildPasirRisCourse(
   const RINGS = [1 / 3, 2 / 3, 1];
   for (const [k, all] of shapesByTile)
     // (Each junction in three slices: its lines, its paving, its kerbs.)
-    inChunks('far', k, 'junctions', all.flatMap((id) => [0, 1, 2].map((part) => ({ id, part }))), 1, (list, _kit, acc) => {
+    inChunks('far', k, 'junctions', all.flatMap((id) => [0, 1, 2].map((part) => ({ id, part }))), 1, (list, _kit, acc) => (function* () {
       const road = acc('road');
       const kerb = acc('kerb');
       for (const { id, part } of list) {
@@ -5842,7 +5860,7 @@ export async function buildPasirRisCourse(
         }
         if (part === 2) {
           const dk = jointDeck(id);
-          for (const w of jointWalls(id)) {
+          for (const w of yield* jointWallsIn(id)) {
             const deck = acc('deck');
             const last = w.W.length - 1;
             const yk = (q: number) => w.y[q];
@@ -5879,7 +5897,7 @@ export async function buildPasirRisCourse(
           }
         }
       }
-    });
+    })());
   // Zebra stripes and stop lines.
   const crossByTile = new Map<string, Crossing[]>();
   for (const cr of crossings) {
@@ -6614,7 +6632,8 @@ export async function buildPasirRisCourse(
    * outline takes them and as their strips draw them. (In one slice with
    * the rest, a busy tile's outline held a frame up for 158 ms.)
    */
-  const outlineUnions = (ix: number, iz: number) => {
+  /** (Joined a level at a time, each a slice of its own: see Job.) */
+  function* outlineUnionsIn(ix: number, iz: number) {
     const M = 30;
     const bx0 = ix * TILE - M, bz0 = iz * TILE - M, bx1 = (ix + 1) * TILE + M, bz1 = (iz + 1) * TILE + M;
     // (Each level by itself: the ground, and each flyover.)
@@ -6633,25 +6652,24 @@ export async function buildPasirRisCourse(
       if (Clipper.area(b) < 0) b.reverse();
       (bareLvl.get(s.lvl) ?? bareLvl.set(s.lvl, new Paths64()).get(s.lvl)!).push(b);
     }
-    return {
-      ix,
-      iz,
-      lv: [...byLvl]
-        .sort((p, q) => p[0] - q[0])
-        .map(([lvl, paths]) => ({
-          lvl,
-          U: Clipper.Union(paths, undefined, FillRule.NonZero),
-          // (As the pieces pave it, before the outline is tidied: see the
-          // end. Each road piece as its strip draws it, not 5 cm on past its
-          // end into what it meets: where two meet at an angle, the wedge
-          // between their ends, and where one meets a fill, the 5 cm
-          // between, are the fills'.)
-          U0: Clipper.Union(bareLvl.get(lvl)!, undefined, FillRule.NonZero),
-        })),
-    };
-  };
+    const lv: { lvl: number; U: Paths64; U0: Paths64 }[] = [];
+    for (const [lvl, paths] of [...byLvl].sort((p, q) => p[0] - q[0])) {
+      yield;
+      const U = Clipper.Union(paths, undefined, FillRule.NonZero);
+      yield;
+      // (As the pieces pave it, before the outline is tidied: see the
+      // end. Each road piece as its strip draws it, not 5 cm on past its
+      // end into what it meets: where two meet at an angle, the wedge
+      // between their ends, and where one meets a fill, the 5 cm
+      // between, are the fills'.)
+      lv.push({ lvl, U, U0: Clipper.Union(bareLvl.get(lvl)!, undefined, FillRule.NonZero) });
+    }
+    return { ix, iz, lv };
+  }
+  const outlineUnions = (ix: number, iz: number) => drain(outlineUnionsIn(ix, iz));
   /** The outline round tile (ix, iz), and 30 m beyond, from its pieces joined (outlineUnions). */
-  const outlineFinish = ({ ix, iz, lv }: ReturnType<typeof outlineUnions>) => {
+  /** (Traced a ring at a time, each a few slices of its own: see Job.) */
+  function* outlineFinishIn({ ix, iz, lv }: ReturnType<typeof outlineUnions>) {
     const M = 30;
     const bx0 = ix * TILE - M, bz0 = iz * TILE - M, bx1 = (ix + 1) * TILE + M, bz1 = (iz + 1) * TILE + M;
     const out: { pts: XZ[]; corner: XZ[]; edge: number[]; at: number[]; hole: boolean; lvl: number; fill?: boolean; holes?: XZ[][] }[] = [];
@@ -6661,6 +6679,7 @@ export async function buildPasirRisCourse(
     for (const r of U) {
       // (Slivers and specks, where two pieces of paving all but touch: no surface.)
       if (Math.abs(Clipper.area(r)) < 1e6) continue;
+      yield;
       // (Nor a spike: the outline running out and straight back along itself, a crack of no width.)
       for (let again = true; again && r.length > 3; ) {
         again = false;
@@ -6741,6 +6760,7 @@ export async function buildPasirRisCourse(
       // missed a little of the paving there, between pieces that do not
       // quite meet. Nothing is drawn round it. Asked just inside its sides.)
       if (area2 > 0) {
+        yield;
         let paved = false;
         for (let q = 0; q < corner.length && !paved; q++) {
           const a = corner[q], b = corner[(q + 1) % corner.length];
@@ -6789,6 +6809,7 @@ export async function buildPasirRisCourse(
       for (const r of P) c.push(r.map((q) => new Point64(q.x, q.y)) as Path64);
       return c;
     };
+    yield;
     const D = Clipper.Difference(copy(kept), copy(U0), FillRule.NonZero);
     const fills: { corner: XZ[]; holes: XZ[][] }[] = [];
     for (const f of D) if (Clipper.area(f) >= 1e3) fills.push({ corner: toXZ(f), holes: [] });
@@ -6801,7 +6822,8 @@ export async function buildPasirRisCourse(
     for (const { corner, holes } of fills) out.push({ pts: corner, corner, edge: [], at: [], hole: true, lvl, fill: true, holes });
     }
     return out;
-  };
+  }
+  const outlineFinish = (u: ReturnType<typeof outlineUnions>) => drain(outlineFinishIn(u));
   const outlineRings = (ix: number, iz: number) => outlineFinish(outlineUnions(ix, iz));
   /** Road i's half width as its strip draws it, at a SegIndex hit (halfNear is the width other things go by). */
   const drawnHalf = (i: number, seg: number, u: number) => halfAtS(i, lerp(ECUM[i][seg], ECUM[i][Math.min(ECUM[i].length - 1, seg + 1)], u));
@@ -7373,10 +7395,9 @@ export async function buildPasirRisCourse(
     }
     return NaN;
   };
-  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[]; drawAt?: number; linePart?: number[] }>();
+  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => Generator<void>)[]; linePart?: number[] }>();
   const OUT_PARTS = 8;
   const OUT_LINES = 12;
-  const OUT_DRAW = 40;
   /** How many places along a side of the outline are asked (one every 4 m or so). */
   const sidePlaces = (a: XZ, b: XZ) => Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4));
   if (oneLine) {
@@ -7396,17 +7417,22 @@ export async function buildPasirRisCourse(
       let traced: ReturnType<typeof outlineRings> | null = null;
       /** (The traced fills, kept for the lines laid over them: see fillTrisNow.) */
       let fillRings: ReturnType<typeof outlineRings> = [];
-      onTile('far', k, 'outline join', () => {
-        joined = outlineUnions(ix, iz);
-      });
-      onTile('far', k, 'outline', () => {
-        traced = outlineFinish(joined ?? outlineUnions(ix, iz));
-        joined = null;
-      });
-      onTile('far', k, 'outline', (_kit, acc) => {
+      onTile('far', k, 'outline join', () =>
+        (function* () {
+          joined = yield* outlineUnionsIn(ix, iz);
+        })(),
+      );
+      onTile('far', k, 'outline', () =>
+        (function* () {
+          traced = yield* outlineFinishIn(joined ?? outlineUnions(ix, iz));
+          joined = null;
+        })(),
+      );
+      onTile('far', k, 'outline', (_kit, acc) => (function* () {
         const rings: OutRing[] = [];
         const todo: [number, number, number][] = [];
         for (const { pts: R, corner, edge, at, hole, lvl, fill, holes } of traced ?? outlineRings(ix, iz)) {
+          yield;
           if (fill) {
             holeFill(acc('road'), corner, lvl, inTile, holes);
             continue;
@@ -7436,7 +7462,7 @@ export async function buildPasirRisCourse(
         outWork.set(k, { rings, todo, draws: [] });
         fillRings = (traced ?? []).filter((r) => r.fill);
         traced = null;
-      });
+      })());
       for (let part = 0; part < OUT_PARTS; part++)
         onTile('far', k, 'outline marks', () => {
           const w = outWork.get(k);
@@ -7451,10 +7477,9 @@ export async function buildPasirRisCourse(
         });
       // (Its lines worked out a share of its rings at a time, shared out by their points.)
       for (let lp = 0; lp < OUT_LINES; lp++)
-      onTile('far', k, 'outline lines', (_kit, acc) => {
+      onTile('far', k, 'outline lines', (_kit, acc) => (function* () {
         const w = outWork.get(k);
         if (!w) return;
-        fillTrisNow = fillTrisFor(k, fillRings);
         if (!w.linePart) {
           const load = new Array(OUT_LINES).fill(0);
           w.linePart = [];
@@ -7467,6 +7492,9 @@ export async function buildPasirRisCourse(
         }
         for (const [ri, { P, cum, n, drawn: drawnP, edge, at, samples, hole, lvl }] of w.rings.entries()) {
           if (w.linePart[ri] !== lp) continue;
+          // (A ring at a time, each a slice of its own: see Job. Its lines lie on the outline's own fills: see fillTrisNow.)
+          yield;
+          fillTrisNow = fillTrisFor(k, fillRings);
           // (By the ring's own pieces: piece q runs from point q to q + 1, round.)
           const R = P.slice(1, n + 1);
           const nx = (q: number) => (q + 1) % n;
@@ -7619,6 +7647,9 @@ export async function buildPasirRisCourse(
           const at2: number[] = [];
           let endY: [number, OutMark | null, number] | null = null;
           for (let j = 0; j < Q.length; j++) {
+            // (A piece at a time: see Job.)
+            yield;
+            fillTrisNow = fillTrisFor(k, fillRings);
             at2.push(Q2.length);
             Q2.push(Q[j]);
             of2.push(j);
@@ -7681,7 +7712,7 @@ export async function buildPasirRisCourse(
             const short = (J: number) => J + 1 < Q.length && Math.hypot(Q[J + 1][0] - Q[J][0], Q[J + 1][1] - Q[J][1]) < 0.5;
             while (j1 + 1 <= m && dr(j1 + 1) && j1 - j0 < 12 && (work + cost(j1 + 1) <= 24 || short(j1 + 1))) work += cost(++j1);
             const J0 = j0, J1 = j1;
-            w.draws.push((kerb, yellow) => {
+            w.draws.push(function* (kerb, yellow) {
               // (Heights where the ground does not lie as the strips drape it,
               // from the surface the side bounds: kerbs at Q's points, lines
               // at Q2's, from Q's point J0 to its point J1 + 1.)
@@ -7763,6 +7794,8 @@ export async function buildPasirRisCourse(
               // other, it showed wide in one place and narrow in the next,
               // notched at the point, lopsided either side of it.)
               for (let v = J0; v <= J1 + 1; v++) {
+                // (A point at a time: round a busy junction each asks all that is drawn about it, a few ms a point.)
+                yield;
                 const mm = markAt(v);
                 hK[v] = !mm || mm.flat ? NaN : yOn(mm, Q[v][0], Q[v][1]);
                 if (!mm || mm.flat || hK[v] !== hK[v]) continue;
@@ -7775,6 +7808,7 @@ export async function buildPasirRisCourse(
               }
               const j0 = at2[J0], j1 = at2[J1 + 1] - 1;
               for (let v = j0; v <= j1 + 1; v++) {
+                yield;
                 const mm = markAt(of2[v]);
                 if (!mm) {
                   hY[v] = NaN;
@@ -7812,6 +7846,7 @@ export async function buildPasirRisCourse(
               // kerb's own are found.)
               const hK2: number[] = [];
               for (let v = j0; v <= j1 + 1; v++) {
+                yield;
                 const J = of2[v];
                 if (v === at2[J] || J + 1 >= Q.length || J + 1 > J1 + 1) {
                   hK2[v] = hK[J];
@@ -7842,26 +7877,31 @@ export async function buildPasirRisCourse(
             j0 = j1;
           }
         }
-      });
-      // (Drawn a share at a time: as many runs as fit in 12 ms, then the
-      // rest the next frame. Shared out by a guess at each run's work, one
-      // share in nine held a frame up for 135 ms: round a busy junction each
-      // kerb point asks all that is drawn about it, and how much that is
-      // can't be told before asking.)
-      for (let part = 0; part < OUT_DRAW; part++)
-        onTile('far', k, 'outline draw', (_kit, acc) => {
+      })());
+      // (Drawn a kerb point at a time, each a slice of its own: shared out
+      // by a guess at each run's work, one share in nine held a frame up for
+      // 135 ms: round a busy junction each kerb point asks all that is drawn
+      // about it, and how much that is can't be told before asking.)
+      onTile('far', k, 'outline draw', (_kit, acc) =>
+        (function* () {
           const w = outWork.get(k);
           if (!w) return;
-          fillTrisNow = fillTrisFor(k, fillRings);
           const kerb = acc('kerb');
           const yellow = acc('yellow');
-          const t0 = performance.now();
-          let q = w.drawAt ?? 0;
-          while (q < w.draws.length && (part === OUT_DRAW - 1 || q === (w.drawAt ?? 0) || performance.now() - t0 < 12)) w.draws[q++](kerb, yellow);
-          w.drawAt = q;
-          fillTrisNow = null;
-          if (part === OUT_DRAW - 1) outWork.delete(k), fillTrisOf.delete(k);
-        });
+          for (const draw of w.draws) {
+            // (Set again each step: the lines lie on the outline's own fills, see fillTrisNow.)
+            const it = draw(kerb, yellow);
+            for (;;) {
+              fillTrisNow = fillTrisFor(k, fillRings);
+              const r = it.next();
+              fillTrisNow = null;
+              if (r.done) break;
+              yield;
+            }
+          }
+          outWork.delete(k), fillTrisOf.delete(k);
+        })(),
+      );
     }
   }
   /** (For the checks: the outline's sides within r of (x, z), and what each gets at its nearest point.) */
@@ -8346,7 +8386,9 @@ export async function buildPasirRisCourse(
   // (A long path, like a road, is drawn 12 pieces to a slice.)
   const pathSlices = (all: { line: number; k0: number; k1: number }[]) => all.flatMap(({ line, k0, k1 }) => Array.from({ length: Math.ceil((k1 - k0) / 12) }, (_, n) => ({ line, k0: k0 + n * 12, k1: Math.min(k1, k0 + n * 12 + 12) })));
   for (const [k, all] of runsOf(paths.map((p) => p.pts)))
-    inChunks('far', k, 'paths', pathSlices(all), 1, (list, _kit, acc) => {
+    inChunks('far', k, 'paths', pathSlices(all), 1, (list, _kit, acc) => (function* () {
+      // (A path's heights all along it first, a slice by themselves: see Job.)
+      for (const { line } of list) if (!deckCache.has(line)) pathDeck(line), yield;
       const foot = acc('foot');
       const cyc = acc('cycle');
       const rail = acc('rail');
@@ -8416,7 +8458,7 @@ export async function buildPasirRisCourse(
         m.receiveShadow = true;
         _kit.add(m);
       }
-    });
+    })());
 
   // ---------- Water ----------
   const wind = { value: 0 };
@@ -9299,10 +9341,17 @@ export async function buildPasirRisCourse(
       return a;
     };
     for (const job of jobs.far.get(k) ?? []) {
-      const t0 = performance.now();
-      job(offScene, acc);
+      let t0 = performance.now();
+      const more = job(offScene, acc);
       cost(`${job.what} (again, for the collider)`, `near:${k}`, t0);
       yield;
+      if (more)
+        for (let done = false; !done; ) {
+          t0 = performance.now();
+          done = !!more.next().done;
+          cost(`${job.what} (again, for the collider)`, `near:${k}`, t0);
+          yield;
+        }
     }
     keepSurf(k, accs.get('road'));
     return roadSurf.get(k)!;
@@ -9337,9 +9386,16 @@ export async function buildPasirRisCourse(
       };
       for (const job of jobs[layer].get(`${ti},${tj}`) ?? []) {
         t0 = performance.now();
-        job(kit, acc);
+        const more = job(kit, acc);
         cost(job.what ?? '?', at, t0);
         yield;
+        if (more)
+          for (let done = false; !done; ) {
+            t0 = performance.now();
+            done = !!more.next().done;
+            cost(job.what ?? '?', at, t0);
+            yield;
+          }
       }
       if (layer === 'far') keepSurf(`${ti},${tj}`, accs.get('road'));
       yield* flush(accs, kit);
@@ -9563,7 +9619,10 @@ export async function buildPasirRisCourse(
           return a;
         };
         const kit = { add: () => {}, own: <T>(g: T) => g, body: () => null } as unknown as TileKit;
-        for (const job of jobs.far.get(k) ?? []) job(kit, acc);
+        for (const job of jobs.far.get(k) ?? []) {
+          const it = job(kit, acc);
+          if (it) while (!it.next().done);
+        }
         return Object.fromEntries([...accs].map(([key, a]) => [key, { pos: a.pos, idx: a.idx }]));
       },
       JX,
