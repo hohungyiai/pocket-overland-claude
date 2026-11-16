@@ -106,6 +106,9 @@ const SURFACE_KINDS = ['road', 'kerb', 'white', 'yellow', 'box', 'deck'];
 // cover it, or the ground shows through a crack. A crack is ground showing
 // within 4 mm of an edge with road surface again within 0.5 m beyond.
 window.__checkGaps = (all = false) => {
+  // (Redrawn maps only, the user's call on 16 Nov: today's map keeps its
+  // old kerbs, which these rules were never written for.)
+  if (!globalThis.__osm.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
   const F = window.__finishIndex();
   const at = window.__flatIndex(SURFACE_KINDS);
   const pts = [];
@@ -146,6 +149,9 @@ window.__checkGaps = (all = false) => {
 // slip lane merges, and an island's point 2 cm under the paving beside it.)
 const KERBS_FOR_NOW = [[1776.44, 1423.72], [2260.8, 2832.13]];
 window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
+  // (Redrawn maps only, the user's call on 16 Nov: today's map keeps its
+  // old kerbs, which these rules were never written for.)
+  if (!globalThis.__osm.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
   const F = window.__finishIndex();
   const at = window.__flatIndex(SURFACE_KINDS);
   const pts = [];
@@ -286,6 +292,9 @@ const uprightSeen = (x, z) =>
     return Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t) <= r;
   });
 window.__checkUprightsInKerb = (all = false, OUT = 0.02) => {
+  // (Redrawn maps only, the user's call on 16 Nov: today's map keeps its
+  // old kerbs, which these rules were never written for.)
+  if (!globalThis.__osm.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
   const F = window.__finishIndex();
   const at = window.__flatIndex(['kerb']);
   const pts = [];
