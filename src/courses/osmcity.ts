@@ -1960,6 +1960,8 @@ export async function buildPasirRisCourse(
   // bigger (none an expressway). The lights take turns by direction: roads
   // lined up with the first one, then the rest.
   const CROSS_FROM = 1; // metres out from the mouth
+  // (What rawHeight found last: the shore and the water's edge distances. Here, ahead of the crossings, which ask the ground's height.)
+  const probe = { s: 60, w: 30 };
   const CROSS_W = 3;
   const STOP_AT = CROSS_FROM + CROSS_W + 1;
   /** span: where a road's two ways share one zebra, the stripes' reach either side of c (to the left of t), on one of them; null on the other. */
@@ -1967,6 +1969,8 @@ export async function buildPasirRisCourse(
   const crossings: Crossing[] = [];
   const crossCand: { cr: Crossing; lightOpts: XZ[] }[] = [];
   const crossEnd = new Map<string, Crossing>();
+  /** The paved slots through medians where a zebra crosses them, paved once every zebra has been looked at (paving one first made the next pair's median look paved already). */
+  const medianCuts: { ring: XZ[]; c: XZ }[] = [];
   type Arm = { line: number; end: 0 | 1; s: number; half: number; t: XZ };
   const armsOf: Arm[][] = JX.shapes.map((sh) => sh.mouths);
   /** Each junction's middle (as armsOf), and the roads that run through it as one strip. */
@@ -2305,7 +2309,7 @@ export async function buildPasirRisCourse(
     let M = jMeshOf.get(id);
     if (M !== undefined) return M;
     M = null;
-    if (oneLine && !JPOLY[id].fill && (JPOLY[id] as { closed?: boolean }).closed) {
+    if (oneLine && (JPOLY[id] as { closed?: boolean }).closed) {
       const ring = JPOLY[id].ring;
       const P: XZ[] = [], Y: number[] = [], T: number[] = [];
       const xs = ring.map((p) => p[0]), zs = ring.map((p) => p[1]);
@@ -2360,6 +2364,8 @@ export async function buildPasirRisCourse(
     }
     return jTopOwn(id, x, z);
   };
+  /** Median slots between roads lying on the ground (see jTopOwn). */
+  const slotFlat = new Map<number, boolean>();
   /** jTop, worked out at the point. */
   const jTopOwn = (id: number, x: number, z: number) => {
     const sh = JPOLY[id];
@@ -2367,6 +2373,17 @@ export async function buildPasirRisCourse(
     if (tee !== undefined) return tee;
     // (A further part of a junction's paving lies on the ground as the junction's own outline does.)
     if (sh.fill && JX.fills[id - JX.shapes.length].tee !== undefined) return Math.max(rawHeight(x, z), WL + 0.15);
+    // (A slot through a median between two roads that lie on the ground lies on the ground as they do: blended
+    // from its corners, it stood 2-3 cm proud of the ground the kerb and edge lines beside it are laid on.)
+    if (sh.fill && (sh as { closed?: boolean }).closed) {
+      let flat = slotFlat.get(id);
+      if (flat === undefined)
+        slotFlat.set(id, (flat = !sh.ring.some(([px, pz]) => {
+          const r = roads.nearest(px, pz, 30, (i) => !elevated[i]);
+          return !!r && hasProfile[r.line];
+        })));
+      if (flat) return Math.max(rawHeight(x, z), WL + 0.15);
+    }
     if (sh.fill) return fillTop(id, x, z);
     const rels = relsOf(id);
     const g = Math.max(rawHeight(x, z), WL + 0.15);
@@ -2477,6 +2494,119 @@ export async function buildPasirRisCourse(
       crossings.push(cr);
       crossEnd.set(`${cr.line}:${cr.end}`, cr);
     }
+    // Where a zebra's twin across the other way lies past a median: the
+    // median opens, a paved gap the crossing's width through it, its two
+    // ends rounded (half round where it is narrow), and the one zebra runs
+    // across both ways and the gap (the user's call, 15 Nov: the median
+    // had run straight through the crossing, the stripes stopping at its
+    // kerb). (Redrawn maps; a gap up to MEDIAN_CUT_MAX wide.)
+    const MEDIAN_CUT_MAX = 12;
+    const cuts = medianCuts;
+    const lightsOf = new Map(crossCand.map(({ cr, lightOpts }) => [cr, lightOpts]));
+    const medianCut = (cr: Crossing, o: Crossing, gap: number, lat: number) => {
+      const sg = Math.sign(lat);
+      const mx = cr.t[0] + o.t[0], mz = cr.t[1] + o.t[1], ml = Math.hypot(mx, mz) || 1;
+      const t: XZ = [mx / ml, mz / ml];
+      const l: XZ = [-t[1] * sg, t[0] * sg];
+      // (About the median's middle, half way along between the two: it runs from -w/2 to w/2 across.)
+      const w = gap;
+      // (The slot wider than the stripes, so the edge lines down its sides
+      // stay clear of them.)
+      const h = CROSS_W / 2 + 0.6;
+      const ax = (cr.c[0] + o.c[0]) / 2, az = (cr.c[1] + o.c[1]) / 2, ao = ((o.c[0] - cr.c[0]) * l[0] + (o.c[1] - cr.c[1]) * l[1]) / 2;
+      const c: XZ = [ax + l[0] * (cr.half + w / 2 - ao), az + l[1] * (cr.half + w / 2 - ao)];
+      // (Its ends round: half round where it is narrow, else 0.5 m at each corner.)
+      const rc = w <= 3.3 ? w / 2 : 0.5;
+      const L0 = -w / 2 - 0.3, L1 = w / 2 + 0.3;
+      const P = (a: number, b: number): XZ => [c[0] + t[0] * a + l[0] * b, c[1] + t[1] * a + l[1] * b];
+      const ground = (a: number, b: number) => {
+        const [x, z] = P(a, b);
+        return !inPoly(x, z, true) && !onOther(x, z, -1, 0) && !cuts.some((r) => inRingXZ(r.ring, x, z));
+      };
+      // (Only through ground, level with both ways, with no path along it.)
+      const yOf = (q: Crossing) => {
+        const r = roads.nearest(q.c[0], q.c[1], 4, (i) => i === q.line);
+        return r ? topAt(r.line, r.seg, r.u, q.c[0], q.c[1]) : NaN;
+      };
+      const y0 = yOf(cr), y1 = yOf(o);
+      // (Two ways a little apart in height are joined by the slot's slope;
+      // not where one stands well above the other, nor on a bank above the
+      // ground, where the stripes would fall to the ground between.)
+      if (!(Math.abs(y0 - y1) <= 0.25) || y0 - Math.max(rawHeight(cr.c[0], cr.c[1]), WL + 0.15) > 0.3 || y1 - Math.max(rawHeight(o.c[0], o.c[1]), WL + 0.15) > 0.3) return false;
+      /** A path along the median here (not the one the zebra carries across it). */
+      const pathAlong = (x: number, z: number) => {
+        const r = pathIdx.nearest(x, z, 2.5);
+        if (!r) return false;
+        const Q = paths[r.line].pts, A = Q[r.seg], B = Q[Math.min(Q.length - 1, r.seg + 1)];
+        const dl = Math.hypot(B[0] - A[0], B[1] - A[1]) || 1;
+        return Math.abs(((B[0] - A[0]) * t[0] + (B[1] - A[1]) * t[1]) / dl) > 0.7;
+      };
+      // (Ground the whole way across it along the zebra's middle: a median, not a corner of paving.)
+      for (let q = 0; q <= 8; q++) if (!ground(0, -w / 2 + 0.3 + ((w - 0.6) * q) / 8)) return false;
+      for (const a of [-h, -h / 2, 0, h / 2, h])
+        for (const b of [-w / 4, 0, w / 4]) {
+          // (Through its middle at least: past that, where the median ends, the stub is paved below.)
+          if (!ground(a, b)) {
+            if (a === 0) return false;
+            continue;
+          }
+          const [x, z] = P(a, b);
+          if (Math.abs(rawHeight(x, z) - (y0 + y1) / 2) > 0.3 || pathAlong(x, z)) return false;
+        }
+      // (Where the median ends inside the slot, into paving, that side of
+      // the slot runs on into the paving. Where it ends a little past the
+      // slot, a stub or a blob of median would be left: no slot there.)
+      const STUB = 6;
+      const endOf = (sg: number) => {
+        for (let a = 0.25; a <= h + STUB; a += 0.25) if (!ground(sg * a, 0) || !ground(sg * a, -w / 2 + 0.3) || !ground(sg * a, w / 2 - 0.3)) return a <= h ? Math.max(a + 0.3, h) : -1;
+        return 0;
+      };
+      const arc = (ca: number, cb: number, a0: number, a1: number) => {
+        const out: XZ[] = [];
+        const n = Math.max(2, Math.ceil(Math.abs(a1 - a0) / (Math.PI / 12)));
+        for (let q = 0; q <= n; q++) {
+          const an = a0 + ((a1 - a0) * q) / n;
+          out.push(P(ca + Math.cos(an) * rc, cb + Math.sin(an) * rc));
+        }
+        return out;
+      };
+      const eP = endOf(1), eN = endOf(-1);
+      if (eP < 0 || eN < 0) return false;
+      const e = h + rc;
+      const ring: XZ[] = [P(eN ? -eN : -e, L0), P(eP || e, L0)];
+      // (The + end: round the corner by the near way, along the median's end, round the far corner.)
+      if (!eP) {
+        ring.push(...arc(e, -w / 2 + rc, -Math.PI / 2, -Math.PI));
+        ring.push(...arc(e, w / 2 - rc, Math.PI, Math.PI / 2));
+      }
+      ring.push(P(eP || e, L1), P(eN ? -eN : -e, L1));
+      if (!eN) {
+        ring.push(...arc(-e, w / 2 - rc, Math.PI / 2, 0));
+        ring.push(...arc(-e, -w / 2 + rc, 0, -Math.PI / 2));
+      }
+      // (Wound as an island's is: anticlockwise.)
+      let ar = 0;
+      for (let q = 0; q < ring.length; q++) {
+        const p = ring[q], n = ring[(q + 1) % ring.length];
+        ar += p[0] * n[1] - n[0] * p[1];
+      }
+      if (ar < 0) ring.reverse();
+      cuts.push({ ring, c });
+      // (A light that stood in the median moves off the gap.)
+      for (const q of [cr, o])
+        if (q.light && inRingXZ(ring, q.light[0], q.light[1])) q.light = (lightsOf.get(q) ?? []).find(([x, z]) => !onOther(x, z, -1, 0.3) && !inPoly(x, z, true) && !cuts.some((r) => inRingXZ(r.ring, x, z))) ?? null;
+      return true;
+    };
+    /** Stripes on cr from its own way across to o's far edge. (Square across
+     * the two ways' mean: across cr's own way alone, which turned a little,
+     * its stripes' ends ran askew over the other way.) */
+    const spanBoth = (cr: Crossing, o: Crossing) => {
+      const dx = o.c[0] - cr.c[0], dz = o.c[1] - cr.c[1];
+      const mx = cr.t[0] + o.t[0], mz = cr.t[1] + o.t[1], ml = Math.hypot(mx, mz) || 1;
+      cr.spanT = [mx / ml, mz / ml];
+      const lat2 = dx * -cr.spanT[1] + dz * cr.spanT[0];
+      cr.span = [Math.min(-cr.half, lat2 - o.half), Math.max(cr.half, lat2 + o.half)];
+    };
     // A road's two ways side by side, paved between them, each with its
     // zebra lined up with the other's: one zebra across them both, its
     // stripes even all the way over (each way's own left a gap between
@@ -2490,7 +2620,7 @@ export async function buildPasirRisCourse(
         const dx = o.c[0] - cr.c[0], dz = o.c[1] - cr.c[1];
         const lat = dx * left[0] + dz * left[1];
         const gap = Math.abs(lat) - cr.half - o.half;
-        if (Math.abs(dx * cr.t[0] + dz * cr.t[1]) > 0.6 || gap > 4 || gap < -0.5) continue;
+        if (Math.abs(dx * cr.t[0] + dz * cr.t[1]) > 0.6 || gap > MEDIAN_CUT_MAX || gap < -0.5) continue;
         let paved = true;
         const sg = Math.sign(lat);
         for (const a of [-1, 0, 1])
@@ -2499,16 +2629,75 @@ export async function buildPasirRisCourse(
             const x = cr.c[0] + cr.t[0] * a * (CROSS_W / 2) + left[0] * off, z = cr.c[1] + cr.t[1] * a * (CROSS_W / 2) + left[1] * off;
             if (gap > 0 && !inPoly(x, z, true) && !onOther(x, z, -1, 0)) paved = false;
           }
-        if (!paved) continue;
-        // (Square across the two ways' mean: across cr's own way alone, which
-        // turned a little, its stripes' ends ran askew over the other way.)
-        const mx = cr.t[0] + o.t[0], mz = cr.t[1] + o.t[1], ml = Math.hypot(mx, mz) || 1;
-        cr.spanT = [mx / ml, mz / ml];
-        const lat2 = dx * -cr.spanT[1] + dz * cr.spanT[0];
-        cr.span = [Math.min(-cr.half, lat2 - o.half), Math.max(cr.half, lat2 + o.half)];
+        if (paved ? gap > 4 : !oneLine || gap < 0.3 || !medianCut(cr, o, gap, lat)) continue;
+        spanBoth(cr, o);
         o.span = null;
         break;
       }
+    }
+    // A zebra that ends at a median with its road's other way just past it,
+    // where the other way has none of its own (the map marks the crossing
+    // on one way only): it carries on through the median, a paved gap as
+    // above, and across the other way. (Redrawn maps.)
+    if (oneLine)
+      for (const cr of crossings) {
+        if (cr.span !== undefined || !edges[cr.line].one || !edges[cr.line].name) continue;
+        const left: XZ = [-cr.t[1], cr.t[0]];
+        for (const sg of [1, -1]) {
+          // (Out across the ground from its kerb until a road.)
+          let g = 0.3;
+          for (; g <= MEDIAN_CUT_MAX; g += 0.25) {
+            const x = cr.c[0] + left[0] * sg * (cr.half + g), z = cr.c[1] + left[1] * sg * (cr.half + g);
+            if (inPoly(x, z, true)) g = Infinity;
+            else if (onOther(x, z, cr.line, 0)) break;
+          }
+          if (!(g <= MEDIAN_CUT_MAX)) continue;
+          const px = cr.c[0] + left[0] * sg * (cr.half + g + 0.5), pz = cr.c[1] + left[1] * sg * (cr.half + g + 0.5);
+          const h = roads.nearest(px, pz, 8, (i) => i !== cr.line && !elevated[i]);
+          if (!h || edges[h.line].name !== edges[cr.line].name || !edges[h.line].one) continue;
+          const P = EP[h.line], a = P[h.seg], b = P[(h.seg + 1) % P.length];
+          let tx = b[0] - a[0], tz = b[1] - a[1];
+          const tl = Math.hypot(tx, tz) || 1;
+          tx /= tl;
+          tz /= tl;
+          const dot = tx * cr.t[0] + tz * cr.t[1];
+          if (Math.abs(dot) < 0.98) continue;
+          if (dot < 0) (tx = -tx), (tz = -tz);
+          const half = halfNear(h.line, h.seg, h.u);
+          const c: XZ = [a[0] + (b[0] - a[0]) * h.u, a[1] + (b[1] - a[1]) * h.u];
+          // (Across the other way square to it, its centre where cr's line meets it.)
+          const dx = c[0] - cr.c[0], dz = c[1] - cr.c[1];
+          const al = dx * cr.t[0] + dz * cr.t[1];
+          const o: Crossing = { ...cr, line: h.line, half, c: [c[0] - tx * al, c[1] - tz * al], t: [tx, tz], light: null, span: null };
+          const lat = (o.c[0] - cr.c[0]) * left[0] + (o.c[1] - cr.c[1]) * left[1];
+          const gap = Math.abs(lat) - cr.half - half;
+          if (gap < 0.3 || gap > MEDIAN_CUT_MAX) continue;
+          // (The other way clear where the stripes go: not in a junction, nor over a third road.)
+          let ok = true;
+          for (const a2 of [-1, 0, 1])
+            for (const b2 of [-1, -0.5, 0, 0.5, 1]) {
+              const x = o.c[0] + tx * a2 * (CROSS_W / 2) + -tz * b2 * (half - 0.4), z = o.c[1] + tz * a2 * (CROSS_W / 2) + tx * b2 * (half - 0.4);
+              if (onOther(x, z, new Set([h.line, cr.line]), 0.3) || inPoly(x, z, true) || crossings.some((q) => q !== cr && onCross(q, x, z, 0.3))) ok = false;
+            }
+          // (Nor where the other way has a zebra of its own close by.)
+          if (crossings.some((q) => q !== cr && Math.hypot(q.c[0] - o.c[0], q.c[1] - o.c[1]) < 15)) ok = false;
+          if (!ok || !medianCut(cr, o, gap, lat)) continue;
+          spanBoth(cr, o);
+          // (Listed with the others, its stripes cr's: the other way's lines stop at it as at any zebra. No stop line of its own.)
+          o.inbound = 0;
+          crossings.push(o);
+          break;
+        }
+      }
+    for (const { ring, c } of cuts) {
+      // (Not star-shaped about its middle, so drawn on the 2 m lattice as a shaped junction is: see jMesh.)
+      const id = JPOLY.length;
+      const radius = Math.max(...ring.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
+      JX.fills.push({ ring, centre: c, radius });
+      JPOLY.push(Object.assign({ ring, centre: c, radius, mouths: [], kerbs: [], fill: true }, { closed: true }));
+      const r = radius + 10;
+      for (let ci = Math.floor((c[0] - r) / JCELL); ci <= Math.floor((c[0] + r) / JCELL); ci++)
+        for (let cj = Math.floor((c[1] - r) / JCELL); cj <= Math.floor((c[1] + r) / JCELL); cj++) (jGrid.get(ci * 100003 + cj) ?? jGrid.set(ci * 100003 + cj, []).get(ci * 100003 + cj)!).push(id);
     }
     // The yellow box, from corner to corner of the junction just inside its
     // kerbs, and an X across it. (Each corner where two roads' kerbs would
@@ -2696,7 +2885,6 @@ export async function buildPasirRisCourse(
   }
 
   // ---------- Ground height ----------
-  const probe = { s: 60, w: 30 };
   /** The smooth ground, before it is sealed under the roads (roads drape on this). */
   function rawHeight(x: number, z: number): number {
     const s = coastSD(x, z);
@@ -9272,7 +9460,7 @@ export async function buildPasirRisCourse(
         viaducts.forEach((pts, line) => railPiers(line).forEach((q) => out.push({ x: pts[q][0], z: pts[q][1], top: railY(line, q) - 1.1, kind: 'rail', self: -1 })));
         return out;
       },
-      crossings, CROSS_FROM, CROSS_W, yBoxes, boxWhy, signals: M.signals ?? [],
+      crossings, medianCuts, CROSS_FROM, CROSS_W, yBoxes, boxWhy, signals: M.signals ?? [],
       // A far tile's road buffers, built off-scene (for the seam checks).
       farTiles: () => [...jobs.far.keys()],
       sliceCost,
