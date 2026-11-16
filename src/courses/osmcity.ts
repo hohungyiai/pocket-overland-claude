@@ -2277,12 +2277,13 @@ export async function buildPasirRisCourse(
     let bx = x;
     let bz = z;
     for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-      const [ax, az] = ring[j];
+      const ax = ring[j][0], az = ring[j][1];
       const abx = ring[i][0] - ax;
       const abz = ring[i][1] - az;
       let u = ((x - ax) * abx + (z - az) * abz) / (abx * abx + abz * abz || 1);
       u = u < 0 ? 0 : u > 1 ? 1 : u;
-      const d = Math.hypot(ax + abx * u - x, az + abz * u - z);
+      const ex = ax + abx * u - x, ez = az + abz * u - z;
+      const d = Math.sqrt(ex * ex + ez * ez);
       if (d < best) {
         best = d;
         bx = ax + abx * u;
@@ -6468,7 +6469,8 @@ export async function buildPasirRisCourse(
   const segDist = (a: XZ, b: XZ, x: number, z: number) => {
     const vx = b[0] - a[0], vz = b[1] - a[1];
     const u = Math.max(0, Math.min(1, ((x - a[0]) * vx + (z - a[1]) * vz) / (vx * vx + vz * vz || 1)));
-    return Math.hypot(a[0] + vx * u - x, a[1] + vz * u - z);
+    const ex = a[0] + vx * u - x, ez = a[1] + vz * u - z;
+    return Math.sqrt(ex * ex + ez * ez);
   };
   const crossTiles = new Map<string, Crossing[]>();
   const boxTiles = new Map<string, YBox[]>();
@@ -6718,26 +6720,32 @@ export async function buildPasirRisCourse(
       const d = segDist(P[k], P[k + 1], x, z);
       if (d < best) (best = d), (bk = k);
     }
-    // (The strip's two triangles: left k, left k+1, right k; right k, left k+1, right k+1.)
-    const plane = (p: number[], q: number[], r: number[]) => {
-      const d0 = (q[1] - r[1]) * (p[0] - r[0]) + (r[0] - q[0]) * (p[1] - r[1]);
-      if (Math.abs(d0) < 1e-9) return null;
-      const l1 = ((q[1] - r[1]) * (x - r[0]) + (r[0] - q[0]) * (z - r[1])) / d0;
-      const l2 = ((r[1] - p[1]) * (x - r[0]) + (p[0] - r[0]) * (z - r[1])) / d0;
-      return { y: l1 * p[2] + l2 * q[2] + (1 - l1 - l2) * r[2], out: Math.max(0, -l1, -l2, l1 + l2 - 1) };
+    // (The strip's two triangles: left k, left k+1, right k; right k, left
+    // k+1, right k+1. Each corner [x, z, y] read in place from the corners'
+    // lists: asked tens of millions of times while the map is built, its
+    // throwaway lists and objects made garbage that held frames up.)
+    let found = false, tY = 0, tOut = Infinity;
+    const plane = (p: number[], pi: number, q: number[], qi: number, r: number[], ri: number) => {
+      const px = p[pi], pz = p[pi + 1], qx = q[qi], qz = q[qi + 1], rx = r[ri], rz = r[ri + 1];
+      const d0 = (qz - rz) * (px - rx) + (rx - qx) * (pz - rz);
+      if (Math.abs(d0) < 1e-9) return;
+      const l1 = ((qz - rz) * (x - rx) + (rx - qx) * (z - rz)) / d0;
+      const l2 = ((rz - pz) * (x - rx) + (px - rx) * (z - rz)) / d0;
+      const out = Math.max(0, -l1, -l2, l1 + l2 - 1);
+      if (!found || out < tOut) (found = true), (tOut = out), (tY = l1 * p[pi + 2] + l2 * q[qi + 2] + (1 - l1 - l2) * r[ri + 2]);
     };
     // (The piece nearest the point's line, or either beside it: at a bend
     // a point by the outside of it lies in the next piece's quad.)
-    let t: { y: number; out: number } | null = null;
-    for (const k of [bk, bk - 1, bk + 1]) {
+    for (let c = 0; c < 3; c++) {
+      const k = c === 0 ? bk : c === 1 ? bk - 1 : bk + 1;
       if (k < lo || k >= hi) continue;
       const A = corners(k), B = corners(k + 1);
-      const L0 = [A[0], A[1], A[2]], R0 = [A[3], A[4], A[5]], L1 = [B[0], B[1], B[2]], R1 = [B[3], B[4], B[5]];
-      for (const q of [plane(L0, L1, R0), plane(R0, L1, R1)]) if (q && (!t || q.out < t.out)) t = q;
-      if (t && t.out === 0) break;
+      plane(A, 0, B, 0, A, 3);
+      plane(A, 3, B, 0, B, 3);
+      if (found && tOut === 0) break;
     }
-    stripOut = t ? t.out : Infinity;
-    if (t) return t.y;
+    stripOut = found ? tOut : Infinity;
+    if (found) return tY;
     const A = corners(bk);
     return lerp(A[2], A[5], 0.5);
   };
