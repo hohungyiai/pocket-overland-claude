@@ -7260,7 +7260,17 @@ export async function buildPasirRisCourse(
               // at Q2's, from Q's point J0 to its point J1 + 1.)
               const hK: number[] = [];
               const hY: number[] = [];
-              const markAt = (o: number) => (o <= J1 ? mk(o) : null) ?? mk(o - 1);
+              // (The run's last point as the next piece has it, where the kerb
+              // and line carry on into it: the next run, or the next tile,
+              // starts there by that piece's own mark. By the last piece's,
+              // at a tile's edge on Simei Avenue a kerb stood 3 cm higher on
+              // one side than the other: a joint's paving there, the ground
+              // past it.)
+              const markAt = (o: number) => {
+                if (o <= J1) return mk(o) ?? mk(o - 1);
+                const a = mk(o - 1), b = mk(o);
+                return a && b && a.kerb === b.kerb && a.line === b.line ? b : a ?? b;
+              };
               // (What is drawn on top at (x, z), in the roads' own frame, if
               // anything is: a nose's or wedge's paving, a road's strip
               // reaching over it, a joint's paving or level pad.)
