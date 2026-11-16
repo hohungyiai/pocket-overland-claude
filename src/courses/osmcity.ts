@@ -6040,7 +6040,9 @@ export async function buildPasirRisCourse(
       // two roads' ends: under 1.2 m across its foot and 2 m long, the verge
       // running on straight past it either side. No island: cut off at its
       // foot, paved. Rounded, a half circle across its foot stood out into
-      // the road as a knob of kerb.)
+      // the road as a knob of kerb. Its foot may lie aslant, so long as it
+      // runs on the way the verge does, where one road's edge is a little out
+      // from the other's: a V notch was left between two such edges.)
       if (r0 > TIP) {
         const A = at(-1), C = at(1), Z = at(-2), D = at(2);
         const foot = dist(A, C);
@@ -6048,7 +6050,7 @@ export async function buildPasirRisCourse(
         const [ix, iy] = dir(Z, A), [ox, oy] = dir(C, D), [fx, fy] = dir(A, C);
         const cos45 = Math.SQRT1_2;
         const len = Math.abs((C.x - A.x) * (at(0).y - A.y) - (C.y - A.y) * (at(0).x - A.x)) / (foot || 1);
-        if (foot > 0.05 * OUT_S && foot < 1.2 * OUT_S && len < 2 * OUT_S && dist(Z, A) > 0.5 * OUT_S && dist(C, D) > 0.5 * OUT_S && ix * ox + iy * oy > cos45 && ix * fx + iy * fy > cos45 && fx * ox + fy * oy > cos45) {
+        if (foot > 0.05 * OUT_S && foot < 1.2 * OUT_S && len < 2 * OUT_S && dist(Z, A) > 0.5 * OUT_S && dist(C, D) > 0.5 * OUT_S && ix * ox + iy * oy > cos45 && ix * fx + iy * fy > 0 && fx * ox + fy * oy > 0) {
           const piece = new Path64();
           for (const p of [A, at(0), C]) piece.push(new Point64(p.x, p.y));
           cuts.push(piece);
