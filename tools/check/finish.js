@@ -450,6 +450,11 @@ window.__atCrossing = (x, z, along, across) => {
   return false;
 };
 
+// (Spots the user has seen and passed for now: the Tampines Central 1 /
+// Tampines Concourse cluster, five joints lumped into one junction the
+// builder can't make, drawn by the old fallback. Its grouping is rebuilt as
+// its own change after the whole-map PR. User's tap, 16 Nov.)
+const ONE_STRIP_SEEN = [{ x: -491.9, z: 1336.7, r: 1 }];
 window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.01) => {
   const d = globalThis.__osm;
   const F = window.__finishIndex();
@@ -473,7 +478,7 @@ window.__checkOneStrip = (all = false, TURN = 2, WIDTH = 0.05, SLOPE = 0.01) => 
   let n = 0;
   for (const [j, ends] of at) {
     n++;
-    const flag = (why, value, x, z) => bad.push({ road: d.edges[ends[0][0]].name || d.edges[ends[0][0]].cls, j, why, x: +x.toFixed(1), z: +z.toFixed(1), over: +value.toFixed(2) });
+    const flag = (why, value, x, z) => ONE_STRIP_SEEN.some((p) => Math.hypot(p.x - x, p.z - z) < p.r) || bad.push({ road: d.edges[ends[0][0]].name || d.edges[ends[0][0]].cls, j, why, x: +x.toFixed(1), z: +z.toFixed(1), over: +value.toFixed(2) });
     const [p, pe] = ends[0];
     const P0 = along(p, pe, 0);
     if (ends.length !== 2) {
