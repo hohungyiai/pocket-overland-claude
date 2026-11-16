@@ -1923,7 +1923,7 @@ export async function buildPasirRisCourse(
   const CROSS_W = 3;
   const STOP_AT = CROSS_FROM + CROSS_W + 1;
   /** span: where a road's two ways share one zebra, the stripes' reach either side of c (to the left of t), on one of them; null on the other. */
-  type Crossing = { line: number; end: 0 | 1; s: number; half: number; c: XZ; t: XZ; inbound: number; group: number; light: XZ | null; span?: [number, number] | null };
+  type Crossing = { line: number; end: 0 | 1; s: number; half: number; c: XZ; t: XZ; inbound: number; group: number; light: XZ | null; span?: [number, number] | null; spanT?: XZ };
   const crossings: Crossing[] = [];
   const crossCand: { cr: Crossing; lightOpts: XZ[] }[] = [];
   const crossEnd = new Map<string, Crossing>();
@@ -2374,7 +2374,12 @@ export async function buildPasirRisCourse(
             if (gap > 0 && !inPoly(x, z, true) && !onOther(x, z, -1, 0)) paved = false;
           }
         if (!paved) continue;
-        cr.span = [Math.min(-cr.half, lat - o.half), Math.max(cr.half, lat + o.half)];
+        // (Square across the two ways' mean: across cr's own way alone, which
+        // turned a little, its stripes' ends ran askew over the other way.)
+        const mx = cr.t[0] + o.t[0], mz = cr.t[1] + o.t[1], ml = Math.hypot(mx, mz) || 1;
+        cr.spanT = [mx / ml, mz / ml];
+        const lat2 = dx * -cr.spanT[1] + dz * cr.spanT[0];
+        cr.span = [Math.min(-cr.half, lat2 - o.half), Math.max(cr.half, lat2 + o.half)];
         o.span = null;
         break;
       }
@@ -5329,9 +5334,16 @@ export async function buildPasirRisCourse(
             const [tx, tz] = unit(b[0] - a[0], b[1] - a[1]);
             if (k) run += Math.hypot(p[0] - ln.pts[k - 1][0], p[1] - ln.pts[k - 1][1]);
             ok.push((k === 0 || k === ln.pts.length - 1 || inRingXZ(ring, p[0], p[1])) && (!ln.dashed || Math.floor(run / 4) % 3 === 0));
+            // (An end just outside the paving, at its edge: as the paving has
+            // it just inside. Outside, the paving's height fell away 5 cm, and
+            // the line from there to its next point ran under the paving's edge.)
+            const inn = k === 0 ? 0.05 : k === ln.pts.length - 1 ? -0.05 : 0;
+            const pIn = inRingXZ(ring, p[0], p[1]);
             for (const o of [-0.07, 0.07]) {
               const x = p[0] + tz * o, z = p[1] - tx * o;
-              into.pos.push(x, paveY(id, x, z) + 0.11, z);
+              const y0 = paveY(id, x, z);
+              const yi = !pIn && inn ? paveY(id, x + tx * inn, z + tz * inn) : NaN;
+              into.pos.push(x, (yi === yi && yi > y0 && yi - y0 < 0.1 ? yi : y0) + 0.11, z);
               into.uv.push(x / 6, z / 6);
             }
           });
@@ -5556,7 +5568,8 @@ export async function buildPasirRisCourse(
           const lo = cr.span[0] + 0.4, hi = cr.span[1] - 0.4;
           const n = Math.floor((hi - lo + 0.5) / 1);
           const o0 = (lo + hi) / 2 - (n - 1) / 2;
-          for (let q = 0; q < n; q++) quad(white, cr.c[0] + left[0] * (o0 + q), cr.c[1] + left[1] * (o0 + q), cr.t, CROSS_W / 2, 0.25, 0.115);
+          const tt = cr.spanT ?? cr.t, ll: XZ = [-tt[1], tt[0]];
+          for (let q = 0; q < n; q++) quad(white, cr.c[0] + ll[0] * (o0 + q), cr.c[1] + ll[1] * (o0 + q), tt, CROSS_W / 2, 0.25, 0.115);
         } else if (cr.span === undefined)
           for (let o = -w + 0.25; o <= w - 0.25; o += 1) quad(white, cr.c[0] + left[0] * o, cr.c[1] + left[1] * o, cr.t, CROSS_W / 2, 0.25, 0.115);
         if (!cr.inbound) continue;
