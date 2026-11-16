@@ -4869,6 +4869,33 @@ export async function buildPasirRisCourse(
           return !coveredBy(line, x, z, y) && !onIsland(x, z, y) && !inPaving(x, z, y);
         };
         const clear = clearOn(pts);
+        // (Is the wall, a fraction t along piece kk, still beside the
+        // grass its kerb runs round? The grass is the ground no road,
+        // joint, island, gore or nose paves, less what the outline paves
+        // in rounding its points: a point is in it while a circle the
+        // size of a nose's round fits there clear of all paving, the
+        // circle reaching to the road's edge. Where a run of wall ends,
+        // it is cut back to there.)
+        // (Redrawn maps only: today's map has no rounded points, and cut
+        // back there 16 raised roads' parapets stopped short over a drop.)
+        // (A raised road's wall and a deck's edge beam and parapet alike, Q
+        // the points it is drawn along, off its offset and y its foot.)
+        const openBesideOf = (Q: XZ[], off: (kk: number) => number, y: (kk: number) => number, sgn: number) => (kk: number, t: number) => {
+          const a = Q[kk], b = Q[kk + 1];
+          const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+          const tx = (b[0] - a[0]) / tl, tz = (b[1] - a[1]) / tl;
+          const R = NOSE_R - 0.02;
+          const o = off(kk) + (off(kk + 1) - off(kk)) * t + sgn * (R + 0.02 - WALL_OUT);
+          const cx = a[0] + (b[0] - a[0]) * t + tz * o, cz = a[1] + (b[1] - a[1]) * t - tx * o;
+          const yy = y(kk) + (y(kk + 1) - y(kk)) * t;
+          const clear = (x: number, z: number) => !coveredBy(line, x, z, yy) && !inJoint(x, z, yy) && !inGore(x, z) && !inNose(x, z) && !(oneLine && onPaved(x, z, yy));
+          if (!clear(cx, cz)) return false;
+          for (let q = 0; q < 8; q++) {
+            const c = Math.cos((q * Math.PI) / 4) * R, s = Math.sin((q * Math.PI) / 4) * R;
+            if (!clear(cx + tx * c + tz * s * sgn, cz + tz * c - tx * s * sgn)) return false;
+          }
+          return true;
+        };
         // (A flyover's piece still on its bank, under LOW_DECK over the
         // ground, is traced with the ground's roads: it is drawn as a raised
         // road is, not as a deck. With its edge beams, underside and full
@@ -4941,31 +4968,7 @@ export async function buildPasirRisCourse(
                 return onPaved(x, z, yy) || coveredBy(line, x, z, yy);
               });
             };
-            // (Is the wall, a fraction t along piece kk, still beside the
-            // grass its kerb runs round? The grass is the ground no road,
-            // joint, island, gore or nose paves, less what the outline paves
-            // in rounding its points: a point is in it while a circle the
-            // size of a nose's round fits there clear of all paving, the
-            // circle reaching to the road's edge. Where a run of wall ends,
-            // it is cut back to there.)
-            // (Redrawn maps only: today's map has no rounded points, and cut
-            // back there 16 raised roads' parapets stopped short over a drop.)
-            const openBeside = (kk: number, t: number) => {
-              const a = P[kk], b = P[kk + 1];
-              const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-              const tx = (b[0] - a[0]) / tl, tz = (b[1] - a[1]) / tl;
-              const R = NOSE_R - 0.02;
-              const o = off(kk) + (off(kk + 1) - off(kk)) * t + sgn * (R + 0.02 - WALL_OUT);
-              const cx = a[0] + (b[0] - a[0]) * t + tz * o, cz = a[1] + (b[1] - a[1]) * t - tx * o;
-              const yy = y(kk) + (y(kk + 1) - y(kk)) * t;
-              const clear = (x: number, z: number) => !coveredBy(line, x, z, yy) && !inJoint(x, z, yy) && !inGore(x, z) && !inNose(x, z) && !(oneLine && onPaved(x, z, yy));
-              if (!clear(cx, cz)) return false;
-              for (let q = 0; q < 8; q++) {
-                const c = Math.cos((q * Math.PI) / 4) * R, s = Math.sin((q * Math.PI) / 4) * R;
-                if (!clear(cx + tx * c + tz * s * sgn, cz + tz * c - tx * s * sgn)) return false;
-              }
-              return true;
-            };
+            const openBeside = openBesideOf(P, off, y, sgn);
             band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !inJoint(...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)) && !wallOnPaving(kk), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), oneLine ? openBeside : undefined, sec);
             band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)) && !wallOnPaving(kk), ext(sgn), undefined, oneLine ? openBeside : undefined, sec);
           }
@@ -4987,14 +4990,22 @@ export async function buildPasirRisCourse(
             // another road's, a junction's or a pad. Where a low bridge's
             // slip road joins the road beside it, its beam ran on inside the
             // other's paving, 0.5 m in from the kerb, its top showing.)
+            // (Nor in a split's wedge or on its nose, as a raised road's wall
+            // is not: the wedge is paved across from one deck to the other.
+            // Where a deck parted from another, both its beams ran on under
+            // the wedge's paving, their tops a hairline seam in it, and each
+            // parapet stood up 30 cm past the island's rounded point.)
             const onPaving = (kk: number) => {
               if (!oneLine) return false;
               const [x, z] = besideMid(line, kk, side(sgn)(kk));
               const yy = (y(kk) + y(kk + 1)) / 2;
-              return onPaved(x, z, yy) || coveredBy(line, x, z, yy);
+              return onPaved(x, z, yy) || coveredBy(line, x, z, yy) || inGore(x, z) || inNose(x, z);
             };
-            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0, (kk) => !low(kk) && !onPaving(kk), ext(sgn), undefined, undefined, sec);
-            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, 0.95, (kk) => !low(kk) && parapetClear(line, kk, side(sgn)(kk)) && !onPaving(kk), ext(sgn), undefined, undefined, sec);
+            // (And where a run of them ends beside a nose, cut back to the
+            // ground the kerb runs round, as a raised road's wall is.)
+            const open = oneLine ? openBesideOf(pts, side(sgn), y, sgn) : undefined;
+            band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0, (kk) => !low(kk) && !onPaving(kk), ext(sgn), undefined, open, sec);
+            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, 0.95, (kk) => !low(kk) && parapetClear(line, kk, side(sgn)(kk)) && !onPaving(kk), ext(sgn), undefined, open, sec);
           }
           for (let a = k0; a < k1; ) {
             if (low(a)) {
