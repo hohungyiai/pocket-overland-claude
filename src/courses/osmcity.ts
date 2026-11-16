@@ -4422,9 +4422,26 @@ export async function buildPasirRisCourse(
             }
           }
           const base = road.pos.length / 3;
-          // (A hair under the roads either side, which cover its edges.)
-          for (const r of rows) {
-            road.pos.push(r.a[0], r.ya + 0.087, r.a[1], r.b[0], r.yb + 0.087, r.b[1]);
+          // (A hair under the roads either side, which cover its edges; and 3
+          // cm in under each, so straight from row to row it still meets a
+          // road's edge that bends between them: on Simei Street 1 a crack
+          // 6 mm wide opened at such a bend.)
+          // (Not a row whose sides are crossed over, where the two roads still
+          // overlap: there it opened a crack of its own.)
+          const lie = (q: number) => {
+            const r = rows[q], o = rows[q + 1 < rows.length ? q + 1 : q - 1];
+            if (!o) return 0;
+            const dx = (o.a[0] + o.b[0] - r.a[0] - r.b[0]) * (q + 1 < rows.length ? 1 : -1), dz = (o.a[1] + o.b[1] - r.a[1] - r.b[1]) * (q + 1 < rows.length ? 1 : -1);
+            return Math.sign((r.b[0] - r.a[0]) * dz - (r.b[1] - r.a[1]) * dx);
+          };
+          let most = 0;
+          for (let q = 0; q < rows.length; q++) most += lie(q);
+          for (let q = 0; q < rows.length; q++) {
+            const r = rows[q];
+            const w = Math.hypot(r.b[0] - r.a[0], r.b[1] - r.a[1]);
+            const tuck = w > 0.01 && most !== 0 && lie(q) === Math.sign(most);
+            const ux = tuck ? ((r.b[0] - r.a[0]) / w) * 0.03 : 0, uz = tuck ? ((r.b[1] - r.a[1]) / w) * 0.03 : 0;
+            road.pos.push(r.a[0] - ux, r.ya + 0.087, r.a[1] - uz, r.b[0] + ux, r.yb + 0.087, r.b[1] + uz);
             road.uv.push(r.a[0] / 6, r.a[1] / 6, r.b[0] / 6, r.b[1] / 6);
           }
           // Facing up: which side is which depends on the pair, and may
