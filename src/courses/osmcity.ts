@@ -2274,8 +2274,94 @@ export async function buildPasirRisCourse(
     const l = teeMouthMap!.get(line);
     return !!l && l.some((id) => inRingXZ(JPOLY[id].ring, x, z));
   };
+  /** Polygon P cut to the side of the line (x if ax 0, z if 1) = v where the coordinate is at least v (above) or at most v. */
+  const clipHalf = (P: XZ[], ax: 0 | 1, v: number, above: boolean): XZ[] => {
+    const out: XZ[] = [];
+    const inn = (p: XZ) => (above ? p[ax] >= v : p[ax] <= v);
+    for (let i = 0; i < P.length; i++) {
+      const a = P[i], b = P[(i + 1) % P.length];
+      const ia = inn(a), ib = inn(b);
+      if (ia) out.push(a);
+      if (ia !== ib) {
+        const t = (v - a[ax]) / (b[ax] - a[ax]);
+        const q: XZ = ax === 0 ? [v, a[1] + (b[1] - a[1]) * t] : [a[0] + (b[0] - a[0]) * t, v];
+        out.push(q);
+      }
+    }
+    return out;
+  };
+  /**
+   * A junction paved as its roads' own surface (closedTo): its paving as
+   * drawn, the ring cut into squares GRID_M across, each piece ear-clipped,
+   * every corner at the height worked out there; its top read off the same
+   * triangles. (Ear-clipped whole, its triangles ran tens of metres corner
+   * to corner, straight over the hills, and a kerb laid on the ground
+   * beside its edge lay up to 5 cm under it. Cut on a fixed lattice, two
+   * squares meet at the same points, so no crack between them.)
+   */
+  const GRID_M = 2;
+  const jMeshOf = new Map<number, { P: XZ[]; Y: number[]; T: number[]; cells: Map<number, number[]> } | null>();
+  const jMesh = (id: number) => {
+    let M = jMeshOf.get(id);
+    if (M !== undefined) return M;
+    M = null;
+    if (oneLine && !JPOLY[id].fill && (JPOLY[id] as { closed?: boolean }).closed) {
+      const ring = JPOLY[id].ring;
+      const P: XZ[] = [], Y: number[] = [], T: number[] = [];
+      const xs = ring.map((p) => p[0]), zs = ring.map((p) => p[1]);
+      const i0 = Math.floor(Math.min(...xs) / GRID_M), i1 = Math.floor(Math.max(...xs) / GRID_M);
+      const k0 = Math.floor(Math.min(...zs) / GRID_M), k1 = Math.floor(Math.max(...zs) / GRID_M);
+      for (let i = i0; i <= i1; i++) {
+        const strip = clipHalf(clipHalf(ring, 0, i * GRID_M, true), 0, (i + 1) * GRID_M, false);
+        if (strip.length < 3) continue;
+        for (let k = k0; k <= k1; k++) {
+          const cell = clipHalf(clipHalf(strip, 1, k * GRID_M, true), 1, (k + 1) * GRID_M, false);
+          if (cell.length < 3) continue;
+          const base = P.length;
+          for (const [x, z] of cell) {
+            P.push([x, z]);
+            Y.push(jTopOwn(id, x, z));
+          }
+          for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(cell.map(([x, z]) => new THREE.Vector2(x, z)), [])) {
+            const pa = cell[a], pb = cell[b], pc = cell[c];
+            const w = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0]);
+            if (Math.abs(w) < 1e-9) continue;
+            // (Each wound as the fan's are, facing up.)
+            T.push(...(w < 0 ? [base + a, base + b, base + c] : [base + a, base + c, base + b]));
+          }
+        }
+      }
+      const cells = new Map<number, number[]>();
+      for (let t = 0; t < T.length; t += 3) {
+        const ps = [P[T[t]], P[T[t + 1]], P[T[t + 2]]];
+        const a0 = Math.floor(Math.min(...ps.map((p) => p[0])) / 8), a1 = Math.floor(Math.max(...ps.map((p) => p[0])) / 8);
+        const b0 = Math.floor(Math.min(...ps.map((p) => p[1])) / 8), b1 = Math.floor(Math.max(...ps.map((p) => p[1])) / 8);
+        for (let ci = a0; ci <= a1; ci++) for (let ck = b0; ck <= b1; ck++) (cells.get(ci * 100003 + ck) ?? cells.set(ci * 100003 + ck, []).get(ci * 100003 + ck)!).push(t);
+      }
+      M = { P, Y, T, cells };
+    }
+    jMeshOf.set(id, M);
+    return M;
+  };
+  /** Is joint id's top read off its drawn triangles (jMesh)? Its kerb then lies on what is drawn about it, as among other pavings. */
+  const drawnJoint = (id: number) => id >= 0 && jMesh(id) !== null;
   /** The top of junction id's paving at (x, z) (before its small lift). */
   const jTop = (id: number, x: number, z: number) => {
+    const M = jMesh(id);
+    if (M) {
+      for (const t of M.cells.get(Math.floor(x / 8) * 100003 + Math.floor(z / 8)) ?? []) {
+        const [a, b, c] = [M.T[t], M.T[t + 1], M.T[t + 2]];
+        const [x1, z1] = M.P[a], [x2, z2] = M.P[b], [x3, z3] = M.P[c];
+        const det = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3);
+        if (Math.abs(det) < 1e-9) continue;
+        const l1 = ((z2 - z3) * (x - x3) + (x3 - x2) * (z - z3)) / det, l2 = ((z3 - z1) * (x - x3) + (x1 - x3) * (z - z3)) / det, l3 = 1 - l1 - l2;
+        if (l1 >= -1e-6 && l2 >= -1e-6 && l3 >= -1e-6) return l1 * M.Y[a] + l2 * M.Y[b] + l3 * M.Y[c];
+      }
+    }
+    return jTopOwn(id, x, z);
+  };
+  /** jTop, worked out at the point. */
+  const jTopOwn = (id: number, x: number, z: number) => {
     const sh = JPOLY[id];
     const tee = teeTop(id, x, z);
     if (tee !== undefined) return tee;
@@ -5332,6 +5418,8 @@ export async function buildPasirRisCourse(
     });
   /** The height of junction id's drawn paving at (x, z): its mesh, not the smooth surface it samples. */
   const paveY = (id: number, x: number, z: number) => {
+    // (Ear-clipped and read off its own triangles, not fanned: jMesh.)
+    if (drawnJoint(id)) return jTop(id, x, z);
     const sh = JPOLY[id];
     const [cx, cz] = sh.centre;
     const ring = sh.ring;
@@ -5498,7 +5586,14 @@ export async function buildPasirRisCourse(
             else if (c < -1e-6) neg++;
           }
           const T: number[] = [];
-          if (pos && neg) {
+          const M = jMesh(id);
+          if (M) {
+            for (let q = 0; q < M.P.length; q++) {
+              road.pos.push(M.P[q][0], M.Y[q] + lift, M.P[q][1]);
+              road.uv.push(M.P[q][0] / 6, M.P[q][1] / 6);
+            }
+            T.push(...M.T);
+          } else if (pos && neg) {
             for (const p of ring) {
               road.pos.push(p[0], surfY(p[0], p[1]) + lift, p[1]);
               road.uv.push(p[0] / 6, p[1] / 6);
@@ -7398,7 +7493,7 @@ export async function buildPasirRisCourse(
                 // all that is drawn there; along a road's own edge, the road.)
                 const [qx, qz] = Q[v];
                 const gNear = goresNear(qx, qz).filter((id) => { const b = goreBox(id); return qx > b[0] - 1 && qx < b[2] + 1 && qz > b[1] - 1 && qz < b[3] + 1; });
-                const busy = gNear.length > 0 || jointsNear(qx, qz).some((q) => q !== mm.joint);
+                const busy = gNear.length > 0 || jointsNear(qx, qz).some((q) => q !== mm.joint) || drawnJoint(mm.joint);
                 hK[v] = Math.max(hK[v], kerbOn(mm, Q, v, busy, gNear, hK[v])) + KERB_UP;
               }
               const j0 = at2[J0], j1 = at2[J1 + 1] - 1;
@@ -7455,7 +7550,7 @@ export async function buildPasirRisCourse(
                 if (!mm || mm.flat || hK2[v] !== hK2[v]) continue;
                 const [x, z] = Q2[v];
                 const gNear = goresNear(x, z);
-                const busy = gNear.length > 0 || jointsNear(x, z).some((q) => q !== mm.joint);
+                const busy = gNear.length > 0 || jointsNear(x, z).some((q) => q !== mm.joint) || drawnJoint(mm.joint);
                 if (!busy) {
                   const dev = hY[v] - lerp(hY[va], hY[vb], t);
                   if (dev === dev && Math.abs(dev) < 0.5) hK2[v] += dev;

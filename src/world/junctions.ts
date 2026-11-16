@@ -112,6 +112,8 @@ export interface JunctionShape {
   radius: number;
   /** A slip road's wedge (it comes away from the road it meets at a narrow angle), not a side road's bell mouth. */
   slip?: boolean;
+  /** Paved as its roads' own surface, its corners rounded (closedTo). */
+  closed?: boolean;
 }
 
 export interface JunctionOut {
@@ -258,6 +260,8 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
   let whole = true;
   // (On only for a group left unshaped because it spills: see the end.)
   let closing = false;
+  // (With it, the shaped junctions round about, which it must not pave over.)
+  let avoid: XZ[][] = [];
   const cornersOnly = (nodes: number[], stub: Uint8Array) => {
     whole = false;
     const r = shapeGroupRaw(nodes, stub);
@@ -1368,6 +1372,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     const c2 = mean(mouths.map((m) => m.q));
     let centre = c1;
     let isHull = false;
+    let closedNow = false;
     let got: ReturnType<typeof tryCentre> = null;
     for (const [c, byDir, search] of [[c1, false], [c1, true], [c2, false], [c2, true], [c1, false, true], [c2, false, true]] as [XZ, boolean, boolean?][]) {
       if (search && !seek) break;
@@ -1438,7 +1443,10 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         // spill; the ground the roads enclose beyond that stays ground.)
         let Rg = 2;
         for (const A of mouths) for (const B of mouths) if (A !== B) Rg = Math.max(Rg, R(A.line, B.line));
-        const cut = closing ? closedTo(hull, ring, segs, Rg) : null;
+        // (Not where a road among them climbs to a flyover: each keeps its
+        // own height there, and one paving across them sloped between.)
+        const rampy = mouths.some((m) => nodes.some((j) => I.ramp?.(m.line, j)));
+        const cut = closing && !rampy ? closedTo(hull, ring, segs, Rg, avoid) : null;
         if (!cut) return 'spill';
         ring.length = 0;
         ring.push(...cut.ring);
@@ -1454,6 +1462,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
           hullEnds.push({ ring: r, centre: c, radius: Math.max(...r.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1]))) });
         }
         closed = true;
+        closedNow = true;
       }
       centre = mean(hull);
       // (Eased sides curve inward: where the outline then folds as seen from
@@ -1464,7 +1473,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       isHull = !closed;
     }
     const radius = Math.max(...got.ring.map((p) => Math.hypot(p[0] - centre[0], p[1] - centre[1])));
-    return { nodes, centre, radius, ring: got.ring, kerbs: got.kerbs, corners: got.corners, mouths: got.ms, internal, hull: isHull, ...(got.ends.length ? { more: got.ends } : {}) };
+    return { nodes, centre, radius, ring: got.ring, kerbs: got.kerbs, corners: got.corners, mouths: got.ms, internal, hull: isHull, ...(closedNow ? { closed: true } : {}), ...(got.ends.length ? { more: got.ends } : {}) };
   };
 
   // Shape every group; where two shapes still overlap (two junctions on a
@@ -1680,8 +1689,11 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     built = built.map((b, g) => {
       if (b !== 'spill') return b;
       closing = true;
+      const nb = list[g].map((j) => junctions[j]);
+      avoid = built.flatMap((o) => (typeof o === 'string' || !nb.some((p) => Math.hypot(p[0] - o.centre[0], p[1] - o.centre[1]) < o.radius + 80) ? [] : [o.ring]));
       const c = shapeGroupRaw(list[g], stubOf(list[g]));
       closing = false;
+      avoid = [];
       return c;
     });
   built.forEach((b, g) => {
@@ -1705,6 +1717,7 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
       internal: b.internal,
       radius: b.radius,
       slip: b.slip,
+      ...(b.closed ? { closed: true } : {}),
     });
     for (const j of nodes) out.shapeOf[j] = id;
     if (b.tee) for (const j of nodes) out.tee[j] = 1;
@@ -1823,6 +1836,8 @@ interface Built {
   mouths: Mouth[];
   internal: number[];
   hull: boolean;
+  /** Paved as its roads' own surface, its corners rounded (closedTo). */
+  closed?: boolean;
   tee?: boolean;
   /** Openings at this joint with nothing to pave (see JX.bare). */
   bare?: number[];
@@ -1903,9 +1918,10 @@ const RHO = 0.5;
  * whose products ran past what a double holds exactly and tore the
  * joins apart.) One ring wound as `ring` is, any island inside it
  * joined on by a slit of no width (so the paving goes round it), and
- * the bits the hull cuts off from it; null where nothing is left.
+ * the bits the hull cuts off from it, less any shaped junction beside
+ * it (`avoid`); null where nothing is left.
  */
-const closedTo = (hull: XZ[], ring: XZ[], segs: { ax: number; az: number; bx: number; bz: number; h: number }[], R: number): { ring: XZ[]; extra: XZ[][] } | null => {
+const closedTo = (hull: XZ[], ring: XZ[], segs: { ax: number; az: number; bx: number; bz: number; h: number }[], R: number, avoid: XZ[][]): { ring: XZ[]; extra: XZ[][] } | null => {
   const ox = Math.round(hull.reduce((t, p) => t + p[0], 0) / hull.length);
   const oz = Math.round(hull.reduce((t, p) => t + p[1], 0) / hull.length);
   const toPath = (r: XZ[]): Path64 => {
@@ -1992,7 +2008,10 @@ const closedTo = (hull: XZ[], ring: XZ[], segs: { ax: number; az: number; bx: nu
   const kept = Clipper.Intersect(dilate(D(box, dilate(D(box, U(both)), RHO)), RHO), big, FillRule.NonZero);
   const H = new Paths64();
   H.push(toPath(hull));
-  const got = Clipper.Intersect(D(closed, kept), H, FillRule.NonZero);
+  // (Nor over a shaped junction beside it.)
+  const others = new Paths64();
+  for (const r of avoid) others.push(toPath(r));
+  const got = D(Clipper.Intersect(D(closed, kept), H, FillRule.NonZero), others);
   const outers = got.filter((p) => Clipper.area(p) > 0).sort((p, q) => Clipper.area(q) - Clipper.area(p));
   if (!outers.length) return null;
   // (Pieces besides the one: bits of its roads the hull's side cuts off
