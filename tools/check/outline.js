@@ -182,9 +182,13 @@ window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
       if (L < 0.2 || L > 1.2) return;
       const ux = (e[3] - e[0]) / L, uz = (e[5] - e[2]) / L;
       // (A cap meets a side at each end, square to it.)
+      // (One at each end: two square edges at one corner and none at the
+      // other is a kerb's side turning a corner, not its end.)
       let sides = 0;
+      let ends = 0;
       let dx = 0, dz = 0;
       for (const [x, z] of [[e[0], e[2]], [e[3], e[5]]]) {
+        const before = sides;
         for (const r of byV.get(vk(x, z)) ?? []) {
           if (r === q) continue;
           const f = E[r];
@@ -198,8 +202,9 @@ window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
             dz += far[1] - z;
           }
         }
+        if (sides > before) ends++;
       }
-      if (sides < 2) return;
+      if (ends < 2) return;
       const dl = Math.hypot(dx, dz) || 1;
       caps.push({ x: (e[0] + e[3]) / 2, z: (e[2] + e[5]) / 2, y: Math.max(e[1], e[4]), ox: -dx / dl, oz: -dz / dl, L });
     });
