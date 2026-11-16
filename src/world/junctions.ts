@@ -1,4 +1,5 @@
 import type { XZ } from '../courses/types';
+import { Clipper, FillRule, Path64, Paths64, Point64 } from 'clipper2-js';
 import { SegIndex } from './segindex';
 
 // Junction shapes. OSM marks a junction as a point where road centre lines
@@ -37,6 +38,8 @@ export interface JunctionIn {
   ramp?: (line: number, j: number) => boolean;
   /** Does an island between a slip road and its road end in a small rounded point (not square across)? */
   round?: boolean;
+  /** Is a group whose paving would spill past its roads paved as its roads' own surface, its inside corners rounded (closedTo), instead of falling back to plain pads? (Redrawn maps.) */
+  close?: boolean;
   roads: SegIndex;
 }
 
@@ -253,6 +256,8 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
 
   // (Off only to ask what the outline's corners alone would have allowed.)
   let whole = true;
+  // (On only for a group left unshaped because it spills: see the end.)
+  let closing = false;
   const cornersOnly = (nodes: number[], stub: Uint8Array) => {
     whole = false;
     const r = shapeGroupRaw(nodes, stub);
@@ -1425,14 +1430,38 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
         for (const A of mouths)
           for (const B of mouths)
             if (A !== B && gap(A.left, B.right) < gap(A.right, B.left) && onSide(A.left) && onSide(B.right) && onSide(mid(A.left, B.right))) hullEnds.push(...medianEnd(A, B));
-      if (spills(ring)) return 'spill';
+      let closed = false;
+      if (spills(ring)) {
+        // (Last of all, on the redrawn maps: the roads' own surface with
+        // its inside corners rounded, cut to the hull, wound as the ring is. It reaches no
+        // further from the roads than a corner's radius, so it cannot
+        // spill; the ground the roads enclose beyond that stays ground.)
+        let Rg = 2;
+        for (const A of mouths) for (const B of mouths) if (A !== B) Rg = Math.max(Rg, R(A.line, B.line));
+        const cut = closing ? closedTo(hull, ring, segs, Rg) : null;
+        if (!cut) return 'spill';
+        ring.length = 0;
+        ring.push(...cut.ring);
+        corners.length = 0;
+        kerbs.length = 0;
+        for (const run of between(ring, mouths)) {
+          corners.push(run);
+          kerbs.push(run);
+        }
+        hullEnds.length = 0;
+        for (const r of cut.extra) {
+          const c = mean(r);
+          hullEnds.push({ ring: r, centre: c, radius: Math.max(...r.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1]))) });
+        }
+        closed = true;
+      }
       centre = mean(hull);
       // (Eased sides curve inward: where the outline then folds as seen from
       // the middle of the hull, the paving is filled from the point that
       // sees it best instead.)
       if (sees(ring, centre) <= 1e-6) centre = seesBest(ring, centre);
       got = { ms: mouths, ring, corners, kerbs, c: centre, ends: hullEnds };
-      isHull = true;
+      isHull = !closed;
     }
     const radius = Math.max(...got.ring.map((p) => Math.hypot(p[0] - centre[0], p[1] - centre[1])));
     return { nodes, centre, radius, ring: got.ring, kerbs: got.kerbs, corners: got.corners, mouths: got.ms, internal, hull: isHull, ...(got.ends.length ? { more: got.ends } : {}) };
@@ -1643,6 +1672,18 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
     }
     list = next;
   }
+  // (On the redrawn maps, a group still left unshaped because its paving
+  // would spill past its roads is paved as their own surface instead, its
+  // inside corners rounded: not plain pads, the old fallback, which left
+  // round bulges, no corner kerbs and lines broken across it.)
+  if (I.close)
+    built = built.map((b, g) => {
+      if (b !== 'spill') return b;
+      closing = true;
+      const c = shapeGroupRaw(list[g], stubOf(list[g]));
+      closing = false;
+      return c;
+    });
   built.forEach((b, g) => {
     const nodes = list[g];
     if (typeof b === 'string') {
@@ -1836,3 +1877,182 @@ export function inRingXZ(ring: XZ[], x: number, z: number) {
   }
   return inside;
 }
+
+/** Millimetres, as Clipper works. */
+const CS = 1000;
+const signedArea = (r: XZ[]) => {
+  let a = 0;
+  for (let k = 0; k < r.length; k++) a += r[k][0] * r[(k + 1) % r.length][1] - r[(k + 1) % r.length][0] * r[k][1];
+  return a / 2;
+};
+/** Sides of the discs that round a corner: one every 15 degrees. */
+const DISC_N = 24;
+/** An island's point: its corners rounded this round, and none narrower than twice it kept. */
+const RHO = 0.5;
+/**
+ * A junction paved as its roads' own surface, with every inside corner
+ * rounded R m round, cut to its mouths' hull (not the eased ring, whose
+ * sides bow in). The roads' strips (each piece with round ends, as a
+ * strip is drawn joined at a bend) grown by R, the ground left outside
+ * that grown by R again, and what that leaves: so the roads' surface
+ * with every gap or corner narrower than 2R between them closed; then
+ * any island or median that closed over given back, its corners
+ * rounded (on Tampines Central 7 the medians were paved over). (Grown
+ * by joining discs and bands, not Clipper's offsetting, which came out
+ * ragged; and about the hull's middle, not in the map's own millimetres,
+ * whose products ran past what a double holds exactly and tore the
+ * joins apart.) One ring wound as `ring` is, any island inside it
+ * joined on by a slit of no width (so the paving goes round it), and
+ * the bits the hull cuts off from it; null where nothing is left.
+ */
+const closedTo = (hull: XZ[], ring: XZ[], segs: { ax: number; az: number; bx: number; bz: number; h: number }[], R: number): { ring: XZ[]; extra: XZ[][] } | null => {
+  const ox = Math.round(hull.reduce((t, p) => t + p[0], 0) / hull.length);
+  const oz = Math.round(hull.reduce((t, p) => t + p[1], 0) / hull.length);
+  const toPath = (r: XZ[]): Path64 => {
+    const p = new Path64();
+    for (const [x, z] of r) p.push(new Point64(Math.round((x - ox) * CS), Math.round((z - oz) * CS)));
+    if (Clipper.area(p) < 0) p.reverse();
+    return p;
+  };
+  const fromPath = (p: Path64): XZ[] => p.map((q) => [q.x / CS + ox, q.y / CS + oz]);
+  const disc = (x: number, z: number, r: number) => toPath(Array.from({ length: DISC_N }, (_, q): XZ => [x + Math.cos((q / DISC_N) * 2 * Math.PI) * r, z + Math.sin((q / DISC_N) * 2 * Math.PI) * r]));
+  const band = (ax: number, az: number, bx: number, bz: number, w: number) => {
+    const L = Math.hypot(bx - ax, bz - az) || 1;
+    const nx = (-(bz - az) / L) * w, nz = ((bx - ax) / L) * w;
+    return toPath([
+      [ax + nx, az + nz],
+      [bx + nx, bz + nz],
+      [bx - nx, bz - nz],
+      [ax - nx, az - nz],
+    ]);
+  };
+  const U = (P: Paths64) => Clipper.Union(P, undefined, FillRule.NonZero);
+  const D = (a: Paths64, b: Paths64) => Clipper.Difference(a, b, FillRule.NonZero);
+  /** paths grown by r: a band along every side and a disc at every corner joined on. */
+  const dilate = (paths: Paths64, r: number) => {
+    const P = new Paths64();
+    for (const p of paths) {
+      P.push(p);
+      const q = fromPath(p);
+      for (let k = 0; k < q.length; k++) {
+        const a = q[k], b = q[(k + 1) % q.length];
+        P.push(band(a[0], a[1], b[0], b[1], r));
+        P.push(disc(a[0], a[1], r));
+      }
+    }
+    return U(P);
+  };
+  // (Only the pieces near the hull: what lies further off than a corner's
+  // reach cannot change what is cut to it.)
+  let hx0 = Infinity, hx1 = -Infinity, hz0 = Infinity, hz1 = -Infinity;
+  for (const [x, z] of hull) (hx0 = Math.min(hx0, x)), (hx1 = Math.max(hx1, x)), (hz0 = Math.min(hz0, z)), (hz1 = Math.max(hz1, z));
+  const near = segs.filter((sg) => {
+    const m = 3 * R + sg.h;
+    return Math.max(sg.ax, sg.bx) > hx0 - m && Math.min(sg.ax, sg.bx) < hx1 + m && Math.max(sg.az, sg.bz) > hz0 - m && Math.min(sg.az, sg.bz) < hz1 + m;
+  });
+  // (The roads, and the roads grown by R: each piece a band and a disc at each end.)
+  const strips = (more: number) => {
+    const P = new Paths64();
+    for (const sg of near) {
+      const w = sg.h + more;
+      if (Math.hypot(sg.bx - sg.ax, sg.bz - sg.az) > 1e-3) P.push(band(sg.ax, sg.az, sg.bx, sg.bz, w));
+      P.push(disc(sg.ax, sg.az, w));
+      P.push(disc(sg.bx, sg.bz, w));
+    }
+    return U(P);
+  };
+  const roads = strips(0);
+  const grown = strips(R);
+  // (In a box well clear of it all.)
+  const m = 3 * R;
+  const box = new Paths64();
+  box.push(toPath([[hx0 - 2 * m, hz0 - 2 * m], [hx1 + 2 * m, hz0 - 2 * m], [hx1 + 2 * m, hz1 + 2 * m], [hx0 - 2 * m, hz1 + 2 * m]]));
+  // Closed: the ground outside the grown roads, grown by R, taken away.
+  const closed = D(box, dilate(D(box, grown), R));
+  // The ground that took, given back where it is at least 2 RHO across
+  // (an island or a median, not a corner's fillet or a sliver), its
+  // corners rounded RHO round: an island's small rounded point. Each such
+  // piece rounded together with the ground beside it, not by itself (by
+  // itself, an island's corner came back as an ear apart from the rest
+  // of it, paving between). (Near the hull only, but past it, so its
+  // sides are not rounded off there.)
+  const reach = new Paths64();
+  reach.push(toPath([[hx0 - 3, hz0 - 3], [hx1 + 3, hz0 - 3], [hx1 + 3, hz1 + 3], [hx0 - 3, hz1 + 3]]));
+  const took = Clipper.Intersect(D(closed, roads), reach, FillRule.NonZero);
+  const core = D(box, dilate(D(box, took), RHO)).map(fromPath);
+  const big = new Paths64();
+  for (const p of took) {
+    if (Clipper.area(p) <= 0) continue;
+    const r = fromPath(p);
+    if (core.some((c) => c.length && inRingXZ(r, c[0][0], c[0][1]))) big.push(p);
+  }
+  const ground = Clipper.Intersect(D(box, closed), reach, FillRule.NonZero);
+  const both = new Paths64();
+  for (const p of [...big, ...ground]) both.push(p);
+  const kept = Clipper.Intersect(dilate(D(box, dilate(D(box, U(both)), RHO)), RHO), big, FillRule.NonZero);
+  const H = new Paths64();
+  H.push(toPath(hull));
+  const got = Clipper.Intersect(D(closed, kept), H, FillRule.NonZero);
+  const outers = got.filter((p) => Clipper.area(p) > 0).sort((p, q) => Clipper.area(q) - Clipper.area(p));
+  if (!outers.length) return null;
+  // (Pieces besides the one: bits of its roads the hull's side cuts off
+  // from the rest, paved as fills of their own; specks left out.)
+  const ring1 = (p: Path64): XZ[] => {
+    const r = fromPath(p);
+    return Math.sign(signedArea(r)) !== Math.sign(signedArea(ring)) ? r.reverse() : r;
+  };
+  const extra = outers.slice(1).filter((p) => Clipper.area(p) > 0.05 * CS * CS).map(ring1);
+  let out: XZ[] = fromPath(outers[0]);
+  const holes = got.filter((p) => Clipper.area(p) < -CS * CS).map(fromPath);
+  for (const h of holes) {
+    // (Joined at the nearest two points, out to the island and back.)
+    let bi = 0, bj = 0, bd = Infinity;
+    for (let i = 0; i < out.length; i++)
+      for (let j = 0; j < h.length; j++) {
+        const d = Math.hypot(out[i][0] - h[j][0], out[i][1] - h[j][1]);
+        if (d < bd) (bd = d), (bi = i), (bj = j);
+      }
+    const loop = [...h.slice(bj), ...h.slice(0, bj), h[bj]];
+    out = [...out.slice(0, bi + 1), ...loop, out[bi], ...out.slice(bi + 1)];
+  }
+  if (Math.sign(signedArea(out)) !== Math.sign(signedArea(ring))) out.reverse();
+  return { ring: out, extra };
+};
+/** A closed junction's sides from one mouth to the next: its ring split at every mouth's corners, the mouths themselves left out. */
+const between = (ring: XZ[], mouths: Mouth[]): XZ[][] => {
+  const near = (p: XZ) => {
+    let bi = -1, bd = 0.05;
+    for (let i = 0; i < ring.length; i++) {
+      const d = Math.hypot(ring[i][0] - p[0], ring[i][1] - p[1]);
+      if (d < bd) (bd = d), (bi = i);
+    }
+    return bi;
+  };
+  // (Each mouth's side runs from its right corner to its left one, or the other way round.)
+  const across = new Set<string>();
+  const cut = new Set<number>();
+  for (const m of mouths) {
+    const a = near(m.right), b = near(m.left);
+    if (a < 0 || b < 0) continue;
+    cut.add(a);
+    cut.add(b);
+    across.add(`${a},${b}`);
+    across.add(`${b},${a}`);
+  }
+  const n = ring.length;
+  const start = [...cut][0];
+  if (start === undefined) return [[...ring, ring[0]]];
+  const runs: XZ[][] = [];
+  let run: XZ[] = [ring[start]];
+  for (let k = 1; k <= n; k++) {
+    const i = (start + k) % n, prev = (start + k - 1) % n;
+    if (across.has(`${prev},${i}`)) {
+      if (run.length > 1) runs.push(run);
+      run = [ring[i]];
+      continue;
+    }
+    run.push(ring[i]);
+  }
+  if (run.length > 1) runs.push(run);
+  return runs;
+};
