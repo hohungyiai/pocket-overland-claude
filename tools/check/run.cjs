@@ -94,12 +94,14 @@ const CHECKS = [
   ['An edge line never jumps sideways or breaks off and starts again', 'marks.js', '__checkEdgeBreaks', 0],
   ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0, { trial: 2 }],
   ['Every marking lies on the surface drawn under it, never more than 1 cm under it', 'marks.js', '__checkMarkDepth', 0],
+  ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0],
   ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
   ['A kerb runs wherever an edge line has ground beyond it', 'marks.js', '__checkKerbBeside', 0],
   // (The road's outline as drawn, outline.js: the rules from feedback 8.)
   ['No uncovered gap inside the road: no crack between pieces of its surface', 'outline.js', '__checkGaps', 0],
   ['Every kerb runs on unbroken, its whole width showing: no step, gap or fragment over 2 cm', 'outline.js', '__checkKerbLoops', 0],
   ['No wall or parapet stands more than 2 cm out past the kerb beside it', 'outline.js', '__checkUprightsInKerb', 0],
+  ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0],
 ];
 
 (async () => {

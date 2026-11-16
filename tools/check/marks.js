@@ -206,7 +206,10 @@ window.__checkKerbLines = (all = false) => {
 // its centre) lies under a road's, a deck's or a paving's drawn surface
 // within half a metre of it (a ramp's tilted foot, a pad, a nose).
 // (Redrawn maps only, as the checks above: today's map keeps its old lines.)
-window.__checkMarkDepth = (all = false, TOL = 0.01) => {
+// (With up: how far a marking stands up off the highest surface under it,
+// past TOL: drawn 2 to 2.5 cm over the road, a line taken off the wrong
+// height stood 9 cm up round every island's nose. Feedback 9, 2026-11-16.)
+window.__checkMarkDepth = (all = false, TOL = 0.01, up = false) => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
   const CELL = 2;
@@ -272,14 +275,21 @@ window.__checkMarkDepth = (all = false, TOL = 0.01) => {
     for (const [x, y, z] of pts) {
       n++;
       const h = topAt(x, z, y);
-      if (h - y > worst) (worst = h - y), (wx = x), (wz = z), (wy = y), (on = topAt.key);
+      // (Up: only where there is a surface under it at all; a line's outer
+      // edge over a kerb or the ground beyond is the kerb check's.)
+      if (up && h === -Infinity) continue;
+      const v = up ? y - h : h - y;
+      if (v > worst) (worst = v), (wx = x), (wz = z), (wy = y), (on = topAt.key);
     }
     // (More than TOL under the surface: a hair under it, or on it, still shows. The user's call, 2026-11-14.)
-    if (worst > TOL) bad.push({ x: +wx.toFixed(1), z: +wz.toFixed(1), value: +(worst - TOL).toFixed(3), what: `${t[9]} at ${wy.toFixed(2)} on ${on}` });
+    if (worst > TOL) bad.push({ x: +wx.toFixed(1), z: +wz.toFixed(1), value: +(worst - TOL).toFixed(3), what: `${t[9]} at ${wy.toFixed(2)} ${up ? 'over' : 'on'} ${on}` });
   }
   const pl = window.__finishIndex().places(bad, 4);
   return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
+
+// Every marking lies on its surface: never more than 4 cm up off it.
+window.__checkMarkFloat = (all = false) => window.__checkMarkDepth(all, 0.04, true);
 
 // Every island ends in a small rounded point: where the outline turns
 // round an island's end (half a turn within 2.5 m, round the grass), no
