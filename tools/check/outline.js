@@ -278,10 +278,11 @@ const UPRIGHTS_SEEN = [
   { a: [1789.93, 2072.64], b: [1789.93, 2072.64], r: 3 },
 ];
 // (Passed for now, the user's call on 16 Nov: open the PR and fix these
-// straight after it. Four walls 4-5 cm out and one 29 cm out on the whole
-// map, two of 3-4 cm on the trial map.)
+// straight after it. Two walls 3-5 cm out on the whole map, two of 3-4 cm
+// on the trial map. Three more, one 29 cm out, went when a deck's beam and
+// parapet were cut back at a split's nose.)
 const UPRIGHTS_FOR_NOW = [
-  [1821.23, 1622.32], [-3024.5, -1945.9], [-3507.16, 2792.19], [93.04, 2762.52], [100.36, 2763.52], [1750.15, 1827.29], [1779.1, 1797.64],
+  [-3024.5, -1945.9], [100.36, 2763.52], [1750.15, 1827.29], [1779.1, 1797.64],
 ];
 // (The one at -3024.5 runs 12 samples along: 3 m about it.)
 for (const [x, z] of UPRIGHTS_FOR_NOW) UPRIGHTS_SEEN.push({ a: [x, z], b: [x, z], r: x === -3024.5 ? 3 : 2 });
