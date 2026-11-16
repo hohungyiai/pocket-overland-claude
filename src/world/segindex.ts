@@ -77,13 +77,14 @@ export class SegIndex {
           if (Math.max(Math.abs(di), Math.abs(dj)) !== ring) continue;
           const l = this.grid.get((ci + di) * 100003 + cj + dj);
           if (!l) continue;
-          for (const s of l) {
+          for (let q = 0; q < l.length; q++) {
+            const s = l[q];
             if (this.stamp[s] === tick) continue;
             this.stamp[s] = tick;
             const li = this.segLine[s];
             if (accept && !accept(li)) continue;
-            const [ax, az] = this.pt(li, this.segIdx[s]);
-            const [bx, bz] = this.pt(li, this.segIdx[s] + 1);
+            const ax = this.pt(li, this.segIdx[s])[0], az = this.pt(li, this.segIdx[s])[1];
+            const bx = this.pt(li, this.segIdx[s] + 1)[0], bz = this.pt(li, this.segIdx[s] + 1)[1];
             const abx = bx - ax;
             const abz = bz - az;
             let u = ((x - ax) * abx + (z - az) * abz) / (abx * abx + abz * abz || 1);
@@ -120,18 +121,27 @@ export class SegIndex {
       for (let cj = j0; cj <= j1; cj++) {
         const l = this.grid.get(ci * 100003 + cj);
         if (!l) continue;
-        for (const s of l) {
+        // (Plain loops, no destructuring, no Math.hypot: asked a hundred
+        // million times while the map is built, each made garbage, and
+        // clearing it held frames up by 50 to 130 ms.)
+        for (let q = 0; q < l.length; q++) {
+          const s = l[q];
           if (this.stamp[s] === tick) continue;
           this.stamp[s] = tick;
           const li = this.segLine[s];
-          const [ax, az] = this.pt(li, this.segIdx[s]);
-          const [bx, bz] = this.pt(li, this.segIdx[s] + 1);
-          const abx = bx - ax;
-          const abz = bz - az;
+          const pts = this.lines[li];
+          const n = pts.length;
+          const i = this.segIdx[s];
+          const a = pts[((i % n) + n) % n];
+          const b = pts[(((i + 1) % n) + n) % n];
+          const ax = a[0], az = a[1];
+          const abx = b[0] - ax;
+          const abz = b[1] - az;
           let u = ((x - ax) * abx + (z - az) * abz) / (abx * abx + abz * abz || 1);
           u = u < 0 ? 0 : u > 1 ? 1 : u;
-          const d = Math.hypot(ax + abx * u - x, az + abz * u - z);
-          if (d <= maxR) f(li, this.segIdx[s], u, d);
+          const dx = ax + abx * u - x, dz = az + abz * u - z;
+          const d = Math.sqrt(dx * dx + dz * dz);
+          if (d <= maxR) f(li, i, u, d);
         }
       }
   }
@@ -139,8 +149,8 @@ export class SegIndex {
   /** +1 on the left of travel, -1 on the right. */
   private side(x: number, z: number, line: number, seg: number, u: number) {
     const pts = this.lines[line];
-    const [ax, az] = this.pt(line, seg);
-    const [bx, bz] = this.pt(line, seg + 1);
+    const ax = this.pt(line, seg)[0], az = this.pt(line, seg)[1];
+    const bx = this.pt(line, seg + 1)[0], bz = this.pt(line, seg + 1)[1];
     // Left normal of a direction (tx, tz) is (tz, -tx).
     let nx = bz - az;
     let nz = -(bx - ax);
@@ -151,19 +161,19 @@ export class SegIndex {
       const v = u <= 0 ? seg : seg + 1;
       const hasPrev = this.closed || v > 0;
       const hasNext = this.closed || v < pts.length - 1;
-      const [vx, vz] = this.pt(line, v);
+      const vx = this.pt(line, v)[0], vz = this.pt(line, v)[1];
       px = vx;
       pz = vz;
       nx = 0;
       nz = 0;
       if (hasPrev) {
-        const [qx, qz] = this.pt(line, v - 1);
+        const qx = this.pt(line, v - 1)[0], qz = this.pt(line, v - 1)[1];
         const l = Math.hypot(vx - qx, vz - qz) || 1;
         nx += (vz - qz) / l;
         nz += -(vx - qx) / l;
       }
       if (hasNext) {
-        const [qx, qz] = this.pt(line, v + 1);
+        const qx = this.pt(line, v + 1)[0], qz = this.pt(line, v + 1)[1];
         const l = Math.hypot(qx - vx, qz - vz) || 1;
         nx += (qz - vz) / l;
         nz += -(qx - vx) / l;

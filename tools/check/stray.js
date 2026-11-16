@@ -52,8 +52,10 @@ window.__checkStray = (all = false) => {
       const dx = x - cr.c[0], dz = z - cr.c[1];
       if (dx * dx + dz * dz > 400) return false;
       const along = Math.abs(dx * cr.t[0] + dz * cr.t[1]);
-      const across = Math.abs(-dx * cr.t[1] + dz * cr.t[0]);
-      return along < d.CROSS_W / 2 + 1.5 && across < cr.half + 0.5; // (and its stop line)
+      const left = -dx * cr.t[1] + dz * cr.t[0];
+      // (One zebra across a road's two ways, over the paving between them: its whole width. User's tap 2026-11-15.)
+      if (cr.span) return along < d.CROSS_W / 2 + 1.5 && left > cr.span[0] - 0.5 && left < cr.span[1] + 0.5;
+      return along < d.CROSS_W / 2 + 1.5 && Math.abs(left) < cr.half + 0.5; // (and its stop line)
     });
   /** On one of junction id's through lines (of this colour)? */
   const onThrough = (id, kind, x, z) =>

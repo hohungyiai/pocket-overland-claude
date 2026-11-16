@@ -7,7 +7,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
-const DEPS = { 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'] };
+const DEPS = { 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js', 'edges.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'], 'outline.js': ['finish.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
@@ -72,7 +72,10 @@ const CHECKS = [
   // every road, whatever rule drew it. (Known: counted on the map as it
   // stood when these checks were written.)
   ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, 148],
-  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 201],
+  // (201 to 213, the user's call on 16 Nov: thin medians on today's map
+  // now end in a rounded point and are counted in more pieces, their total
+  // length down from 444 m to 400 m.)
+  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 213],
   ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 198],
   ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 38],
   ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, 54],
@@ -90,6 +93,13 @@ const CHECKS = [
   // redrawn map replaces it.)
   ['An edge line never jumps sideways or breaks off and starts again', 'marks.js', '__checkEdgeBreaks', 0],
   ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0, { trial: 2 }],
+  ['Every marking lies on the surface drawn under it, never more than 1 cm under it', 'marks.js', '__checkMarkDepth', 0],
+  ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
+  ['A kerb runs wherever an edge line has ground beyond it', 'marks.js', '__checkKerbBeside', 0],
+  // (The road's outline as drawn, outline.js: the rules from feedback 8.)
+  ['No uncovered gap inside the road: no crack between pieces of its surface', 'outline.js', '__checkGaps', 0],
+  ['Every kerb runs on unbroken, its whole width showing: no step, gap or fragment over 2 cm', 'outline.js', '__checkKerbLoops', 0],
+  ['No wall or parapet stands more than 2 cm out past the kerb beside it', 'outline.js', '__checkUprightsInKerb', 0],
 ];
 
 (async () => {

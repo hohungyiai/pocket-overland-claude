@@ -603,11 +603,31 @@ if (steps.has('pair')) {
   // roads or more where the map had three, two of them side by side: no
   // form the builder draws well. And a joint with no paired road at all
   // is a pinch. Both are held open on the next go.
+  // And a joint drawn together into more than four ways to go (the
+  // builder's limit: a pair ending on a crossing with another dual road,
+  // whose two sides cross that road's median apart): held open too, so
+  // the crossing stays as the map has it.
+  const ways = (g) => {
+    const h = [];
+    for (const e of edges)
+      for (const end of [0, 1]) {
+        if ((end ? e.b : e.a) !== g) continue;
+        const P = end ? [...e.pts].reverse() : e.pts;
+        let s = 0, k = 1;
+        while (k < P.length - 1 && s + Math.hypot(P[k][0] - P[k - 1][0], P[k][1] - P[k - 1][1]) < 12) s += Math.hypot(P[k][0] - P[k - 1][0], P[k][1] - P[k - 1][1]), k++;
+        h.push(Math.atan2(P[k][1] - P[0][1], P[k][0] - P[0][0]));
+      }
+    if (h.length < 5) return h.length;
+    h.sort((x, y) => x - y);
+    let n = 0;
+    for (let k = 0; k < h.length; k++) if ((k ? h[k] - h[k - 1] : h[0] + 2 * Math.PI - h[h.length - 1]) > (25 * Math.PI) / 180) n++;
+    return Math.max(1, n);
+  };
   const bad = new Map();
   for (const [g, set] of groups) {
     const arms = armsAt(g);
     const twoWay = arms.filter(([e]) => e.dual);
-    if (!((arms.length >= 4 && arms.some(([e]) => side(e)) && [...set].some((j) => wasSplit.has(j))) || !twoWay.length)) continue;
+    if (!((arms.length >= 4 && arms.some(([e]) => side(e)) && [...set].some((j) => wasSplit.has(j))) || !twoWay.length || ways(g) > 4)) continue;
     // (Only the map's own joints: a cut's number is not the same joint on the next go.)
     for (const j of set) if (j < pos0.length) bad.set(j, twoWay.map(([, d]) => d));
   }
@@ -767,7 +787,7 @@ if (steps.has('roads')) {
   // How far along a slip road (from joint j) its near edge has come 1.8 m
   // clear of the road it leaves (pieces p and q): the builder paves the
   // wedge between the two as far as that, and needs the slip road to go on
-  // beyond it. Infinity where it never does within 90 m: two sides of a
+  // beyond it. Infinity where it never does within 120 m (as the builder looks): two sides of a
   // road with a divider thinner than that run on as one surface.
   const clearsAt = (sd, j, p, q) => {
     const segs = [];
@@ -783,11 +803,11 @@ if (steps.has('roads')) {
     };
     const pts = sd.a === j ? sd.pts : [...sd.pts].reverse();
     let run = 0;
-    for (let k = 0; k + 1 < pts.length && run <= 90; k++) {
+    for (let k = 0; k + 1 < pts.length && run <= 120; k++) {
       const sl = Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
       const nx = -(pts[k + 1][1] - pts[k][1]) / (sl || 1), nz = (pts[k + 1][0] - pts[k][0]) / (sl || 1);
       const hw = widthAt(sd, j) / 2;
-      for (let t = 0; t < sl; t += 1) {
+      for (let t = 0; t < sl && run + t <= 120; t += 1) {
         const u = t / (sl || 1);
         const x = pts[k][0] + (pts[k + 1][0] - pts[k][0]) * u, z = pts[k][1] + (pts[k + 1][1] - pts[k][1]) * u;
         // (Its edge nearer the road.)
@@ -803,6 +823,19 @@ if (steps.has('roads')) {
   const roomOn = (sd, j) => {
     const far = at.get(sd.a === j ? sd.b : sd.a) ?? [];
     return far.length >= 3 ? Math.max(sd.len * 0.5, sd.len - Math.max(...far.map((e) => e.w / 2)) - 4) : sd.len * 0.8;
+  };
+  /** Does side road sd fork, at its far end from j, too near the road it meets at j (as wide as w) for a bell mouth between the two? */
+  const forkIn = (sd, j, w) => {
+    const f = sd.a === j ? sd.b : sd.a;
+    const l = at.get(f) ?? [];
+    if (l.length !== 3 || sd.len > 60) return false;
+    const hs = head(sd, f, 10);
+    return l.some((e) => {
+      // (The other branch: the side road's other side, one way each.)
+      if (e === sd || !sameRoad(e, sd) || !e.one || !sd.one) return false;
+      const he = head(e, f, 10);
+      return deg(hs[0] * he[0] + hs[1] * he[1]) < 90 && clearsAt(sd, f, e, e) > sd.len - w / 2 - 3;
+    });
   };
   const sameRoad = (p, q) => (p.name ? p.name === q.name : !q.name && p.cls === q.cls);
   const deg = (c) => (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI;
@@ -892,6 +925,12 @@ if (steps.has('roads')) {
           // (And long enough to have come clear of the road: the wedge between
           // the two is paved until they are 1.8 m apart.)
           else if (slip && (sd.len < Math.min(30, (Math.max(wp, wq) / 2 + sd.w / 2 + 1.8) / Math.sin((cut * Math.PI) / 180) + 4) || widthAt(sd, j) > narrow + 0.5 || (!links && !parts && sd.w > 0.8 * narrow && cut < 20) || clearsAt(sd, j, p, q) > roomOn(sd, j) + 3)) ok = false;
+          // (A side road that forks in two a few metres from the road, its
+          // two branches still overlapping where they reach it: the junction
+          // at the fork reaches back to the road, and leaves the bell mouth
+          // no room. Measured as for a slip road: how far from the fork the
+          // side road comes clear of the other branch.)
+          else if (!slip && !opening && forkIn(sd, j, Math.max(wp, wq))) ok = false;
           // (A few metres of road: an opening in a divider, or a stub with just room for its corners. See below.)
           else if (!slip && sd.len < (opening ? 30 : 15)) sd.len < 4 ? (ok = false) : short.push({ sd, room: !opening && sd.len >= Math.max(wp, wq) + 1 });
           if (process.env.ROADS_J && Math.hypot(pos[j][0] - +process.env.ROADS_J.split(',')[0], pos[j][1] - +process.env.ROADS_J.split(',')[1]) < 3) console.error('j', pos[j].map(Math.round).join(','), 'pair', p.name ?? p.cls, q.name ?? q.cls, 'side', sd.name ?? sd.cls, { cut: Math.round(cut), slip, fast, links, parts, len: Math.round(sd.len), clears: clearsAt(sd, j, p, q), room: roomOn(sd, j), ok });
@@ -957,7 +996,8 @@ if (steps.has('roads')) {
   for (const [j, l] of at) {
     if (l.length !== 2) continue;
     const [p, q] = l;
-    if ((p.lv ?? 0) === (q.lv ?? 0) || p.cls !== q.cls || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
+    // (Not into a tunnel: the game draws no road under the ground.)
+    if ((p.lv ?? 0) === (q.lv ?? 0) || (p.lv ?? 0) < 0 || (q.lv ?? 0) < 0 || p.cls !== q.cls || !sameRoad(p, q) || (p.one ?? 0) !== (q.one ?? 0) || !!p.dual !== !!q.dual) continue;
     // (Not a bridge a few metres long over a drain: the road either side of it follows the ground.)
     if (Math.min(p.len, q.len) < 20) continue;
     const hp = head(p, j, 20), hq = head(q, j, 20);
@@ -1116,7 +1156,7 @@ const idFor = (j) => {
   }
   return idOf.get(j);
 };
-const outEdges = edges.map(({ len, len0, spans, ...e }) => {
+const outEdges = edges.flatMap(({ len, len0, spans, ...e }) => {
   const o = { ...e, a: idFor(e.a), b: idFor(e.b) };
   if (spans) {
     const all = spans.reduce((t, sp) => t + sp[0], 0);
@@ -1127,7 +1167,28 @@ const outEdges = edges.map(({ len, len0, spans, ...e }) => {
       return [f, w];
     });
   }
-  return o;
+  if (o.a !== o.b || o.pts.length < 3) return [o];
+  // A road that comes back to where it began (a turning loop, joined into
+  // one) is cut in two at its middle: a road's two ends at one joint would
+  // count as one road there, and the joint as a plain one (no junction).
+  const P = o.pts;
+  const cum = [0];
+  for (let k = 1; k < P.length; k++) cum.push(cum[k - 1] + Math.hypot(P[k][0] - P[k - 1][0], P[k][1] - P[k - 1][1]));
+  const L = cum[cum.length - 1];
+  let m = 1;
+  while (m < P.length - 2 && cum[m] < L / 2) m++;
+  const fm = cum[m] / L;
+  const mid = junctions.length;
+  junctions.push(P[m].map((v) => +(+v).toFixed(1)));
+  const A = { ...o, b: mid, pts: P.slice(0, m + 1) };
+  const B = { ...o, a: mid, pts: P.slice(m) };
+  if (o.ws) {
+    let wm = o.ws[0][1];
+    for (const [f, w] of o.ws) if (f <= fm) wm = w;
+    A.ws = o.ws.filter(([f]) => f < fm).map(([f, w]) => [+(f / fm).toFixed(4), w]);
+    B.ws = [[0, wm], ...o.ws.filter(([f]) => f > fm).map(([f, w]) => [+((f - fm) / (1 - fm)).toFixed(4), w])];
+  }
+  return [A, B];
 });
 const touches = (o) => (o.pts ? o.pts.some(near) : near([o.x, o.z]));
 const out = {
