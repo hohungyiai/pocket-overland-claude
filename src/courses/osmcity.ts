@@ -6327,6 +6327,24 @@ export async function buildPasirRisCourse(
       // (Its points' cut-back ground paved only if the ring itself is kept.)
       const cuts: Path64[] = [];
       roundTips(r, cuts);
+      // (Nor a zigzag: a piece under 30 cm turned back against the pieces
+      // either side of it, the outline stepping back and on again. Its kerb
+      // folded over itself, by a small pad off Tampines Avenue 10.)
+      for (let again = true; again && r.length > 4; ) {
+        again = false;
+        for (let q = 0; q < r.length && r.length > 4; q++) {
+          const a = r[(q - 1 + r.length) % r.length], b = r[q], c = r[(q + 1) % r.length], e = r[(q + 2) % r.length];
+          const bc = Math.hypot(c.x - b.x, c.y - b.y);
+          if (bc >= 0.3 * OUT_S || bc < 1) continue;
+          const d1 = (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y), d2 = (c.x - b.x) * (e.x - c.x) + (c.y - b.y) * (e.y - c.y);
+          const cr1 = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x), cr2 = (c.x - b.x) * (e.y - c.y) - (c.y - b.y) * (e.x - c.x);
+          if (d1 >= 0 || d2 >= 0 || Math.sign(cr1) === Math.sign(cr2)) continue;
+          r[q] = new Point64(Math.round((b.x + c.x) / 2), Math.round((b.y + c.y) / 2));
+          r.splice((q + 1) % r.length, 1);
+          again = true;
+          break;
+        }
+      }
       // (Nor a sliver, paved or not, where two pieces of paving all but
       // meet: under 0.6 m wide on average, area against length round.)
       let round = 0;
