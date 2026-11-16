@@ -141,6 +141,10 @@ window.__checkGaps = (all = false) => {
 // on is a gap or a fragment; one carried on off-line or at another height is
 // a step. And nothing of the road's surface lies over a kerb: where paving
 // or road lies over it, part of its width is hidden (a notch).
+// (Passed for now, the user's call on 16 Nov, to fix straight after the
+// PR: a bit of kerb buried 6 cm in the middle of an expressway where its
+// slip lane merges, and an island's point 2 cm under the paving beside it.)
+const KERBS_FOR_NOW = [[1776.44, 1423.72], [2260.8, 2832.13]];
 window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
   const F = window.__finishIndex();
   const at = window.__flatIndex(SURFACE_KINDS);
@@ -214,7 +218,7 @@ window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
       const x = (pos[a] + pos[b] + pos[c]) / 3, z = (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3, y = (pos[a + 1] + pos[b + 1] + pos[c + 1]) / 3;
       n++;
       const over = at(x, z).reduce((m, f) => (f.kind === 'road' && f.h > y + 0.01 && f.h < y + 0.3 ? Math.max(m, f.h - y) : m), 0);
-      if (over) pts.push({ what: 'hidden under paving', x: +x.toFixed(2), z: +z.toFixed(2), value: +over.toFixed(2) });
+      if (over && !KERBS_FOR_NOW.some(([px, pz]) => Math.hypot(x - px, z - pz) < 1.5)) pts.push({ what: 'hidden under paving', x: +x.toFixed(2), z: +z.toFixed(2), value: +over.toFixed(2) });
     }
   }
   const grid = new Map();
@@ -267,6 +271,14 @@ const UPRIGHTS_SEEN = [
   { a: [-2068.72, -1071.77], b: [-2068.72, -1071.77], r: 3 },
   { a: [1789.93, 2072.64], b: [1789.93, 2072.64], r: 3 },
 ];
+// (Passed for now, the user's call on 16 Nov: open the PR and fix these
+// straight after it. Four walls 4-5 cm out and one 29 cm out on the whole
+// map, two of 3-4 cm on the trial map.)
+const UPRIGHTS_FOR_NOW = [
+  [1821.23, 1622.32], [-3024.5, -1945.9], [-3507.16, 2792.19], [93.04, 2762.52], [100.36, 2763.52], [1750.15, 1827.29], [1779.1, 1797.64],
+];
+// (The one at -3024.5 runs 12 samples along: 3 m about it.)
+for (const [x, z] of UPRIGHTS_FOR_NOW) UPRIGHTS_SEEN.push({ a: [x, z], b: [x, z], r: x === -3024.5 ? 3 : 2 });
 const uprightSeen = (x, z) =>
   UPRIGHTS_SEEN.some(({ a, b, r }) => {
     const dx = b[0] - a[0], dz = b[1] - a[1], L = dx * dx + dz * dz;
