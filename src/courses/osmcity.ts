@@ -1041,6 +1041,9 @@ export async function buildPasirRisCourse(
   // (Held to an island's point: may run past 40% of the road; see TRIM_A.)
   const ptA = new Float32Array(edges.length);
   const ptB = new Float32Array(edges.length);
+  // (The road each is held to that point beside: see holdBase.)
+  const ptMateA = new Int32Array(edges.length).fill(-1);
+  const ptMateB = new Int32Array(edges.length).fill(-1);
   // (How much of a road held from one end is left to climb or fall in
   // before its other end: 10 m, or 4 m where that end carries straight on
   // into one road on the ground, which climbs on from there. A slip road
@@ -1121,8 +1124,8 @@ export async function buildPasirRisCourse(
           const d = toPoint();
           if (d < lim && atDeck) (mateL = d + 1), (pt = true);
           else if (d < lim) {
-            if (ia) ptA[i] = Math.max(ptA[i], d + 1);
-            else ptB[i] = Math.max(ptB[i], d + 1);
+            if (ia && d + 1 > ptA[i]) (ptA[i] = d + 1), (ptMateA[i] = o);
+            else if (!ia && d + 1 > ptB[i]) (ptB[i] = d + 1), (ptMateB[i] = o);
           }
         }
         // Two roads on the ground (or ramps) share one height where they
@@ -1453,7 +1456,7 @@ export async function buildPasirRisCourse(
     if (v !== v) {
       const j = fromA ? edges[i].a : edges[i].b;
       const [x, z] = along(i, fromA, fromA ? trimA(i) : trimB(i));
-      v = stepCache[key] = baseAt(M.junctions[j][0], M.junctions[j][1]) - baseAt(x, z);
+      v = stepCache[key] = (oneLine ? holdBase(i, fromA, fromA ? trimA(i) : trimB(i)) : baseAt(M.junctions[j][0], M.junctions[j][1])) - baseAt(x, z);
     }
     return v;
   };
@@ -1524,6 +1527,31 @@ export async function buildPasirRisCourse(
   // at the junction's one height even on a slope. (Only at a raised
   // junction: where it sits on the ground, every road follows the ground.)
   const jBase = Float64Array.from(M.junctions, ([jx, jz]) => baseAt(jx, jz));
+  // The ground a raised road held to an island's point stands on, s m from
+  // its joint j: the joint's own across its paving, then rising and falling
+  // with the hills under the middle between it and the road it is held
+  // beside, so the two are one height all the way to the point. (Held at
+  // the joint's height to a point 40 m along a hillside, a slip road came
+  // to stand 1.7 m off the ground there, and climbed that back in 6 m.)
+  const holdBase = (i: number, fromA: boolean, s: number) => {
+    const j = fromA ? edges[i].a : edges[i].b;
+    const o = fromA ? ptMateA[i] : ptMateB[i];
+    if (o < 0) return jBase[j];
+    const oa = edges[o].a === j;
+    if ((oa ? ptMateA[o] : ptMateB[o]) !== i) return jBase[j];
+    // (Its own height across the joint's paving only: held level on past it
+    // beside a road it is one surface with, as far as that road's mouth,
+    // a road on a hillside stood 1.2 m off the ground at its end.)
+    const paved = (q: number, qa: boolean) => Math.min(elevated[q] ? 0 : (qa ? JX.trimA[q] : JX.trimB[q]) || 0, ELEN[q] * 0.4);
+    const t0 = Math.max(paved(i, fromA), paved(o, oa));
+    if (s <= t0) return jBase[j];
+    const mid = (t: number) => {
+      const p = along(i, fromA, t);
+      const q = along(o, oa, t);
+      return baseAt((p[0] + q[0]) / 2, (p[1] + q[1]) / 2);
+    };
+    return jBase[j] + (mid(s) - mid(t0)) * smoothstep(t0, t0 + 6, s);
+  };
   // (groundUnder: the hills at the point roadBase was last asked about, for
   // a caller that needs both without working the hills out twice.)
   let groundUnder = 0;
@@ -1551,7 +1579,13 @@ export async function buildPasirRisCourse(
     const key = i * 2 + (fromA ? 0 : 1);
     let L = holdLen[key];
     if (!L) {
-      const room = (fromA ? trimB(i) : trimA(i)) > 0 && (jRel[fromA ? edges[i].b : edges[i].a] ?? 0) > 0.02 ? run / 2 : run;
+      // (Sharing the road between its two ends' steps: the larger takes as
+      // much of it as its part of the two, the smaller half. Half each, a
+      // road held level to two islands' points, 1.2 m to come back to the
+      // hills at one end and 7 cm at the other, fell 23% in 8 m.)
+      const back = Math.abs(stepAt(i, !fromA));
+      const share = Math.max(0.5, Math.abs(stepAt(i, fromA)) / (Math.abs(stepAt(i, fromA)) + back || 1));
+      const room = (fromA ? trimB(i) : trimA(i)) > 0 && (jRel[fromA ? edges[i].b : edges[i].a] ?? 0) > 0.02 ? run * share : run;
       L = holdLen[key] = Math.max(F, Math.min(room, (1.5 * Math.abs(stepAt(i, fromA))) / RAMP_GRADE));
     }
     return 1 - smoothstep(t, t + L, d);
@@ -1573,8 +1607,8 @@ export async function buildPasirRisCourse(
       if (tb > 0) r += (1 - smoothstep(tb, tb + F, ELEN[i] - s)) * smoothstep(0.02, 0.5, jRel[e.b]) * (jBase[e.b] - b);
       return r;
     }
-    if (ta > 0 && jRel[e.a] > 0.02) r += smoothstep(0.02, 0.5, jRel[e.a]) * (s <= ta ? jBase[e.a] - b : baseHold(i, true, s, F) * stepAt(i, true));
-    if (tb > 0 && jRel[e.b] > 0.02) r += smoothstep(0.02, 0.5, jRel[e.b]) * (ELEN[i] - s <= tb ? jBase[e.b] - b : baseHold(i, false, ELEN[i] - s, F) * stepAt(i, false));
+    if (ta > 0 && jRel[e.a] > 0.02) r += smoothstep(0.02, 0.5, jRel[e.a]) * (s <= ta ? holdBase(i, true, s) - b : baseHold(i, true, s, F) * stepAt(i, true));
+    if (tb > 0 && jRel[e.b] > 0.02) r += smoothstep(0.02, 0.5, jRel[e.b]) * (ELEN[i] - s <= tb ? holdBase(i, false, ELEN[i] - s) - b : baseHold(i, false, ELEN[i] - s, F) * stepAt(i, false));
     return r;
   };
   // Headroom. Wherever a raised road runs over a lower one:
@@ -9141,7 +9175,7 @@ export async function buildPasirRisCourse(
       halfAtE,
       halfNear,
       cutOf,
-      jointWalls, jointDeck, onTeeOf, isDeckSplit: (j: number) => deckSplits.has(j), needs, jCap, jCeil, deckEnd, sepA, sepB, ptA, ptB, thruJoint, relAlong, relOwn, stripShape, landOver, trims: (i: number) => [trimA(i), trimB(i)], mates, jE, ELEN, tiltAt, crossDrop, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
+      jointWalls, jointDeck, onTeeOf, isDeckSplit: (j: number) => deckSplits.has(j), needs, jCap, jCeil, deckEnd, sepA, sepB, ptA, ptB, thruJoint, relAlong, relOwn, stripShape, landOver, trims: (i: number) => [trimA(i), trimB(i)], stepAt, holdBase, ptMateA, ptMateB, roadBase, mates, jE, ELEN, tiltAt, crossDrop, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
       fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       stripTop, oneLine, edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads, jointsOf, drape, PCUM, pathDeck };
