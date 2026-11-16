@@ -1539,6 +1539,11 @@ export async function buildPasirRisCourse(
     if (o < 0) return jBase[j];
     const oa = edges[o].a === j;
     if ((oa ? ptMateA[o] : ptMateB[o]) !== i) return jBase[j];
+    // (Not a road held into where it lies on another from its far end: the
+    // two share one surface there, and the hills under the pair's middle
+    // stood it 17 cm off the other where the joint's height left it 14.)
+    const hold = fromA ? ptA[i] : ptB[i];
+    if (mates[i].some((m) => m.ia !== fromA && !m.pt && ELEN[i] - m.L < hold)) return jBase[j];
     // (Its own height across the joint's paving only: held level on past it
     // beside a road it is one surface with, as far as that road's mouth,
     // a road on a hillside stood 1.2 m off the ground at its end.)
