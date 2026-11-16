@@ -60,6 +60,12 @@ export interface Course {
   solidAt?(x: number, z: number): boolean;
   /** Tile streaming counters, for the debug overlay. */
   streamStats?: () => { near: number; far: number; horizon: number; pending: number; maxStepMs: number };
+  /**
+   * Trail coaching, called a few times a second with the car's state:
+   * a tip to show now (after a stall), a message to say once, and the name
+   * of the obstacle you are at. (Courses with obstacles.)
+   */
+  coach?(c: { x: number; z: number; speed: number; low: boolean; diff: boolean; stuck: number }): { tip?: string; say?: string; zone?: string } | null;
   /** Places where you can make camp (rest and save). */
   camps?: import('../camp').CampSpot[];
   sky: { background: number; fog: number; fogNear: number; fogFar: number };
