@@ -3878,7 +3878,8 @@ export async function buildPasirRisCourse(
   const GORE = 1.5;
   /** (deck: how deep the deck is where both roads are decks, 0 between raised roads on the ground, -1 between roads lying on the ground.) */
   type GoreRow = { a: XZ; b: XZ; ya: number; yb: number };
-  const gores: { ring: XZ[]; rows: GoreRow[]; deck: number; A?: number; B?: number }[] = [];
+  /** (brk: whether the piece's first and last rows end where the two roads stand apart in height, not where they part on the map: no nose there.) */
+  const gores: { ring: XZ[]; rows: GoreRow[]; deck: number; A?: number; B?: number; brk?: [boolean, boolean] }[] = [];
   /**
    * Road i's edge exactly as its strip draws it, beside its middle line's
    * point (x, z) on piece k, on the side nearer (rx, rz): straight between
@@ -4067,8 +4068,10 @@ export async function buildPasirRisCourse(
           // (Pieces: two roads may draw apart and close in again.)
           let rows: { a: XZ; b: XZ; ya: number; yb: number }[] = [];
           let last: { a: XZ; b: XZ; ya: number; yb: number } | null = null;
-          const finish = () => {
-            if (rows.length >= 2) gores.push({ ring: [...rows.map((r) => r.a), ...rows.map((r) => r.b).reverse()], rows, deck: goreDeck(A, B), A, B });
+          let brk0 = false;
+          const finish = (brk1 = false) => {
+            if (rows.length >= 2) gores.push({ ring: [...rows.map((r) => r.a), ...rows.map((r) => r.b).reverse()], rows, deck: goreDeck(A, B), A, B, brk: [brk0, brk1] });
+            if (rows.length) brk0 = false;
             rows = [];
           };
           // (Up to the far junctions, whose paving takes over.)
@@ -4089,10 +4092,16 @@ export async function buildPasirRisCourse(
             const sep = Math.hypot(pa.x - pb.x, pa.z - pb.z) - pa.h - pb.h;
             const ya = roadY(A, pa.k, pa.u, pa.s, ea[0], ea[1]);
             const yb = roadY(B, pb.k, pb.u, pb.s, eb[0], eb[1]);
-            // (Two roads at different levels part as one climbs: no gore.)
-            if (Math.abs(ya - yb) > 0.8) {
-              finish();
+            // (Two roads at different levels part as one climbs: no gore.
+            // Paved across up to 25 cm apart, as two roads side by side are;
+            // past that, each keeps its own kerb or wall, and no nose joins
+            // them: up to 0.8 m apart, the wedge sloped steeply across and a
+            // nose was made against the higher road's wall: TPE by Tampines
+            // Ave 6, the user's feedback 9.)
+            if (Math.abs(ya - yb) > 0.25) {
+              finish(rows.length > 0);
               last = null;
+              brk0 = true;
               continue;
             }
             // (The wedge starts from the last spot where the two still
@@ -4190,12 +4199,14 @@ export async function buildPasirRisCourse(
         // or that neighbour's next piece. A strip that hopped between two
         // roads would be drawn as teeth.)
         let beside = -1;
-        const finish = () => {
+        let brk0 = false;
+        const finish = (brk1 = false) => {
           // (Nothing shorter than 3 m: a scrap of paving at a junction's mouth only roughens the edge there.)
           if (rows.length >= 2 && Math.hypot(rows[0].a[0] - rows[rows.length - 1].a[0], rows[0].a[1] - rows[rows.length - 1].a[1]) >= 3 && rows.some((r) => Math.hypot(r.a[0] - r.b[0], r.a[1] - r.b[1]) > 0.2)) {
-            gores.push({ ring: [...rows.map((r) => r.a), ...rows.map((r) => r.b).reverse()], rows, deck: beside >= 0 ? goreDeck(A, beside) : -1, A, B: beside >= 0 ? beside : undefined });
+            gores.push({ ring: [...rows.map((r) => r.a), ...rows.map((r) => r.b).reverse()], rows, deck: beside >= 0 ? goreDeck(A, beside) : -1, A, B: beside >= 0 ? beside : undefined, brk: [brk0, brk1] });
             gridGore(gores.length - 1);
           }
+          if (rows.length) brk0 = false;
           rows = [];
         };
         const fine = walker(A);
@@ -4257,8 +4268,9 @@ export async function buildPasirRisCourse(
           const eb: XZ = m.gap <= 0 ? ea : (stripEdgeAt(m.B, m.seg, m.x, m.z, eb0[0], eb0[1]) ?? eb0);
           const yb = m.gap <= 0 ? ya : roadY(m.B, m.seg, m.u, m.s, eb[0], eb[1]);
           if (Math.abs(ya - yb) > 0.25) {
-            finish();
+            finish(rows.length > 0);
             paved = null;
+            brk0 = true;
             return;
           }
           const prev = rows[rows.length - 1];
@@ -4596,9 +4608,11 @@ export async function buildPasirRisCourse(
     if (out) return out;
     out = [];
     goreCapCache.set(id, out);
-    const { rows, deck } = gores[id];
+    const { rows, deck, brk } = gores[id];
     const n = rows.length;
     for (const [e, i] of [[0, 1], [n - 1, n - 2]]) {
+      // (Not where the two roads stand apart in height: see the gores.)
+      if (brk?.[e === 0 ? 0 : 1]) continue;
       const r = rows[e], q = rows[i];
       if (Math.hypot(r.a[0] - r.b[0], r.a[1] - r.b[1]) < 0.9) continue;
       const mx = (r.a[0] + r.b[0]) / 2, mz = (r.a[1] + r.b[1]) / 2;
@@ -7226,6 +7240,18 @@ export async function buildPasirRisCourse(
           if (h > y && h - y < 0.5) y = h;
         }
       }
+    // (And a wedge's paving between two roads, where it lies over the line:
+    // a wedge that stops where the two stand apart in height has no nose,
+    // and the line round the island's point there runs over its last rows.)
+    if (y === y && onTop && oneLine) {
+      const g = goreTopAt(x, z);
+      if (g === g && g > y && g - y < 0.5) y = g;
+    }
+    // (And a fill of the outline's own, where it lies over the line.)
+    if (y === y && onTop && fillTrisNow) {
+      const h = fillAt(x, z, m.lvl);
+      if (h > y && h - y < 0.5) y = h;
+    }
     return y;
   };
   // (A tile's outline is worked out over several build slices, each short:
@@ -7270,23 +7296,82 @@ export async function buildPasirRisCourse(
     if (y === y && low < y) y = Math.max(low, y - 0.1);
     return y;
   };
-  const holeFill = (road: Acc, ring: XZ[], lvl: number, inTile: (x: number, z: number) => boolean, holes: XZ[][] = []) => {
-    if (ring.length < 3) return;
-    let cx = 0, cz = 0;
-    for (const p of ring) (cx += p[0]), (cz += p[1]);
-    if (!inTile(cx / ring.length, cz / ring.length)) return;
+  /** A fill's triangles: its corners (and its holes'), each at its height as drawn. */
+  const holeFillMesh = (ring: XZ[], lvl: number, holes: XZ[][] = []) => {
     // (Its corners as triangulateShape leaves them: it drops a ring's last
     // point where it repeats its first.)
     const C = ring.map(([x, z]) => new THREE.Vector2(x, z));
     const H = holes.map((h) => h.map(([x, z]) => new THREE.Vector2(x, z)));
     const tris = THREE.ShapeUtils.triangulateShape(C, H);
-    const base = road.pos.length / 3;
-    for (const { x, y: z } of [...C, ...H.flat()]) {
+    const pts = [...C, ...H.flat()].map(({ x, y: z }) => {
       const y = fillY(x, z, lvl);
-      road.pos.push(x, (y === y ? y : Math.max(rawHeight(x, z), WL + 0.15)) + ROAD_LIFT - 0.025, z);
+      return [x, (y === y ? y : Math.max(rawHeight(x, z), WL + 0.15)) + ROAD_LIFT - 0.025, z] as [number, number, number];
+    });
+    return { pts, tris };
+  };
+  const holeFill = (road: Acc, ring: XZ[], lvl: number, inTile: (x: number, z: number) => boolean, holes: XZ[][] = []) => {
+    if (ring.length < 3) return;
+    let cx = 0, cz = 0;
+    for (const p of ring) (cx += p[0]), (cz += p[1]);
+    if (!inTile(cx / ring.length, cz / ring.length)) return;
+    const { pts, tris } = holeFillMesh(ring, lvl, holes);
+    const base = road.pos.length / 3;
+    for (const [x, y, z] of pts) {
+      road.pos.push(x, y, z);
       road.uv.push(x / 6, z / 6);
     }
     for (const [a, b, c] of tris) faceUp(road, base + a, base + b, base + c);
+  };
+  /**
+   * The fills of the tile whose lines are being laid (see yOn), their
+   * triangles as drawn, by level: an edge line round an island's point
+   * between two roads at different heights runs over a fill there, and
+   * laid on the roads' own strips it went under it.
+   */
+  type V3 = [number, number, number];
+  type FillTri = { t: [V3, V3, V3]; x0: number; z0: number; x1: number; z1: number };
+  /** A fill ring, its triangles worked out the first time a line comes over it (each costs a height at every corner). */
+  type FillRing = { r: ReturnType<typeof outlineRings>[number]; x0: number; z0: number; x1: number; z1: number; tris?: FillTri[] };
+  let fillTrisNow: FillRing[] | null = null;
+  const fillTrisOf = new Map<string, FillRing[]>();
+  const fillTrisFor = (k: string, rings: ReturnType<typeof outlineRings>) => {
+    let F = fillTrisOf.get(k);
+    if (!F) {
+      F = [];
+      for (const r of rings) {
+        if (!r.fill || r.corner.length < 3) continue;
+        const xs = r.corner.map((p) => p[0]), zs = r.corner.map((p) => p[1]);
+        F.push({ r, x0: Math.min(...xs), z0: Math.min(...zs), x1: Math.max(...xs), z1: Math.max(...zs) });
+      }
+      fillTrisOf.set(k, F);
+    }
+    return F;
+  };
+  const fillTris = (f: FillRing) => {
+    if (!f.tris) {
+      f.tris = [];
+      const { pts, tris } = holeFillMesh(f.r.corner, f.r.lvl, f.r.holes);
+      for (const [a, b, c] of tris) {
+        const t: [V3, V3, V3] = [pts[a], pts[b], pts[c]];
+        f.tris.push({ t, x0: Math.min(t[0][0], t[1][0], t[2][0]), z0: Math.min(t[0][2], t[1][2], t[2][2]), x1: Math.max(t[0][0], t[1][0], t[2][0]), z1: Math.max(t[0][2], t[1][2], t[2][2]) });
+      }
+    }
+    return f.tris;
+  };
+  /** The drawn height of a fill of level lvl at (x, z) among the tile's fills, or NaN. */
+  const fillAt = (x: number, z: number, lvl: number) => {
+    for (const g of fillTrisNow ?? []) {
+      if (g.r.lvl !== lvl || x < g.x0 || x > g.x1 || z < g.z0 || z > g.z1) continue;
+      for (const f of fillTris(g)) {
+        if (x < f.x0 || x > f.x1 || z < f.z0 || z > f.z1) continue;
+        const [[x1, y1, z1], [x2, y2, z2], [x3, y3, z3]] = f.t;
+        const det = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3);
+        if (Math.abs(det) < 1e-9) continue;
+        const l1 = ((z2 - z3) * (x - x3) + (x3 - x2) * (z - z3)) / det, l2 = ((z3 - z1) * (x - x3) + (x1 - x3) * (z - z3)) / det, l3 = 1 - l1 - l2;
+        if (l1 >= -1e-6 && l2 >= -1e-6 && l3 >= -1e-6) return l1 * y1 + l2 * y2 + l3 * y3;
+      }
+    }
+    return NaN;
   };
   const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc) => void)[]; drawAt?: number; linePart?: number[] }>();
   const OUT_PARTS = 8;
@@ -7309,6 +7394,8 @@ export async function buildPasirRisCourse(
       // (Joined in one slice, traced in the next, laid out for asking in the next.)
       let joined: ReturnType<typeof outlineUnions> | null = null;
       let traced: ReturnType<typeof outlineRings> | null = null;
+      /** (The traced fills, kept for the lines laid over them: see fillTrisNow.) */
+      let fillRings: ReturnType<typeof outlineRings> = [];
       onTile('far', k, 'outline join', () => {
         joined = outlineUnions(ix, iz);
       });
@@ -7347,6 +7434,7 @@ export async function buildPasirRisCourse(
           rings.push({ P, cum, n, drawn, corner, edge, at, samples, hole, lvl });
         }
         outWork.set(k, { rings, todo, draws: [] });
+        fillRings = (traced ?? []).filter((r) => r.fill);
         traced = null;
       });
       for (let part = 0; part < OUT_PARTS; part++)
@@ -7366,6 +7454,7 @@ export async function buildPasirRisCourse(
       onTile('far', k, 'outline lines', (_kit, acc) => {
         const w = outWork.get(k);
         if (!w) return;
+        fillTrisNow = fillTrisFor(k, fillRings);
         if (!w.linePart) {
           const load = new Array(OUT_LINES).fill(0);
           w.linePart = [];
@@ -7763,13 +7852,15 @@ export async function buildPasirRisCourse(
         onTile('far', k, 'outline draw', (_kit, acc) => {
           const w = outWork.get(k);
           if (!w) return;
+          fillTrisNow = fillTrisFor(k, fillRings);
           const kerb = acc('kerb');
           const yellow = acc('yellow');
           const t0 = performance.now();
           let q = w.drawAt ?? 0;
           while (q < w.draws.length && (part === OUT_DRAW - 1 || q === (w.drawAt ?? 0) || performance.now() - t0 < 12)) w.draws[q++](kerb, yellow);
           w.drawAt = q;
-          if (part === OUT_DRAW - 1) outWork.delete(k);
+          fillTrisNow = null;
+          if (part === OUT_DRAW - 1) outWork.delete(k), fillTrisOf.delete(k);
         });
     }
   }
