@@ -8004,6 +8004,30 @@ export async function buildPasirRisCourse(
       }
       return false;
     };
+    // (Does triangle t reach over the top of the kerb nearest it? The
+    // ground's paving under another road's island hides nothing when it
+    // lies below the kerb's top: cut there all the same, it opened a crack
+    // at the island's point, 21 cm under its kerb.)
+    const KE = kerbOuter.get(k) ?? [];
+    const KG = new Map<number, number[]>();
+    KE.forEach((e, i) => {
+      for (let gx = Math.floor((Math.min(e[0], e[3]) - 1) / G); gx <= Math.floor((Math.max(e[0], e[3]) + 1) / G); gx++)
+        for (let gz = Math.floor((Math.min(e[1], e[4]) - 1) / G); gz <= Math.floor((Math.max(e[1], e[4]) + 1) / G); gz++) (KG.get(gx * 65536 + gz) ?? KG.set(gx * 65536 + gz, []).get(gx * 65536 + gz)!).push(i);
+    });
+    const overKerb = (t: number) => {
+      const v = [idx[t], idx[t + 1], idx[t + 2]];
+      const x = (pos[v[0] * 3] + pos[v[1] * 3] + pos[v[2] * 3]) / 3, z = (pos[v[0] * 3 + 2] + pos[v[1] * 3 + 2] + pos[v[2] * 3 + 2]) / 3;
+      const top = Math.max(...v.map((i) => pos[i * 3 + 1]));
+      let best = 1, yk = NaN;
+      for (const i of KG.get(Math.floor(x / G) * 65536 + Math.floor(z / G)) ?? []) {
+        const e = KE[i];
+        const dx = e[3] - e[0], dz = e[4] - e[1], L2 = dx * dx + dz * dz;
+        const u = L2 > 1e-12 ? Math.max(0, Math.min(1, ((x - e[0]) * dx + (z - e[1]) * dz) / L2)) : 0;
+        const d = Math.hypot(x - e[0] - dx * u, z - e[1] - dz * u);
+        if (d < best) (best = d), (yk = e[2] + (e[5] - e[2]) * u);
+      }
+      return !(yk === yk) || top > yk - 0.02;
+    };
     const keep: number[] = [];
     const add: number[] = [];
     for (let t = 0; t < idx.length; t += 3) {
@@ -8023,7 +8047,7 @@ export async function buildPasirRisCourse(
             seen.add(i);
             const b = boxes[i];
             if (!(b[0] < tx1 && b[2] > tx0 && b[1] < tz1 && b[3] > tz0)) continue;
-            if (i >= nPlain && !overlaid(t)) continue;
+            if (i >= nPlain && !(overlaid(t) && overKerb(t))) continue;
             // (Copies: the library moves the points it is handed.)
             near.push(copyOf(C[i]));
           }
@@ -8100,6 +8124,8 @@ export async function buildPasirRisCourse(
    */
   const kerbOuter = new Map<string, number[][]>();
   const WALL_SNAP = 0.15;
+  /** How far a wall's piece may pass off the kerb points it skips, where it follows a kerb (m). */
+  const WALL_BOW = 0.008;
   function* wallsToKerb(k: string, deck: Acc): Generator<void, void, void> {
     const E = kerbOuter.get(k), runs = bandSheets.get(deck);
     if (!E?.length || !runs?.length) return;
@@ -8209,10 +8235,33 @@ export async function buildPasirRisCourse(
           return out;
         };
         const fw = pts(1), bw = pts(-1);
-        const mid = fw.length >= bw.length ? fw : bw;
-        if (!mid.length) continue;
-        if (!A) mid.reverse();
+        const all = fw.length >= bw.length ? fw : bw;
+        if (!all.length) continue;
+        if (!A) all.reverse();
         const ax = pos[v * 3], az = pos[v * 3 + 2], bx = pos[(v + 2) * 3], bz = pos[(v + 2) * 3 + 2];
+        // (Its pieces as long as they can be with every kerb point they pass
+        // within WALL_BOW of them: the kerb's own points crowd round a bend,
+        // and a sliver of wall a few centimetres long is no wall, to the eye
+        // or to the checks. Short only round a corner too sharp to cut.)
+        const mid: XZ[] = [];
+        const seq: XZ[] = [...all, [bx, bz]];
+        let lx = ax, lz = az;
+        for (let i = 0; i < seq.length - 1; ) {
+          let j = i;
+          for (let c = i + 1; c < seq.length; c++) {
+            const [cx, cz] = seq[c], L = Math.hypot(cx - lx, cz - lz);
+            if (L < 1e-6) break;
+            let ok = true;
+            for (let m = i; m < c && ok; m++) ok = Math.abs((seq[m][0] - lx) * (cz - lz) - (seq[m][1] - lz) * (cx - lx)) / L < WALL_BOW;
+            if (!ok) break;
+            j = c;
+          }
+          if (j === seq.length - 1) break;
+          mid.push(seq[j]);
+          (lx = seq[j][0]), (lz = seq[j][1]);
+          i = j + 1;
+        }
+        if (!mid.length) continue;
         const cum: number[] = [];
         let L = 0, px = ax, pz = az;
         for (const m of mid) (L += Math.hypot(m[0] - px, m[1] - pz)), cum.push(L), (px = m[0]), (pz = m[1]);
