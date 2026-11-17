@@ -149,6 +149,32 @@ const SPILL = 5.5; // furthest a junction's edge may reach from its roads' kerbs
 const cross = (a: XZ, b: XZ) => a[0] * b[1] - a[1] * b[0];
 /** 0 below 0, 1 above 1, easing in and out between. */
 const smooth01 = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+/**
+ * An island's side from a road's edge at P0 (leaving it along t0) to the
+ * circle of its rounded point at P3 (touched from P0, so the line P0-P3 is
+ * the circle's own way there): one smooth curve, a point every 0.3 m, its
+ * ends left out. Straight across instead, the side turned off the edge in
+ * a corner and the kerb and edge line kinked there (feedback 9, rule 3).
+ */
+export const easeSide = (Q0: XZ, t0: XZ, P3: XZ, inset = 0): XZ[] => {
+  // (From the road's drawn edge itself, inset m out from Q0 towards the
+  // point: from a line laid that far in under the road, the curve came out
+  // across the road's edge at a slant, a corner of 3-10 deg in the outline.)
+  const side = Math.sign(t0[0] * (P3[1] - Q0[1]) - t0[1] * (P3[0] - Q0[0]));
+  const P0: XZ = [Q0[0] - t0[1] * side * inset, Q0[1] + t0[0] * side * inset];
+  const L = Math.hypot(P3[0] - P0[0], P3[1] - P0[1]);
+  if (L < 0.3) return [];
+  const cx = (P3[0] - P0[0]) / L, cz = (P3[1] - P0[1]) / L;
+  // (Its handle longer at the edge's end: it leaves the edge gently.)
+  const P1: XZ = [P0[0] + t0[0] * L * 0.5, P0[1] + t0[1] * L * 0.5], P2: XZ = [P3[0] - cx * L * 0.25, P3[1] - cz * L * 0.25];
+  const m = Math.ceil(L / 0.3), out: XZ[] = inset > 0 ? [P0] : [];
+  for (let i = 1; i < m; i++) {
+    const t = i / m, u = 1 - t;
+    const a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, e = t * t * t;
+    out.push([a * P0[0] + b * P1[0] + c * P2[0] + e * P3[0], a * P0[1] + b * P1[1] + c * P2[1] + e * P3[1]]);
+  }
+  return out;
+};
 
 /** Point and segment index at distance s along a polyline (clamped). */
 function along(pts: XZ[], cum: number[], s: number): { p: XZ; seg: number } {
@@ -984,7 +1010,17 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
             if (!fwd) eMid.reverse();
             const sMid: XZ[] = [];
             for (let d = dG + 1; d < dG + L - 0.05; d += 1) sMid.push(sideIn(d));
-            let sh: XZ[] = [A0, ...eMid, aL, ...arc, bL, ...sMid.reverse(), B0];
+            // (Each side from the road's edge to the circle in one smooth
+            // curve, leaving the edge the way it runs on past aL and bL:
+            // straight across, the side turned off the edge in a corner 3-4 m
+            // before the point. Feedback 9, rule 3.)
+            const away = (p: XZ, q: XZ): XZ => {
+              const l = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1;
+              return [(p[0] - q[0]) / l, (p[1] - q[1]) / l];
+            };
+            const easeA = easeSide(aL, away(aL, eAtX(uG + s * (L + 2))), arc[0], 0.1);
+            const easeB = easeSide(bL, away(bL, sideIn(dG + L + 2)), arc[arc.length - 1], 0.1).reverse();
+            let sh: XZ[] = [A0, ...eMid, aL, ...easeA, ...arc, ...easeB, bL, ...sMid.reverse(), B0];
             if (!ccw(sh)) sh = sh.reverse();
             const kc = kernelOf(sh);
             const parts = kc ? [{ ring: sh, c: kc }] : starParts(sh) ?? [];

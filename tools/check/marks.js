@@ -353,6 +353,20 @@ window.__checkNoses = (all = false) => {
       }
       cand.sort((p, q) => p.arc - q.arc);
       const used = new Uint8Array(N);
+      // (Every point round this ring, for rule 3's: each other's rounding apart.)
+      const ringTips = [];
+      {
+        const u2 = new Uint8Array(N);
+        for (const c of cand) {
+          let free = true;
+          for (let s = 0; s <= c.s; s++) if (u2[(c.i + s) % N]) free = false;
+          if (!free) continue;
+          for (let s = 0; s <= c.s; s++) u2[(c.i + s) % N] = 1;
+          let t = 0, tp = c.i;
+          for (let s = 0; s <= c.s; s++) { t += turn[(c.i + s) % N]; if (t < Math.PI / 2) tp = (c.i + s) % N; }
+          ringTips.push(R[tp]);
+        }
+      }
       for (const c of cand) {
         let free = true;
         for (let s = 0; s <= c.s; s++) if (used[(c.i + s) % N]) free = false;
@@ -373,6 +387,32 @@ window.__checkNoses = (all = false) => {
         if (!d.outlineAt(x, z, 0.6).some((q) => q.kerb)) continue;
         n++;
         tips.push([x, z]);
+        // (Feedback 9 rule 3: nor any corner along it within 10 m of its
+        // point, either way round: the kerb runs in to the point in one
+        // smooth line. Its own rounding, within 1.2 m of the point, apart.)
+        if (window.__noseCorners) {
+          // (Rounded: no corner of its own over 30 deg.)
+          // (A point: one small round, no straight piece across it. A
+          // median's blunt end, two rounded corners with a straight between,
+          // is not one.)
+          let round = flat <= 0.35 && c.arc <= 1.6;
+          for (let s = 0; s <= c.s; s++) if (turn[(c.i + s) % N] > Math.PI / 6) round = false;
+          let worstC = 0, wx = x, wz = z, stop = 0;
+          const at = (q) => (((q % N) + N) % N);
+          for (const dir of [1, -1]) {
+            let arc = 0;
+            for (let s = 1; s < N && arc < 10; s++) {
+              const j = at(tip + dir * s), pj = R[j], pp = R[at(tip + dir * (s - 1))];
+              arc += Math.hypot(pj[0] - pp[0], pj[1] - pp[1]);
+              if (arc >= 10) break;
+              if (ringTips.some(([tx, tz]) => Math.hypot(pj[0] - tx, pj[1] - tz) < 1.2)) continue;
+              if (Math.abs(turn[j]) > Math.PI / 3) { stop = 1; break; }
+              const deg = (Math.abs(turn[j]) * 180) / Math.PI;
+              if (deg > worstC) (worstC = deg), (wx = pj[0]), (wz = pj[1]);
+            }
+          }
+          window.__noseCorners.push({ x: +wx.toFixed(1), z: +wz.toFixed(1), tip: [+x.toFixed(1), +z.toFixed(1)], deg: +worstC.toFixed(1), round, stop });
+        }
         if (flat > 0.8) pts.push({ x: +x.toFixed(1), z: +z.toFixed(1), value: +flat.toFixed(2), what: 'square end' });
         const deg = (sharp * 180) / Math.PI;
         if (deg > 120) pts.push({ x: +x.toFixed(1), z: +z.toFixed(1), value: +((deg - 120) / 60).toFixed(2), what: `corner ${deg.toFixed(0)} deg` });
@@ -530,4 +570,23 @@ window.__checkKerbBeside = (all = false) => {
   // (A stretch over a metre: three or more of its points a quarter metre apart, or more.)
   const pl = F.places(bad, 1).filter((p) => (p.points ?? 1) >= 4);
   return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
+};
+
+// Feedback 9 rule 3: an island narrows smoothly to its point. Round every
+// rounded point (as the nose check finds them: one small round, no straight
+// piece across it), no corner of the outline turns more than 4 deg within
+// 10 m of it either way round, each point's own rounding apart. (The PIE
+// nose the user saw kinked had corners of 5 and 7 deg 3-4 m before it.)
+window.__checkNoseCorners = (all = false) => {
+  window.__noseCorners = [];
+  try {
+    window.__checkNoses(true);
+  } finally {
+    var L = window.__noseCorners;
+    window.__noseCorners = null;
+  }
+  const P = L.filter((p) => p.round);
+  const bad = P.filter((p) => p.deg > 4).map((p) => ({ x: p.x, z: p.z, value: +((p.deg - 4) / 4).toFixed(2), what: `corner ${p.deg} deg, ${Math.hypot(p.x - p.tip[0], p.z - p.tip[1]).toFixed(1)} m from the point at ${p.tip}` }));
+  const pl = window.__finishIndex().places(bad, 4);
+  return { samples: P.length, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'x 4 deg' };
 };

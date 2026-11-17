@@ -6,7 +6,7 @@ import { SURFACES, type Course, type MapData, type Surface, type XZ } from './ty
 import * as D from './detail';
 import { TILE, TileStreamer, type Layer, type TileKit } from '../world/stream';
 import { SegIndex, inRing, resample, ringArea } from '../world/segindex';
-import { convexHull, inRingXZ, shapeJunctions } from '../world/junctions';
+import { convexHull, easeSide, inRingXZ, shapeJunctions } from '../world/junctions';
 import { LIMITS } from '../limits';
 import { Clipper, FillRule, Path64, Paths64, Point64 } from 'clipper2-js';
 import '../world/clipfix';
@@ -4569,12 +4569,36 @@ export async function buildPasirRisCourse(
       if (wrap(front - tA) > sweep) sweep -= 2 * Math.PI;
       // (A point every 15° at least, and every 0.3 m: no facets on a small point.)
       const N = Math.max(3, Math.ceil(Math.abs(sweep) / (Math.PI / 12)), Math.ceil((Math.abs(sweep) * R) / 0.3));
-      const nose: XZ[] = [aL];
+      const arc: XZ[] = [];
       for (let k = 0; k <= N; k++) {
         const t = tA + (sweep * k) / N;
-        nose.push([C[0] + Math.cos(t) * R, C[1] + Math.sin(t) * R]);
+        arc.push([C[0] + Math.cos(t) * R, C[1] + Math.sin(t) * R]);
       }
-      nose.push(bL);
+      // (Each side from the road's edge to the circle in one smooth curve,
+      // leaving the edge the way it runs and meeting the circle the way it
+      // goes round: straight across, the side turned off the edge in a
+      // corner 3-4 m before the point and onto the circle in another, and
+      // the edge line kinked twice each side. Feedback 9, rule 3.)
+      const ease = easeSide;
+      // (The way each edge runs at its 4 m point, towards the row.)
+      // (Along its edge as drawn, or else along its middle line: the wedge's
+      // rows ran 4 deg off a road's edge, and the curve left it in a corner.)
+      // (The way the edge runs on past the 4 m point, away from the row, as
+      // the outline follows it there: the wedge's rows, or the edge between
+      // the row and that point, ran 3-4 deg off it, and the curve left the
+      // edge in a corner.)
+      const back = (i: number | undefined, p: XZ, row: XZ, other: XZ, dd: XZ): XZ => {
+        if (i !== undefined) {
+          const sp = sAlong(i, p[0], p[1]), sg = Math.sign(sp - sAlong(i, row[0], row[1]));
+          const e = sg ? stripEdgeRun(i, sp, sp + sg * 4, other[0], other[1]) : null;
+          if (e && e.length >= 2 && Math.hypot(e[0][0] - p[0], e[0][1] - p[1]) < 0.1) {
+            const f = e[e.length - 1], t = unit(e[0][0] - f[0], e[0][1] - f[1]);
+            if (-(t[0] * dd[0] + t[1] * dd[1]) > 0.9) return t;
+          }
+        }
+        return [-dd[0], -dd[1]];
+      };
+      const nose: XZ[] = [aL, ...ease(aL, back(g.A, aL, r.a, r.b, da), arc[0], EDGE_IN), ...arc, ...ease(bL, back(g.B, bL, r.b, r.a, db), arc[arc.length - 1], EDGE_IN).reverse(), bL];
       // (Paved as one piece, its triangles found by ear clipping: from the
       // row along A's edge, round the point and back along B's.)
       const pave: XZ[] = [r.a, ...sideA, ...nose, ...[...sideB].reverse(), r.b];
