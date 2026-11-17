@@ -6724,12 +6724,25 @@ export async function buildPasirRisCourse(
     return { ix, iz, lv };
   }
   const outlineUnions = (ix: number, iz: number) => drain(outlineUnionsIn(ix, iz));
+  /**
+   * Rebuild B (the user's plan, 17 Nov): nothing paved lies outside a kerb.
+   * Each tile's paving as its pieces draw it, where the finished outline
+   * (its folds, nicks, needles and slivers tidied, its points rounded)
+   * leaves it out: cut away before the tile is drawn (cutPaving), keeping
+   * each piece's own heights. Before, the paving drawn there showed over
+   * the kerb, and the kerb was buried under it.
+   */
+  const paveCuts = new Map<string, Paths64>();
   /** The outline round tile (ix, iz), and 30 m beyond, from its pieces joined (outlineUnions). */
   /** (Traced a ring at a time, each a few slices of its own: see Job.) */
   function* outlineFinishIn({ ix, iz, lv }: ReturnType<typeof outlineUnions>) {
     const M = 30;
     const bx0 = ix * TILE - M, bz0 = iz * TILE - M, bx1 = (ix + 1) * TILE + M, bz1 = (iz + 1) * TILE + M;
     const out: { pts: XZ[]; corner: XZ[]; edge: number[]; at: number[]; hole: boolean; lvl: number; fill?: boolean; holes?: XZ[][] }[] = [];
+    // (Rebuild B: the paving as drawn that the finished outline leaves out,
+    // every level's, less what any level's outline takes in: see paveCuts.)
+    let cutAll = new Paths64();
+    let keptAll = new Paths64();
     for (const { lvl, U, U0 } of lv) {
     const kept = new Paths64();
     const tipCuts: Path64[] = [];
@@ -6877,7 +6890,16 @@ export async function buildPasirRisCourse(
     }
     for (const f of tipCuts) if (Math.abs(Clipper.area(f)) >= 1e3) fills.push({ corner: toXZ(f), holes: [] });
     for (const { corner, holes } of fills) out.push({ pts: corner, corner, edge: [], at: [], hole: true, lvl, fill: true, holes });
+    yield;
+    cutAll = Clipper.Union(cutAll, Clipper.Difference(copy(U0), copy(kept), FillRule.NonZero), FillRule.NonZero);
+    keptAll = Clipper.Union(keptAll, copy(kept), FillRule.NonZero);
     }
+    yield;
+    const cut = new Paths64();
+    for (const c of Clipper.Difference(cutAll, keptAll, FillRule.NonZero)) cut.push(c);
+    paveCuts.delete(`${ix},${iz}`);
+    paveCuts.set(`${ix},${iz}`, cut);
+    if (paveCuts.size > 300) paveCuts.delete(paveCuts.keys().next().value!);
     return out;
   }
   const outlineFinish = (u: ReturnType<typeof outlineUnions>) => drain(outlineFinishIn(u));
@@ -7684,6 +7706,189 @@ export async function buildPasirRisCourse(
       }
     }
   };
+  /** Cut a tile's paving to its finished outline: see paveCuts. */
+  const bareHoles = new Map<string, XZ[][]>();
+  const kerbSides = new Map<string, Paths64>();
+  function* cutPaving(k: string, road: Acc): Generator<void, void, void> {
+    const C0 = paveCuts.get(k);
+    const K = kerbSides.get(k);
+    if (!C0 || !C0.length || !K?.length) return;
+    // (A slice at a time: the whole tile at once held a frame up for
+    // seconds. Every step below hands back once it has run 4 ms.)
+    let slice = performance.now();
+    const busy = () => performance.now() - slice > 4;
+    const box = (c: Path64) => {
+      let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+      for (const q of c) (x0 = Math.min(x0, q.x)), (x1 = Math.max(x1, q.x)), (z0 = Math.min(z0, q.y)), (z1 = Math.max(z1, q.y));
+      return [x0, z0, x1, z1];
+    };
+    const meets = (a: number[], b: number[], pad = 0) => a[0] - pad < b[2] && a[2] + pad > b[0] && a[1] - pad < b[3] && a[3] + pad > b[1];
+    const copyOf = (c: Path64) => c.map((q) => new Point64(q.x, q.y)) as Path64;
+    const boxC0 = C0.map(box);
+    // (Only beside a kerb, within half a metre of its line: what shows over
+    // it. Where the outline runs with no kerb, at a road's end, a level's
+    // edge or a hole in a junction's paving, the paving past it shows over
+    // nothing, and cut there it opened cracks in the road. A few dozen kerb
+    // sides at a time, each band against the cuts beside it; the pieces may
+    // overlap, which the cut below takes as one.)
+    let C: Path64[] = [];
+    for (let s = 0; s < K.length; s += 48) {
+      const part = new Paths64();
+      for (const c of K.slice(s, s + 48)) part.push(copyOf(c));
+      // (Each side as a box half a metre round it: InflatePaths, rounding
+      // every end, took 34 ms a few dozen sides.)
+      const band = new Paths64();
+      for (const c of part) {
+        const [a, b] = [c[0], c[c.length - 1]];
+        const L = Math.hypot(b.x - a.x, b.y - a.y);
+        if (L < 1) continue;
+        const ux = ((b.x - a.x) / L) * 0.5 * OUT_S, uz = ((b.y - a.y) / L) * 0.5 * OUT_S;
+        const r = new Path64();
+        for (const [s1, s2] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+          const [ex, ez] = s1 < 0 ? [a.x - ux, a.y - uz] : [b.x + ux, b.y + uz];
+          r.push(new Point64(Math.round(ex - uz * s2), Math.round(ez + ux * s2)));
+        }
+        band.push(r);
+      }
+      if (!band.length) continue;
+      const bb = box(band.flat() as Path64);
+      const A = new Paths64();
+      boxC0.forEach((b, i) => {
+        if (meets(b, bb)) A.push(copyOf(C0[i]));
+      });
+      // (Nor a sliver of under 25 cm² or a needle of no width: nothing of it shows.)
+      if (A.length) for (const c of Clipper.Intersect(A, band, FillRule.NonZero)) if (Math.abs(Clipper.area(c)) >= 2500) C.push(c);
+      if (busy()) {
+        yield;
+        slice = performance.now();
+      }
+    }
+    if (!C.length) return;
+    // (Not inside a hole no kerb runs round: paving the union missed inside
+    // a junction, paved over as it is, not an island. Cut there, the road's
+    // own paving left a hole in it, grass showing through at Tampines
+    // Central 1.)
+    const bare = bareHoles.get(k);
+    if (bare?.length) {
+      const B = bare.map((r) => r.map(([x, z]) => new Point64(Math.round(x * OUT_S), Math.round(z * OUT_S))) as Path64);
+      const boxB = B.map(box);
+      const D: Path64[] = [];
+      for (const c of C) {
+        const bc = box(c);
+        const near = new Paths64();
+        boxB.forEach((b, i) => {
+          if (meets(b, bc)) near.push(copyOf(B[i]));
+        });
+        if (!near.length) D.push(c);
+        else {
+          const subj = new Paths64();
+          subj.push(c);
+          for (const d of Clipper.Difference(subj, near, FillRule.NonZero)) D.push(d);
+        }
+        if (busy()) {
+        yield;
+          slice = performance.now();
+        }
+      }
+      C = D;
+      if (!C.length) return;
+    }
+    // (Each cut in the 4 m squares its box covers, for a quick look past
+    // most of the paving.)
+    const G = 4;
+    const grid = new Map<number, number[]>();
+    const boxes = C.map((c, i) => {
+      const b = box(c).map((v) => v / OUT_S);
+      for (let gx = Math.floor(b[0] / G); gx <= Math.floor(b[2] / G); gx++)
+        for (let gz = Math.floor(b[1] / G); gz <= Math.floor(b[3] / G); gz++) {
+          const key = gx * 65536 + gz;
+          (grid.get(key) ?? grid.set(key, []).get(key)!).push(i);
+        }
+      return b;
+    });
+    const { pos, uv, idx } = road;
+    const keep: number[] = [];
+    const add: number[] = [];
+    for (let t = 0; t < idx.length; t += 3) {
+      if (busy()) {
+        yield;
+        slice = performance.now();
+      }
+      const ia = idx[t], ib = idx[t + 1], ic = idx[t + 2];
+      const ax = pos[ia * 3], az = pos[ia * 3 + 2], bx = pos[ib * 3], bz = pos[ib * 3 + 2], cx = pos[ic * 3], cz = pos[ic * 3 + 2];
+      const tx0 = Math.min(ax, bx, cx), tx1 = Math.max(ax, bx, cx), tz0 = Math.min(az, bz, cz), tz1 = Math.max(az, bz, cz);
+      const near = new Paths64();
+      const seen = new Set<number>();
+      for (let gx = Math.floor(tx0 / G); gx <= Math.floor(tx1 / G); gx++)
+        for (let gz = Math.floor(tz0 / G); gz <= Math.floor(tz1 / G); gz++)
+          for (const i of grid.get(gx * 65536 + gz) ?? []) {
+            if (seen.has(i)) continue;
+            seen.add(i);
+            const b = boxes[i];
+            // (Copies: the library moves the points it is handed.)
+            if (b[0] < tx1 && b[2] > tx0 && b[1] < tz1 && b[3] > tz0) near.push(copyOf(C[i]));
+          }
+      if (!near.length) {
+        keep.push(ia, ib, ic);
+        continue;
+      }
+      const det = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+      if (Math.abs(det) < 1e-9) continue;
+      const tri = new Path64();
+      for (const [x, z] of [[ax, az], [bx, bz], [cx, cz]]) tri.push(new Point64(Math.round(x * OUT_S), Math.round(z * OUT_S)));
+      const subj = new Paths64();
+      subj.push(tri);
+      const left = Clipper.Difference(subj, near, FillRule.NonZero);
+      // (Untouched: as it was.)
+      if (left.length === 1 && left[0].length === 3 && Math.abs(Math.abs(Clipper.area(left[0])) - Math.abs(Clipper.area(tri))) < 1) {
+        keep.push(ia, ib, ic);
+        continue;
+      }
+      // (What is left, laid on the triangle's own plane, its points back on
+      // its own corners where they are those: rounded to the millimetre, an
+      // edge it shares with the next would open a hairline crack.)
+      const V = [[ax, az, ia], [bx, bz, ib], [cx, cz, ic]] as const;
+      const pt = (q: { x: number; y: number }): XZ => {
+        for (const [x, z] of V) if (Math.abs(q.x - x * OUT_S) <= 2 && Math.abs(q.y - z * OUT_S) <= 2) return [x, z];
+        return [q.x / OUT_S, q.y / OUT_S];
+      };
+      // (The library hands back every outer ring one way round and every
+      // hole the other, whichever way the triangle ran: by its own sign, a
+      // triangle wound the other way lost all its paving.)
+      const outer = left.filter((r) => Clipper.area(r) > 0).map((r) => r.map(pt));
+      const holes = left.filter((r) => Clipper.area(r) < 0).map((r) => r.map(pt));
+      const sgn = Math.sign(det);
+      // (Whatever the cut leaves must come out of the triangulation whole:
+      // where a ring folds on itself it may not, and then the triangle is
+      // kept as it was rather than lose paving inside the road.)
+      let want = 0;
+      for (const r of left) want += Clipper.area(r);
+      const at0 = add.length, pos0 = pos.length, uv0 = uv.length;
+      let got = 0;
+      for (const o of outer) {
+        const hs = holes.filter((h) => inRingXZ(o, h[0][0], h[0][1]));
+        const all = [o, ...hs].flat();
+        const base = pos.length / 3;
+        for (const [x, z] of all) {
+          const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det, l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det, l3 = 1 - l1 - l2;
+          pos.push(x, l1 * pos[ia * 3 + 1] + l2 * pos[ib * 3 + 1] + l3 * pos[ic * 3 + 1], z);
+          uv.push(l1 * uv[ia * 2] + l2 * uv[ib * 2] + l3 * uv[ic * 2], l1 * uv[ia * 2 + 1] + l2 * uv[ib * 2 + 1] + l3 * uv[ic * 2 + 1]);
+        }
+        // (Each new triangle wound as the one it is cut from, to face the same way.)
+        for (const [p, q, r] of THREE.ShapeUtils.triangulateShape(o.map(([x, z]) => new THREE.Vector2(x, z)), hs.map((h) => h.map(([x, z]) => new THREE.Vector2(x, z))))) {
+          const P = all[p], Q = all[q], R = all[r];
+          const d = (Q[1] - R[1]) * (P[0] - R[0]) + (R[0] - Q[0]) * (P[1] - R[1]);
+          add.push(base + p, base + (d * sgn < 0 ? r : q), base + (d * sgn < 0 ? q : r));
+          got += Math.abs(d) / 2;
+        }
+      }
+      if (Math.abs(got * OUT_S * OUT_S - Math.abs(want)) > Math.max(2500, Math.abs(want) * 0.01)) {
+        add.length = at0, pos.length = pos0, uv.length = uv0;
+        keep.push(ia, ib, ic);
+      }
+    }
+    road.idx = keep.concat(add);
+  }
   const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc, lawn: Acc) => Generator<void>)[]; linePart?: number[]; segs?: Map<number, number[][]> }>();
   const OUT_PARTS = 8;
   const OUT_LINES = 12;
@@ -7749,6 +7954,7 @@ export async function buildPasirRisCourse(
           rings.push({ P, cum, n, drawn, corner, edge, at, samples, hole, lvl });
         }
         outWork.set(k, { rings, todo, draws: [] });
+        bareHoles.delete(k), kerbSides.delete(k);
         fillRings = (traced ?? []).filter((r) => r.fill);
         traced = null;
       })());
@@ -7801,6 +8007,16 @@ export async function buildPasirRisCourse(
             return lvl < 0 && lineStops(cx, cz) ? { ...m, line: false, stop: true, why: m.why + ' zebra' } : m;
           });
           const zebra = (q: number) => !!marks[q]?.stop && marks[q]!.why.endsWith(' zebra');
+          // (Where a kerb runs, for the paving cut to: see cutPaving.)
+          {
+            const ks = kerbSides.get(k) ?? kerbSides.set(k, new Paths64()).get(k)!;
+            R.forEach((a, q) => {
+              if (!marks[q]?.kerb) return;
+              const b = R[nx(q)], p = new Path64();
+              p.push(new Point64(Math.round(a[0] * OUT_S), Math.round(a[1] * OUT_S)), new Point64(Math.round(b[0] * OUT_S), Math.round(b[1] * OUT_S)));
+              ks.push(p);
+            });
+          }
           // (An island is lined all round or not at all: where any of its
           // kerb has a line, all of it does, but at a zebra.)
           // (A hole with no kerb anywhere round it is no island: paving the
@@ -7808,6 +8024,8 @@ export async function buildPasirRisCourse(
           if (hole && !marks.some((m) => m?.kerb)) {
             marks.forEach((m, q) => m && m.line && (marks[q] = { ...m, line: false, why: m.why + ' bare hole' }));
             holeFill(acc('road'), w.rings[ri].corner, lvl, inTile);
+            // (Paved over, and left as its pieces pave it: see cutPaving.)
+            (bareHoles.get(k) ?? bareHoles.set(k, []).get(k)!).push(w.rings[ri].corner);
           }
           if (hole && marks.some((m) => m?.line)) marks.forEach((m, q) => m && m.kerb && !m.line && !m.stop && (marks[q] = { ...m, line: true, why: m.why + ' island' }));
           // Round a nose (a divider's end, a gore's tip) the edge line carries
@@ -8225,6 +8443,7 @@ export async function buildPasirRisCourse(
           outWork.delete(k), fillTrisOf.delete(k);
         })(),
       );
+      onTile('far', k, 'paving cut', (_kit, acc) => cutPaving(k, acc('road')));
     }
   }
   /** (For the checks: the outline's sides within r of (x, z), and what each gets at its nearest point.) */
@@ -9920,6 +10139,7 @@ export async function buildPasirRisCourse(
       jxInfo: (i: number) => ({ internal: JX.internal[i], hidden: internalHidden[i], outlined: outlined[i], tee: JX.tee[i], shapeA: JX.shapeOf[edges[i].a], shapeB: JX.shapeOf[edges[i].b], trimA: JX.trimA[i], trimB: JX.trimB[i], half: [EP[i].map((_, k) => halfAtE(i, k))] }),
       jpolyAt: (x: number, z: number) => JPOLY.map((sh, id) => ({ id, sh })).filter(({ sh }) => inRingXZ(sh.ring, x, z)).map(({ id, sh }) => ({ id, fill: sh.fill, n: sh.ring.length, centre: sh.centre, radius: sh.radius, kerbs: sh.kerbs.length, near: jointsNear(x, z).includes(id), lvl: jLvlM(id), deck: jDeck(id) })),
       outlineFillsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ corner: g.corner, lvl: g.lvl })),
+      paveCutsOf: (k: string) => (paveCuts.get(k) ?? []).map((c) => c.map((q): XZ => [q.x / OUT_S, q.y / OUT_S])),
       outlineRingsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => !g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ hole: g.hole, corner: g.corner, lvl: g.lvl })),
       stopsAt: (x: number, z: number, y: number) => ({ paving: inPaving(x, z, y), island: onIsland(x, z), gore: inGore(x, z) }),
       whyClosed: (line: number, x: number, z: number, y: number) => ({ covered: coveredBy(line, x, z, y), island: onIsland(x, z), paving: inPaving(x, z, y), gore: inGore(x, z) }),
