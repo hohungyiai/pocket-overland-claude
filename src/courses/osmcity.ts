@@ -6447,6 +6447,143 @@ export async function buildPasirRisCourse(
    * Clipper's rings have the paving on their left, so a point of grass is
    * where the outline turns right.
    */
+  /**
+   * Feedback 9, rule 3 (rebuild B): an island narrows smoothly to its
+   * point. Round each rounded point of ring r (one small round turning
+   * 150 deg or more within 2.5 m, no straight piece across it, as the nose
+   * check finds them), every corner of the ring within 10 m of it either
+   * way that turns more than 3.5 deg (and less than 60: past that it is the
+   * next thing's corner, a mouth or another point) is eased into a curve,
+   * its turn shared out over points at most 3 deg apart. The paving the
+   * curve takes in is filled, and what it leaves out is cut (see paveCuts):
+   * the kerb, its line and the paving follow it.
+   */
+  const easeToTips = (r: Path64, merge = false) => {
+    // (Looked at the way the outline is handed on, paving on its right, as
+    // the checks look at it: which of a long round's corners is its point
+    // depends on the way round it is taken.)
+    r.reverse();
+    const fine = easeRing(r, merge);
+    r.reverse();
+    // (Its new points as worked out, before they were rounded to the
+    // millimetre: the outline's corners are drawn from these. Rounded, a
+    // curve's points 5 cm apart each turned a degree or two either way.)
+    if (fine) fineOf.set(r, fine.reverse());
+  };
+  const fineOf = new WeakMap<Path64, [number, number][]>();
+  const easeRing = (r: Path64, merge: boolean) => {
+    const N = r.length;
+    if (N < 6) return;
+    const at = (q: number) => r[((q % N) + N) % N];
+    // (Paving on the ring's right, y up: a point of grass turns left.)
+    const turn: number[] = [], len: number[] = [];
+    for (let i = 0; i < N; i++) {
+      const a = at(i - 1), b = at(i), c = at(i + 1);
+      const ux = b.x - a.x, uz = b.y - a.y, vx = c.x - b.x, vz = c.y - b.y;
+      turn.push(Math.atan2(ux * vz - uz * vx, ux * vx + uz * vz));
+      len.push(Math.hypot(vx, vz) / OUT_S);
+    }
+    const tips: number[] = [], all: number[] = [];
+    const used = new Uint8Array(N);
+    const cand: { i: number; s: number; arc: number }[] = [];
+    for (let i = 0; i < N; i++) {
+      if (turn[i] <= 0) continue;
+      let t = 0, arc = 0;
+      for (let s = 0; s < N; s++) {
+        const j = (i + s) % N;
+        t += turn[j];
+        if (t >= (150 * Math.PI) / 180) {
+          cand.push({ i, s, arc });
+          break;
+        }
+        arc += len[j];
+        if (arc > 2.5 || t < -0.2) break;
+      }
+    }
+    cand.sort((p, q) => p.arc - q.arc);
+    for (const c of cand) {
+      let free = true;
+      for (let s = 0; s <= c.s; s++) if (used[(c.i + s) % N]) free = false;
+      if (!free) continue;
+      for (let s = 0; s <= c.s; s++) used[(c.i + s) % N] = 1;
+      let t = 0, tip = c.i, flat = 0, sharp = 0;
+      for (let s = 0; s <= c.s; s++) {
+        const j = (c.i + s) % N;
+        t += turn[j];
+        if (t < Math.PI / 2) tip = j;
+        sharp = Math.max(sharp, turn[j]);
+        if (s < c.s) flat = Math.max(flat, len[j]);
+      }
+      if (flat <= 0.35 && c.arc <= 1.6 && sharp <= Math.PI / 6) tips.push(tip);
+      all.push(tip);
+    }
+    if (!tips.length) return;
+    // (Each rounding of the ring's apart, a rounded point's or not: its own.)
+    const near = (q: number) => all.some((tp) => Math.hypot(at(q).x - r[tp].x, at(q).y - r[tp].y) < 1.2 * OUT_S);
+    const ease = new Set<number>();
+    for (const tp of tips)
+      for (const dir of [1, -1]) {
+        let arc = 0;
+        for (let s = 1; s < N && arc < 10; s++) {
+          const j = (((tp + dir * s) % N) + N) % N;
+          arc += len[dir > 0 ? (j - 1 + N) % N : j];
+          if (arc >= 10) break;
+          if (near(j)) continue;
+          const a = Math.abs(turn[j]);
+          if (a > Math.PI / 3) break;
+          if (merge || a > (3.5 * Math.PI) / 180) ease.add(j);
+        }
+      }
+    if (!ease.size) return;
+    const out: (typeof r)[number][] = [];
+    // (First, of points under 40 cm apart along it, one: a corner split
+    // over two points 2 cm apart, each too close to the next for a curve
+    // between, is one corner.)
+    if (merge) {
+      for (let i = 0; i < N; i++) {
+        const l = out[out.length - 1];
+        if (ease.has(i) && l && Math.hypot(r[i].x - l.x, r[i].y - l.y) < 0.4 * OUT_S) continue;
+        out.push(r[i]);
+      }
+      if (out.length >= 6 && out.length < N) (r.length = 0), r.push(...out);
+      return;
+    }
+    const fine: [number, number][] = [];
+    for (let i = 0; i < N; i++) {
+      if (!ease.has(i)) {
+        out.push(r[i]);
+        fine.push([r[i].x, r[i].y]);
+        continue;
+      }
+      const a = at(i - 1), b = r[i], c = at(i + 1);
+      const la = Math.hypot(b.x - a.x, b.y - a.y), lc = Math.hypot(c.x - b.x, c.y - b.y);
+      // (Its curve runs at most 45% of the way along each piece where the
+      // next corner is eased too, so that one's has room, else 90%; and 3 m.)
+      const fa = ease.has((i - 1 + N) % N) ? 0.45 : 0.9, fc = ease.has((i + 1) % N) ? 0.45 : 0.9;
+      const T = Math.min(fa * la, fc * lc, 3 * OUT_S);
+      if (T < 0.02 * OUT_S) {
+        out.push(b);
+        fine.push([b.x, b.y]);
+        continue;
+      }
+      // (Its points 8 cm apart at least, or where the curve has no room for
+      // that, 5: closer, the millimetre they are rounded to turns each by a
+      // degree or two either way.)
+      const want = Math.ceil(Math.abs(turn[i]) / ((3 * Math.PI) / 180));
+      const n = Math.max(2, Math.min(want, Math.max(Math.floor((2 * T) / (0.08 * OUT_S)), Math.min(want, Math.floor((2 * T) / (0.05 * OUT_S))))));
+      const p0x = b.x + ((a.x - b.x) / la) * T, p0z = b.y + ((a.y - b.y) / la) * T;
+      const p2x = b.x + ((c.x - b.x) / lc) * T, p2z = b.y + ((c.y - b.y) / lc) * T;
+      for (let q = 0; q <= n; q++) {
+        const u = q / n;
+        const fx = (1 - u) * (1 - u) * p0x + 2 * u * (1 - u) * b.x + u * u * p2x, fz = (1 - u) * (1 - u) * p0z + 2 * u * (1 - u) * b.y + u * u * p2z;
+        out.push(new Point64(Math.round(fx), Math.round(fz)));
+        fine.push([fx, fz]);
+      }
+    }
+    r.length = 0;
+    r.push(...out);
+    return fine;
+  };
   const roundTips = (r: Path64, cuts: Path64[]) => {
     const TIP = (100 * Math.PI) / 180;
     const STEP = (15 * Math.PI) / 180;
@@ -6789,6 +6926,8 @@ export async function buildPasirRisCourse(
           break;
         }
       }
+      easeToTips(r, true);
+      easeToTips(r);
       // (Nor a sliver, paved or not, where two pieces of paving all but
       // meet: under 0.6 m wide on average, area against length round.)
       let round = 0;
@@ -6801,9 +6940,11 @@ export async function buildPasirRisCourse(
       const at: number[] = [];
       // (Clipper keeps the paving on its own left, y up: on the strip's, x
       // east and z south, that is the right. Turned round.)
+      const F = fineOf.get(r);
+      const fx = (q: number) => (F && F.length === r.length ? F[q][0] : r[q].x), fz = (q: number) => (F && F.length === r.length ? F[q][1] : r[q].y);
       for (let q = r.length - 1; q >= 0; q--) {
-        const a = r[q], b = r[(q - 1 + r.length) % r.length];
-        const ax = a.x / OUT_S, az = a.y / OUT_S, bx = b.x / OUT_S, bz = b.y / OUT_S;
+        const qb = (q - 1 + r.length) % r.length;
+        const ax = fx(q) / OUT_S, az = fz(q) / OUT_S, bx = fx(qb) / OUT_S, bz = fz(qb) / OUT_S;
         const e = corner.length;
         corner.push([ax, az]);
         const first = pts.length;

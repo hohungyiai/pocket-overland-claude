@@ -97,6 +97,7 @@ const CHECKS = [
   // (A count that may only go down: 233 when it was written, the live build 262. The user's call, 2026-11-16: fixed in the next round.)
   ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0, 233],
   ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
+  ['Every island narrows smoothly to its point: no corner of its outline turns more than 4 deg within 10 m of it', 'marks.js', '__checkNoseCorners', 0],
   ['A kerb runs wherever an edge line has ground beyond it', 'marks.js', '__checkKerbBeside', 0],
   // (The road's outline as drawn, outline.js: the rules from feedback 8.)
   ['No uncovered gap inside the road: no crack between pieces of its surface', 'outline.js', '__checkGaps', 0],
