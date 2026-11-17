@@ -7426,6 +7426,7 @@ export async function buildPasirRisCourse(
    * a pit, the road's edge face showing into it.)
    */
   const ISLE_W = 12.5, ISLE_TAPER = 6, ISLE_BANK = 1.5, KERB_OUT = 0.35;
+  const ISLE_STEP = 1;
   /** The outline's sides of each level in a tile, on a 4 m grid: [ax, az, bx, bz, lvl]. */
   const outSegs = (w: { rings: OutRing[]; segs?: Map<number, number[][]> }) => {
     if (w.segs) return w.segs;
@@ -7466,7 +7467,27 @@ export async function buildPasirRisCourse(
    * points, cum along it): mark(v) the side's mark if it is a kerb on the
    * ground there, top(v) the kerb's top.
    */
+  // (Cross-sections a metre apart at most: 4 m apart, one cut short by a
+  // path crossing the island, or lost at a bend, left the ground showing
+  // for the whole 4 m to the next.)
   const islandTop = (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) => {
+    const Pd: XZ[] = [], cd: number[] = [], md: (OutMark | null)[] = [], td: number[] = [];
+    if (v0 > 0) Pd.push(P[v0 - 1]), cd.push(cum[v0 - 1]), md.push(null), td.push(NaN);
+    const d0 = Pd.length;
+    for (let v = v0; v <= v1; v++) {
+      Pd.push(P[v]), cd.push(cum[v]), md.push(mark(v)), td.push(top(v));
+      if (v === v1) break;
+      const L = cum[v + 1] - cum[v], c = Math.ceil(L / ISLE_STEP);
+      for (let q = 1; q < c; q++) {
+        const t = q / c;
+        Pd.push([lerp(P[v][0], P[v + 1][0], t), lerp(P[v][1], P[v + 1][1], t)]), cd.push(lerp(cum[v], cum[v + 1], t)), md.push(mark(v)), td.push(lerp(top(v), top(v + 1), t));
+      }
+    }
+    const d1 = Pd.length - 1;
+    if (v1 + 1 < P.length) Pd.push(P[v1 + 1]), cd.push(cum[v1 + 1]), md.push(null), td.push(NaN);
+    islandTopIn(w, lawn, Pd, cd, d0, d1, (v) => md[v], (v) => td[v], farTop);
+  };
+  const islandTopIn = (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) => {
     const segs = outSegs(w);
     const n = v1 - v0 + 1;
     const out: XZ[] = [], half: number[] = [], mid: number[] = [], M: (OutMark | null)[] = [];
@@ -7476,7 +7497,21 @@ export async function buildPasirRisCourse(
       const { nx, nz } = section(P, v, 0, P.length - 1, undefined, true);
       // (Out of the paving: the kerb's outer side.)
       out.push([-nx, -nz]);
-      const d = mm ? outRay(segs, P[v][0], P[v][1], -nx, -nz, mm.lvl, ISLE_W) : Infinity;
+      let d = mm ? outRay(segs, P[v][0], P[v][1], -nx, -nz, mm.lvl, ISLE_W) : Infinity;
+      // (At a bend, square out from the pieces either side too: at a kerb's
+      // last point before a corner, out along the corner's bisector, the
+      // ray missed the far side, and the top, narrowed from its neighbour
+      // 4 m back, stopped a piece short, the ground showing there.)
+      if (mm && d === Infinity)
+        for (const w of [v - 1, v + 1]) {
+          if (w < 0 || w >= P.length) continue;
+          const ex = P[w][0] - P[v][0], ez = P[w][1] - P[v][1], el = Math.hypot(ex, ez);
+          if (el < 0.01) continue;
+          let px = -ez / el, pz = ex / el;
+          if (px * nx + pz * nz < 0) (px = -px), (pz = -pz);
+          if (px * nx + pz * nz < 0.5) continue;
+          d = Math.min(d, outRay(segs, P[v][0], P[v][1], -px, -pz, mm.lvl, ISLE_W));
+        }
       half.push(d / 2);
       // (Its middle as high as both sides' kerbs, the far one's from what is drawn there.)
       let m = NaN;
@@ -7499,15 +7534,18 @@ export async function buildPasirRisCourse(
     // (Nor past where its cross-section meets its neighbours': round an
     // island's point they all meet at its middle, and crossed past it the
     // top folded over itself, leaving the ground showing.)
+    const W0 = W.slice();
     for (let i = 0; i < n; i++)
-      for (let j = Math.max(0, i - 6); j <= Math.min(n - 1, i + 6); j++) {
-        if (j === i || W[i] <= 0) continue;
+      for (let j = 0; j < n; j++) {
+        if (j === i || W[i] <= 0 || Math.abs(cum[v0 + j] - cum[v0 + i]) > 24) continue;
         const [ax, az] = out[i], [bx, bz] = out[j];
         const den = ax * bz - az * bx;
         if (Math.abs(den) < 1e-6) continue;
         const rx = P[v0 + j][0] - P[v0 + i][0], rz = P[v0 + j][1] - P[v0 + i][1];
         const t = (rx * bz - rz * bx) / den, u = (rx * az - rz * ax) / den;
-        if (t > 0 && u > 0 && t < W[i]) W[i] = Math.max(t, KERB_OUT + 0.03);
+        // (Where both reach: a section far along a bend, crossing this one
+        // only long past its own island's middle, cut it to nothing.)
+        if (t > 0 && u > 0 && t < W[i] && u < W0[j]) W[i] = Math.max(t, KERB_OUT + 0.03);
       }
     const col = new THREE.Color();
     const put = (x: number, y: number, z: number) => {
@@ -7830,8 +7868,10 @@ export async function buildPasirRisCourse(
             if (j === Q.length - 1) break;
             const mm = mk(j);
             const L = qc[j + 1] - qc[j];
-            // (Only under a line, and the kerbs beside it.)
-            if (!mm || !mm.line || L < 0.75) continue;
+            // (Only under a line or a kerb: a kerb straight for 20 m beside a
+            // road laid on the ground, its strip bent between its corners, lay
+            // 1 to 2 cm under where it should stand proud.)
+            if (!mm || !(mm.line || mm.kerb) || L < 0.75) continue;
             let near = false;
             if (!mm.flat && L >= 1.5) {
               const n1 = Math.ceil(L);
@@ -7958,8 +7998,13 @@ export async function buildPasirRisCourse(
                 let h = own;
                 for (const [x, z] of at)
                   for (const o of busy && x === P[v][0] && z === P[v][1] ? [0.03, -0.15] : [0.03]) {
-                    const g = busy ? drawnTopAt(mm, x + sx * o * rm, z + sz * o * rm, gNear, true) : yOn(mm, x + sx * o * rm, z + sz * o * rm);
-                    if (g === g && (h !== h || (g > h && (own !== own || g - own < 0.5)))) h = g;
+                    // (Along a road's own edge, the road, and whatever else is
+                    // drawn under the kerb's inner edge: where another road's
+                    // strip reached under it, 14 cm higher, the kerb lay 9 cm
+                    // under that road.)
+                    const px = x + sx * o * rm, pz = z + sz * o * rm;
+                    for (const g of busy ? [drawnTopAt(mm, px, pz, gNear, true)] : [yOn(mm, px, pz), drawnTopAt(mm, px, pz, undefined, true)])
+                      if (g === g && (h !== h || (g > h && (own !== own || g - own < 0.5)))) h = g;
                   }
                 return h;
               };
@@ -7982,7 +8027,16 @@ export async function buildPasirRisCourse(
                 // left to the ground, it lay 2 cm under the road beside it.)
                 hK[v] = !mm ? NaN : mm.flat ? NaN : yOn(mm, Q[v][0], Q[v][1]);
                 if (mm && hK[v] !== hK[v]) {
-                  const y = yOn(mm, Q[v][0], Q[v][1], true);
+                  // (As drawn there, and 3 cm in, under the kerb's inner edge: the strip's crossfall.)
+                  const { nx: sx, nz: sz, mm: rm } = section(Q, v, 0, Q.length - 1, undefined, true);
+                  let y = yOn(mm, Q[v][0], Q[v][1], true);
+                  const yi = yOn(mm, Q[v][0] + sx * 0.03 * rm, Q[v][1] + sz * 0.03 * rm, true);
+                  if (yi === yi && (y !== y || (yi > y && yi - y < 0.5))) y = yi;
+                  // (And where its own road is not there, the outline made by
+                  // another beside it: whatever is drawn 3 cm in. Left to the
+                  // ground, by a road laid a few cm over it, a kerb lay under
+                  // the road's edge.)
+                  if (y !== y) y = drawnTopAt(mm, Q[v][0] + sx * 0.03 * rm, Q[v][1] + sz * 0.03 * rm, undefined, true);
                   hK[v] = (y === y ? y : Math.max(rawHeight(Q[v][0], Q[v][1]), WL + 0.15)) + KERB_UP;
                   continue;
                 }
