@@ -278,10 +278,15 @@ const UPRIGHTS_SEEN = [
   { a: [1789.93, 2072.64], b: [1789.93, 2072.64], r: 3 },
 ];
 // (Passed for now, the user's call on 16 Nov: open the PR and fix these
-// straight after it. Four walls 4-5 cm out and one 29 cm out on the whole
-// map, two of 3-4 cm on the trial map.)
+// straight after it. Two walls 3-5 cm out on the whole map, two of 3-4 cm
+// on the trial map. Three more, one 29 cm out, went when a deck's beam and
+// parapet were cut back at a split's nose.)
 const UPRIGHTS_FOR_NOW = [
-  [1821.23, 1622.32], [-3024.5, -1945.9], [-3507.16, 2792.19], [93.04, 2762.52], [100.36, 2763.52], [1750.15, 1827.29], [1779.1, 1797.64],
+  [-3024.5, -1945.9], [100.36, 2763.52], [1750.15, 1827.29], [1779.1, 1797.64],
+  // (The user's call, 17 Nov: by Upper Changi, a wall 6 cm out that was
+  // always there, seen once its kerb stood at its true height; rebuild B
+  // builds walls from the kerb.)
+  [1809.05, 1746.32],
 ];
 // (The one at -3024.5 runs 12 samples along: 3 m about it.)
 for (const [x, z] of UPRIGHTS_FOR_NOW) UPRIGHTS_SEEN.push({ a: [x, z], b: [x, z], r: x === -3024.5 ? 3 : 2 });
@@ -328,4 +333,119 @@ window.__checkUprightsInKerb = (all = false, OUT = 0.02) => {
   }
   const bad = F.places(pts, 2);
   return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm' };
+};
+
+// Feedback 9, rule 2 (2026-11-16): an island is never lower than the road
+// beside it. Along every kerb: its top stands 3 cm (2 at least) over the
+// road it overlaps at its inner edge; and where paving lies again within
+// 12 m out past it (an island between two roads, not a verge), the island's
+// top just past the kerb's outer edge is level with the kerb's top (within
+// 2 cm: between two kerbs at different heights it slopes from one to the
+// other). Kerbs on a deck or over a drop (the ground beside them above
+// their top, or more than 1 m under it) are the walls' business, not an
+// island's; nor is a path across the island, or within 40 cm (it lies on
+// the ground, and the island's top stops short of it).
+window.__checkIslandTops = (all = false) => {
+  const d = globalThis.__osm;
+  if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
+  const C = 2;
+  const S = { road: [], lawn: [], kerb: [], path: [], deck: [] };
+  const grid = { road: new Map(), lawn: new Map(), kerb: new Map(), path: new Map(), deck: new Map() };
+  const kerbs = [];
+  window.__eachMesh(['road', 'deck', 'lawn', 'kerb', 'foot', 'cycle'], (k, kind, pos, idx) => {
+    for (let q = 0; q < idx.length; q += 3) {
+      const t = [];
+      for (let c = 0; c < 3; c++) t.push(pos[idx[q + c] * 3], pos[idx[q + c] * 3 + 1], pos[idx[q + c] * 3 + 2]);
+      const det = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      if (Math.abs(det) < 1e-6) continue;
+      if (kind === 'kerb') kerbs.push(t);
+      // (A deck's own faces too, apart: a kerb with a deck's underside under it is on a deck.)
+      if (kind === 'deck') {
+        const n = S.deck.length;
+        S.deck.push(t);
+        const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
+        const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
+        if ((x1 - x0 + 1) * (z1 - z0 + 1) <= 400)
+          for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) (grid.deck.get(i * 100003 + j) ?? grid.deck.set(i * 100003 + j, []).get(i * 100003 + j)).push(n);
+      }
+      const into = kind === 'lawn' || kind === 'kerb' ? kind : kind === 'foot' || kind === 'cycle' ? 'path' : 'road';
+      const n = S[into].length;
+      S[into].push(t);
+      const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
+      const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
+      if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
+      for (let i = x0; i <= x1; i++)
+        for (let j = z0; j <= z1; j++) (grid[into].get(i * 100003 + j) ?? grid[into].set(i * 100003 + j, []).get(i * 100003 + j)).push(n);
+    }
+  });
+  /** The highest surface of a kind at (x, z) within 0.5 m of y, or -Infinity. */
+  const top = (kind, x, z, y, within = 0.5) => {
+    let best = -Infinity;
+    for (const q of grid[kind].get(Math.floor(x / C) * 100003 + Math.floor(z / C)) ?? []) {
+      const t = S[kind][q];
+      const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
+      const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
+      const l3 = 1 - l1 - l2;
+      if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
+      const h = l1 * t[1] + l2 * t[4] + l3 * t[7];
+      if (Math.abs(h - y) < within && h > best) best = h;
+    }
+    return best;
+  };
+  const bad = [];
+  let n = 0;
+  for (const t of kerbs) {
+    // (A kerb is drawn as quads across it, each two triangles: of a
+    // triangle's sides the longest is the quad's diagonal, one of the other
+    // two runs along the kerb and one across it, 0.38 m or a little more at
+    // a bend. Where both could be the one across, it is not asked.)
+    const sides = [[0, 3], [3, 6], [6, 0]].map(([a, b]) => ({ a, b, l: Math.hypot(t[b] - t[a], t[b + 2] - t[a + 2]) })).sort((p, q) => p.l - q.l);
+    const across = (e) => e.l > 0.37 && e.l < 0.6;
+    if (across(sides[0]) === across(sides[1])) continue;
+    const al = across(sides[0]) ? sides[1] : sides[0];
+    const ux = (t[al.b] - t[al.a]) / al.l, uz = (t[al.b + 2] - t[al.a + 2]) / al.l;
+    const cx = (t[0] + t[3] + t[6]) / 3, cy = (t[1] + t[4] + t[7]) / 3, cz = (t[2] + t[5] + t[8]) / 3;
+    // (The kerb is 0.38 m wide, its inner 3 cm over the road's edge.)
+    const side = [1, -1].find((s) => top('road', cx - uz * s * 0.3, cz + ux * s * 0.3, cy) > -Infinity);
+    if (side === undefined) continue;
+    const nx = -uz * side, nz = ux * side;
+    n++;
+    // (Its inner and outer edges, across from its middle.)
+    const pv = [0, 3, 6].map((a) => (t[a] - cx) * nx + (t[a + 2] - cz) * nz);
+    const pin = Math.max(...pv), pout = Math.min(...pv);
+    if (pin - pout < 0.3) continue;
+    // (Its top over the road it overlaps, in its inner 3 cm.)
+    let worst = 0, what = '';
+    {
+      const o = pin - 0.015;
+      const r = top('road', cx + nx * o, cz + nz * o, cy);
+      if (r > -Infinity && r - (cy - 0.02) > worst) (worst = r - (cy - 0.02)), (what = `road ${(r - cy).toFixed(3)} over the kerb's top`);
+    }
+    // (An island past it: paving again within 12 m out.)
+    const gx = cx + nx * (pout - 0.1), gz = cz + nz * (pout - 0.1);
+    const g = d.heightAt(gx, gz);
+    // (Not where a path crosses the island: it lies on the ground.)
+    const path = [[0, 0], [0.4, 0], [-0.4, 0], [0, 0.4], [0, -0.4]].some(([ex, ez]) => top('path', gx + ex, gz + ez, g, 1) > -Infinity);
+    if (g <= cy && g > cy - 1 && !path && top('deck', cx, cz, cy - 1.25, 1.2) === -Infinity) {
+      let island = false;
+      for (let s = 0.8; s <= 11.8 && !island; s += 0.5) island = top('road', cx - nx * s, cz - nz * s, cy, 1) > -Infinity;
+      if (island) {
+        // (Its top, or a kerb's: where two kerbs meet across a narrow island,
+        // or at a bend. Within 15 cm: round a small island's point the place
+        // just past the kerb can fall on the hairline where the tops from
+        // two sides meet.)
+        let l = -Infinity;
+        for (const [ex, ez] of [[0, 0], [0.15, 0], [-0.15, 0], [0, 0.15], [0, -0.15]]) {
+          const h = Math.max(top('lawn', gx + ex, gz + ez, cy), top('road', gx + ex, gz + ez, cy), top('kerb', gx + ex, gz + ez, cy));
+          if (h > -Infinity && (l === -Infinity || Math.abs(cy - h) < Math.abs(cy - l))) l = h;
+        }
+        const low = l === -Infinity ? cy - g : cy - l - 0.02;
+        if (low > worst) (worst = low), (what = l === -Infinity ? `island at the ground, ${(cy - g).toFixed(2)} m under the kerb's top` : `island top ${(cy - l).toFixed(3)} under the kerb's top`);
+      }
+    }
+    if (worst > 0) bad.push({ x: +cx.toFixed(1), z: +cz.toFixed(1), value: +worst.toFixed(3), what });
+  }
+  const pl = window.__finishIndex().places(bad, 4);
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
