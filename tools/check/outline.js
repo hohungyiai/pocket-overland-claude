@@ -283,6 +283,10 @@ const UPRIGHTS_SEEN = [
 // parapet were cut back at a split's nose.)
 const UPRIGHTS_FOR_NOW = [
   [-3024.5, -1945.9], [100.36, 2763.52], [1750.15, 1827.29], [1779.1, 1797.64],
+  // (The user's call, 17 Nov: by Upper Changi, a wall 6 cm out that was
+  // always there, seen once its kerb stood at its true height; rebuild B
+  // builds walls from the kerb.)
+  [1809.05, 1746.32],
 ];
 // (The one at -3024.5 runs 12 samples along: 3 m about it.)
 for (const [x, z] of UPRIGHTS_FOR_NOW) UPRIGHTS_SEEN.push({ a: [x, z], b: [x, z], r: x === -3024.5 ? 3 : 2 });

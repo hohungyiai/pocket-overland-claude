@@ -165,6 +165,11 @@ export const easeSide = (Q0: XZ, t0: XZ, P3: XZ, inset = 0): XZ[] => {
   const L = Math.hypot(P3[0] - P0[0], P3[1] - P0[1]);
   if (L < 0.3) return [];
   const cx = (P3[0] - P0[0]) / L, cz = (P3[1] - P0[1]) / L;
+  // (Straight across where the circle lies more than 40 deg off the way the
+  // edge runs: a curve leaving along the edge there swung out past the
+  // circle and back, a bulge and a wobble at the point, and where the point
+  // lay back beside the row it doubled back over the island's own side.)
+  if (t0[0] * cx + t0[1] * cz < Math.cos((40 * Math.PI) / 180)) return [];
   // (Its handle longer at the edge's end: it leaves the edge gently.)
   const P1: XZ = [P0[0] + t0[0] * L * 0.5, P0[1] + t0[1] * L * 0.5], P2: XZ = [P3[0] - cx * L * 0.25, P3[1] - cz * L * 0.25];
   const m = Math.ceil(L / 0.3), out: XZ[] = inset > 0 ? [P0] : [];
@@ -1020,10 +1025,20 @@ export function shapeJunctions(I: JunctionIn): JunctionOut {
             };
             const easeA = easeSide(aL, away(aL, eAtX(uG + s * (L + 2))), arc[0], 0.1);
             const easeB = easeSide(bL, away(bL, sideIn(dG + L + 2)), arc[arc.length - 1], 0.1).reverse();
-            let sh: XZ[] = [A0, ...eMid, aL, ...easeA, ...arc, ...easeB, bL, ...sMid.reverse(), B0];
-            if (!ccw(sh)) sh = sh.reverse();
-            const kc = kernelOf(sh);
-            const parts = kc ? [{ ring: sh, c: kc }] : starParts(sh) ?? [];
+            sMid.reverse();
+            // (Eased, or else straight across where the eased ring can't be
+            // paved: dropped, the point was left unpaved.)
+            // (Split into pieces, eased only round a point of some size: on
+            // a point 10 cm across, its sides all but along the roads' edges,
+            // the eased ring left a 12 cm crack between its pieces at
+            // -2772.9,2246.5, where the straight one split cleanly.)
+            const ringOf = (ea: XZ[], eb: XZ[], split: boolean) => {
+              let sh: XZ[] = [A0, ...eMid, aL, ...ea, ...arc, ...eb, bL, ...sMid, B0];
+              if (!ccw(sh)) sh = sh.reverse();
+              const kc = kernelOf(sh);
+              return kc ? [{ ring: sh, c: kc }] : split ? starParts(sh) : null;
+            };
+            const parts = ringOf(easeA, easeB, false) ?? ringOf([], [], false) ?? (Rn >= 0.25 ? ringOf(easeA, easeB, true) : null) ?? ringOf([], [], true) ?? [];
             for (const q of parts) more = [...(more ?? []), { ring: q.ring, centre: q.c, radius: Math.max(...q.ring.map((p) => Math.hypot(p[0] - q.c[0], p[1] - q.c[1]))) }];
           }
         }
