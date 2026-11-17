@@ -6741,8 +6741,7 @@ export async function buildPasirRisCourse(
     const out: { pts: XZ[]; corner: XZ[]; edge: number[]; at: number[]; hole: boolean; lvl: number; fill?: boolean; holes?: XZ[][] }[] = [];
     // (Rebuild B: the paving as drawn that the finished outline leaves out,
     // every level's, less what any level's outline takes in: see paveCuts.)
-    let cutAll = new Paths64();
-    let keptAll = new Paths64();
+    const cutLv: Paths64[] = [], keptLv: Paths64[] = [];
     for (const { lvl, U, U0 } of lv) {
     const kept = new Paths64();
     const tipCuts: Path64[] = [];
@@ -6891,12 +6890,24 @@ export async function buildPasirRisCourse(
     for (const f of tipCuts) if (Math.abs(Clipper.area(f)) >= 1e3) fills.push({ corner: toXZ(f), holes: [] });
     for (const { corner, holes } of fills) out.push({ pts: corner, corner, edge: [], at: [], hole: true, lvl, fill: true, holes });
     yield;
-    cutAll = Clipper.Union(cutAll, Clipper.Difference(copy(U0), copy(kept), FillRule.NonZero), FillRule.NonZero);
-    keptAll = Clipper.Union(keptAll, copy(kept), FillRule.NonZero);
+    cutLv.push(Clipper.Difference(copy(U0), copy(kept), FillRule.NonZero));
+    keptLv.push(copy(kept));
     }
-    yield;
+    // (Less what any other level's outline takes in, a level at a time,
+    // each a slice of its own: all joined in one, a busy tile's outline
+    // held a frame up for 122 ms.)
     const cut = new Paths64();
-    for (const c of Clipper.Difference(cutAll, keptAll, FillRule.NonZero)) cut.push(c);
+    for (let a = 0; a < cutLv.length; a++) {
+      let c = cutLv[a];
+      for (let b = 0; b < keptLv.length && c.length; b++) {
+        if (b === a) continue;
+        yield;
+        const kb = new Paths64();
+        for (const r of keptLv[b]) kb.push(r.map((q) => new Point64(q.x, q.y)) as Path64);
+        c = Clipper.Difference(c, kb, FillRule.NonZero);
+      }
+      for (const q of c) cut.push(q);
+    }
     paveCuts.delete(`${ix},${iz}`);
     paveCuts.set(`${ix},${iz}`, cut);
     if (paveCuts.size > 300) paveCuts.delete(paveCuts.keys().next().value!);
@@ -7889,6 +7900,171 @@ export async function buildPasirRisCourse(
     }
     road.idx = keep.concat(add);
   }
+  /**
+   * Rebuild B: every wall, edge beam and parapet stands at its kerb's
+   * outer edge, 1 cm out. Each is drawn beside its road, at its edge as the
+   * road's strip has it and 0.36 m out; the kerb runs round the finished
+   * outline, which where it was tidied lies a few centimetres off that
+   * edge, and there the wall stood out past the kerb with a slot between
+   * them, or the kerb ran into the wall. So each of the sheets band() drew
+   * is brought, point by point, to the outer edge of the kerb beside it
+   * (within 15 cm, at a height the sheet spans).
+   */
+  const kerbOuter = new Map<string, number[][]>();
+  const WALL_SNAP = 0.15;
+  function* wallsToKerb(k: string, deck: Acc): Generator<void, void, void> {
+    const E = kerbOuter.get(k), runs = bandSheets.get(deck);
+    if (!E?.length || !runs?.length) return;
+    let slice = performance.now();
+    const pause = () => performance.now() - slice > 4;
+    const G = 2;
+    const grid = new Map<number, number[]>();
+    E.forEach((e, i) => {
+      for (let gx = Math.floor((Math.min(e[0], e[3]) - WALL_SNAP) / G); gx <= Math.floor((Math.max(e[0], e[3]) + WALL_SNAP) / G); gx++)
+        for (let gz = Math.floor((Math.min(e[1], e[4]) - WALL_SNAP) / G); gz <= Math.floor((Math.max(e[1], e[4]) + WALL_SNAP) / G); gz++) {
+          const key = gx * 65536 + gz;
+          (grid.get(key) ?? grid.set(key, []).get(key)!).push(i);
+        }
+    });
+    const { pos, uv, idx } = deck;
+    /** Where each sheet's foot was brought to: [edge, t along it], by its first vertex. */
+    const at = new Map<number, [number, number]>();
+    for (let r = 0; r < runs.length; r += 2) {
+      for (let v = runs[r]; v < runs[r] + runs[r + 1]; v += 2) {
+        const x = pos[v * 3], yb = pos[v * 3 + 1], z = pos[v * 3 + 2], yt = pos[v * 3 + 4];
+        let best = WALL_SNAP, to: XZ | null = null, on: [number, number] | null = null;
+        for (const i of grid.get(Math.floor(x / G) * 65536 + Math.floor(z / G)) ?? []) {
+          const e = E[i];
+          const dx = e[3] - e[0], dz = e[4] - e[1], L = Math.hypot(dx, dz);
+          if (L < 1e-6) continue;
+          const t = ((x - e[0]) * dx + (z - e[1]) * dz) / (L * L);
+          // (Past either end by no more than 5 cm: round a bend the next side's.)
+          if (t < -0.05 / L || t > 1 + 0.05 / L) continue;
+          const tc = Math.max(0, Math.min(1, t));
+          const yk = e[2] + (e[5] - e[2]) * tc;
+          if (!(yk >= yb - 0.05 && yk <= yt + 0.12)) continue;
+          // (1 cm out past it, out of the paving.)
+          const px = e[0] + dx * tc + e[6] * 0.01, pz = e[1] + dz * tc + e[7] * 0.01;
+          const d = Math.hypot(x - px, z - pz);
+          if (d < best) (best = d), (to = [px, pz]), (on = [i, tc]);
+        }
+        if (to) {
+          pos[v * 3] = pos[v * 3 + 3] = to[0];
+          pos[v * 3 + 2] = pos[v * 3 + 5] = to[1];
+          at.set(v, on!);
+        }
+      }
+      if (pause()) {
+        yield;
+        slice = performance.now();
+      }
+    }
+    // (Between two of a sheet's points brought to the same kerb, the sheet
+    // follows the kerb's own points: straight from one to the next, 3 m or
+    // more apart, it cut across where the kerb curves, 12 cm out past it.)
+    const swap = new Map<number, number[]>();
+    /**
+     * The kerb's outer edge on from side i, way dir: its points, each 1 cm
+     * out. (From one side to the next that starts where it ends, within
+     * 3 cm: a kerb drawn as several runs, or by two rings, is one edge.)
+     */
+    const kerbWalk = function* (i: number, dir: number): Generator<XZ> {
+      let cur = i;
+      for (let n = 0; n < 60; n++) {
+        const e = E[cur];
+        const [qx, qz] = dir > 0 ? [e[3], e[4]] : [e[0], e[1]];
+        let next = -1, bd = 0.03;
+        for (const j of grid.get(Math.floor(qx / G) * 65536 + Math.floor(qz / G)) ?? []) {
+          if (j === cur) continue;
+          const f = E[j];
+          const d = dir > 0 ? Math.hypot(f[0] - qx, f[1] - qz) : Math.hypot(f[3] - qx, f[4] - qz);
+          if (d < bd) (bd = d), (next = j);
+        }
+        const ox = e[6] + (next >= 0 ? E[next][6] : 0), oz = e[7] + (next >= 0 ? E[next][7] : 0);
+        const ol = Math.hypot(ox, oz) || 1;
+        yield [qx + (ox / ol) * 0.01, qz + (oz / ol) * 0.01];
+        if (next < 0) return;
+        cur = next;
+      }
+    };
+    for (let r = 0; r < runs.length; r += 2) {
+      for (let v = runs[r]; v + 2 < runs[r] + runs[r + 1]; v += 2) {
+        const A = at.get(v), B = at.get(v + 2);
+        if ((!A && !B) || (A && B && A[0] === B[0])) continue;
+        // (From an end brought to a kerb, along the kerb's points towards
+        // the other end, while they lie between the two and within half a
+        // metre of the line from one to the other: then straight on, to
+        // where the kerb stops or to its other end.)
+        const [s0, s1] = A ? [v, v + 2] : [v + 2, v];
+        const st0 = (A ?? B)![0];
+        const sx = pos[s0 * 3], sz = pos[s0 * 3 + 2], ex = pos[s1 * 3], ez = pos[s1 * 3 + 2];
+        const chord = Math.hypot(ex - sx, ez - sz);
+        if (chord < 0.05) continue;
+        const ux = (ex - sx) / chord, uz = (ez - sz) / chord;
+        const fits = (q: XZ | null) => {
+          if (!q) return false;
+          const t = (q[0] - sx) * ux + (q[1] - sz) * uz, w = Math.abs(-(q[0] - sx) * uz + (q[1] - sz) * ux);
+          return t > 0.02 && t < chord - 0.02 && w < 0.5;
+        };
+        const par = (q: XZ) => (q[0] - sx) * ux + (q[1] - sz) * uz;
+        // (The kerb's points either way, past any at the foot itself.)
+        const near = (q: XZ) => Math.hypot(q[0] - sx, q[1] - sz) < 0.05;
+        const pts = (dir: number) => {
+          const out: XZ[] = [];
+          let last = -Infinity;
+          for (const q of kerbWalk(st0, dir)) {
+            if (!out.length && near(q)) continue;
+            if (!fits(q) || par(q) <= last) break;
+            last = par(q);
+            out.push(q);
+          }
+          return out;
+        };
+        const fw = pts(1), bw = pts(-1);
+        const mid = fw.length >= bw.length ? fw : bw;
+        if (!mid.length) continue;
+        if (!A) mid.reverse();
+        const ax = pos[v * 3], az = pos[v * 3 + 2], bx = pos[(v + 2) * 3], bz = pos[(v + 2) * 3 + 2];
+        const cum: number[] = [];
+        let L = 0, px = ax, pz = az;
+        for (const m of mid) (L += Math.hypot(m[0] - px, m[1] - pz)), cum.push(L), (px = m[0]), (pz = m[1]);
+        L += Math.hypot(bx - px, bz - pz);
+        const list = [v];
+        mid.forEach(([x, z], q) => {
+          const f = cum[q] / (L || 1);
+          const n = pos.length / 3;
+          for (const c of [0, 1]) {
+            pos.push(x, lerp(pos[(v + c) * 3 + 1], pos[(v + 2 + c) * 3 + 1], f), z);
+            uv.push(lerp(uv[(v + c) * 2], uv[(v + 2 + c) * 2], f), lerp(uv[(v + c) * 2 + 1], uv[(v + 2 + c) * 2 + 1], f));
+          }
+          list.push(n);
+        });
+        list.push(v + 2);
+        swap.set(v, list);
+      }
+      if (pause()) {
+        yield;
+        slice = performance.now();
+      }
+    }
+    if (!swap.size) return;
+    // (Each such piece's quad, as band() drew it, in its place.)
+    const out: number[] = [];
+    for (let p = 0; p < idx.length; p += 3) {
+      const q = idx[p];
+      const list = swap.get(q);
+      if (list && p + 5 < idx.length && idx[p + 1] === q + 2 && idx[p + 2] === q + 1 && idx[p + 3] === q + 1 && idx[p + 4] === q + 2 && idx[p + 5] === q + 3) {
+        for (let j = 0; j + 1 < list.length; j++) {
+          const b0 = list[j], b1 = list[j + 1];
+          out.push(b0, b1, b0 + 1, b0 + 1, b1, b1 + 1);
+        }
+        p += 3;
+        continue;
+      }
+      out.push(idx[p], idx[p + 1], idx[p + 2]);
+    }
+    deck.idx = out;
+  }
   const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc, lawn: Acc) => Generator<void>)[]; linePart?: number[]; segs?: Map<number, number[][]> }>();
   const OUT_PARTS = 8;
   const OUT_LINES = 12;
@@ -7954,7 +8130,7 @@ export async function buildPasirRisCourse(
           rings.push({ P, cum, n, drawn, corner, edge, at, samples, hole, lvl });
         }
         outWork.set(k, { rings, todo, draws: [] });
-        bareHoles.delete(k), kerbSides.delete(k);
+        bareHoles.delete(k), kerbSides.delete(k), kerbOuter.delete(k);
         fillRings = (traced ?? []).filter((r) => r.fill);
         traced = null;
       })());
@@ -8410,7 +8586,21 @@ export async function buildPasirRisCourse(
               }
               yield* islandTop(w, lawn, Q2, qc2, j0, j1 + 1, (v) => (mk(of2[v])?.kerb ? mk(of2[v])! : null), (v) => hK2[v] + 0.07, (mm, x, z) => drawnTopAt(mm, x, z, undefined, true));
               yield;
-              runs(Q2, j0, j1, (a) => of2[a], isKerb, (lo, hi, a, b) => strip(kerb, Q2, qc2, a, b, 0.19, 0.07, { lo, hi, off: -0.16, yAt: (j) => hK2[j], bisect: true }));
+              runs(Q2, j0, j1, (a) => of2[a], isKerb, (lo, hi, a, b) => {
+                strip(kerb, Q2, qc2, a, b, 0.19, 0.07, { lo, hi, off: -0.16, yAt: (j) => hK2[j], bisect: true });
+                // (Its outer edge, for the walls beside it: see wallsToKerb.)
+                const E: number[][] = [];
+                for (let j = a; j <= b; j++) {
+                  const { nx, nz, mm } = section(Q2, j, lo, hi, undefined, true);
+                  E.push([Q2[j][0] - nx * KERB_OUT * mm, Q2[j][1] - nz * KERB_OUT * mm, hK2[j] + 0.07, -nx, -nz]);
+                }
+                const ko = kerbOuter.get(k) ?? kerbOuter.set(k, []).get(k)!;
+                for (let j = 1; j < E.length; j++) {
+                  const [p, q] = [E[j - 1], E[j]];
+                  const ol = Math.hypot(p[3] + q[3], p[4] + q[4]) || 1;
+                  if (p[2] === p[2] && q[2] === q[2]) ko.push([p[0], p[1], p[2], q[0], q[1], q[2], (p[3] + q[3]) / ol, (p[4] + q[4]) / ol]);
+                }
+              });
               yield;
               runs(Q2, j0, j1, (a) => of2[a], isLine, (lo, hi, a, b) => strip(yellow, Q2, qc2, a, b, 0.07, 0.11, { lo, hi, off: 0.35, yAt: (j) => hY[j], bisect: true }));
             });
@@ -8444,6 +8634,7 @@ export async function buildPasirRisCourse(
         })(),
       );
       onTile('far', k, 'paving cut', (_kit, acc) => cutPaving(k, acc('road')));
+      onTile('far', k, 'walls to kerb', (_kit, acc) => wallsToKerb(k, acc('deck')));
     }
   }
   /** (For the checks: the outline's sides within r of (x, z), and what each gets at its nearest point.) */
@@ -8666,6 +8857,8 @@ export async function buildPasirRisCourse(
    * walls overlap a little instead of leaving a hairline between them where
    * the road bends at the joint.)
    */
+  /** Each acc's sheets drawn by band(), as [first vertex, count]: see wallsToKerb. */
+  const bandSheets = new WeakMap<Acc, number[]>();
   const band = (acc: Acc, pts: XZ[], cum: number[], k0: number, k1: number, offIn: number | ((k: number) => number), y: (k: number) => number, belowIn: number | ((k: number) => number), aboveIn: number | ((k: number) => number), keep: (k: number) => boolean, ext: [number, number] = [0, 0], endAbove?: (k: number, off: number) => number, open?: (k: number, t: number) => boolean, sec?: { lo: number; hi: number; join?: (k: number) => { d: XZ; m: number } | null }) => {
     const base = acc.pos.length / 3;
     // (Kept pieces, worked out first: where a run of them ends, its top may
@@ -8732,6 +8925,7 @@ export async function buildPasirRisCourse(
       }
       for (const [k, v] of moved) V[k - k0] = v;
     }
+    (bandSheets.get(acc) ?? bandSheets.set(acc, []).get(acc)!).push(base, (k1 - k0 + 1) * 2);
     for (let k = k0; k <= k1; k++) {
       const [x, yb, z, yt] = V[k - k0];
       acc.pos.push(x, yb, z, x, yt, z);
@@ -10139,6 +10333,7 @@ export async function buildPasirRisCourse(
       jxInfo: (i: number) => ({ internal: JX.internal[i], hidden: internalHidden[i], outlined: outlined[i], tee: JX.tee[i], shapeA: JX.shapeOf[edges[i].a], shapeB: JX.shapeOf[edges[i].b], trimA: JX.trimA[i], trimB: JX.trimB[i], half: [EP[i].map((_, k) => halfAtE(i, k))] }),
       jpolyAt: (x: number, z: number) => JPOLY.map((sh, id) => ({ id, sh })).filter(({ sh }) => inRingXZ(sh.ring, x, z)).map(({ id, sh }) => ({ id, fill: sh.fill, n: sh.ring.length, centre: sh.centre, radius: sh.radius, kerbs: sh.kerbs.length, near: jointsNear(x, z).includes(id), lvl: jLvlM(id), deck: jDeck(id) })),
       outlineFillsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ corner: g.corner, lvl: g.lvl })),
+      kerbOuterOf: (k: string) => kerbOuter.get(k) ?? [],
       paveCutsOf: (k: string) => (paveCuts.get(k) ?? []).map((c) => c.map((q): XZ => [q.x / OUT_S, q.y / OUT_S])),
       outlineRingsNear: (x: number, z: number, r: number) => outlineRings(Math.floor(x / TILE), Math.floor(z / TILE)).filter((g) => !g.fill && g.corner.some((p) => Math.abs(p[0] - x) < r && Math.abs(p[1] - z) < r)).map((g) => ({ hole: g.hole, corner: g.corner, lvl: g.lvl })),
       stopsAt: (x: number, z: number, y: number) => ({ paving: inPaving(x, z, y), island: onIsland(x, z), gore: inGore(x, z) }),

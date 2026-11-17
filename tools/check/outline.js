@@ -277,19 +277,9 @@ const UPRIGHTS_SEEN = [
   { a: [-2068.72, -1071.77], b: [-2068.72, -1071.77], r: 3 },
   { a: [1789.93, 2072.64], b: [1789.93, 2072.64], r: 3 },
 ];
-// (Passed for now, the user's call on 16 Nov: open the PR and fix these
-// straight after it. Two walls 3-5 cm out on the whole map, two of 3-4 cm
-// on the trial map. Three more, one 29 cm out, went when a deck's beam and
-// parapet were cut back at a split's nose.)
-const UPRIGHTS_FOR_NOW = [
-  [-3024.5, -1945.9], [100.36, 2763.52], [1750.15, 1827.29], [1779.1, 1797.64],
-  // (The user's call, 17 Nov: by Upper Changi, a wall 6 cm out that was
-  // always there, seen once its kerb stood at its true height; rebuild B
-  // builds walls from the kerb.)
-  [1809.05, 1746.32],
-];
-// (The one at -3024.5 runs 12 samples along: 3 m about it.)
-for (const [x, z] of UPRIGHTS_FOR_NOW) UPRIGHTS_SEEN.push({ a: [x, z], b: [x, z], r: x === -3024.5 ? 3 : 2 });
+// (The walls passed for now on 16 and 17 Nov, 3 to 7 cm out, went with
+// rebuild B, 17 Nov: every wall, edge beam and parapet now follows its
+// kerb's outer edge, point by point. See wallsToKerb.)
 const uprightSeen = (x, z) =>
   UPRIGHTS_SEEN.some(({ a, b, r }) => {
     const dx = b[0] - a[0], dz = b[1] - a[1], L = dx * dx + dz * dz;
