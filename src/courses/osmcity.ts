@@ -6733,6 +6733,8 @@ export async function buildPasirRisCourse(
    * the kerb, and the kerb was buried under it.
    */
   const paveCuts = new Map<string, Paths64>();
+  /** (The ground's, under a flyover's outline: cut only where another surface lies over it.) */
+  const paveUnder = new Map<string, Paths64>();
   /** The outline round tile (ix, iz), and 30 m beyond, from its pieces joined (outlineUnions). */
   /** (Traced a ring at a time, each a few slices of its own: see Job.) */
   function* outlineFinishIn({ ix, iz, lv }: ReturnType<typeof outlineUnions>) {
@@ -6741,7 +6743,7 @@ export async function buildPasirRisCourse(
     const out: { pts: XZ[]; corner: XZ[]; edge: number[]; at: number[]; hole: boolean; lvl: number; fill?: boolean; holes?: XZ[][] }[] = [];
     // (Rebuild B: the paving as drawn that the finished outline leaves out,
     // every level's, less what any level's outline takes in: see paveCuts.)
-    const cutLv: Paths64[] = [], keptLv: Paths64[] = [];
+    const cutLv: Paths64[] = [], keptLv: Paths64[] = [], lvLv: number[] = [];
     for (const { lvl, U, U0 } of lv) {
     const kept = new Paths64();
     const tipCuts: Path64[] = [];
@@ -6892,11 +6894,16 @@ export async function buildPasirRisCourse(
     yield;
     cutLv.push(Clipper.Difference(copy(U0), copy(kept), FillRule.NonZero));
     keptLv.push(copy(kept));
+    lvLv.push(lvl);
     }
     // (Less what any other level's outline takes in, a level at a time,
     // each a slice of its own: all joined in one, a busy tile's outline
-    // held a frame up for 122 ms.)
-    const cut = new Paths64();
+    // held a frame up for 122 ms. But the ground's, under a flyover's
+    // outline, kept apart: paving there is cut only where it lies under
+    // another surface, the ground's own under the flyover. Taken out whole,
+    // a slip road's paving lay on over its island's point under the
+    // flyover, the kerb hidden under it.)
+    const cut = new Paths64(), under = new Paths64();
     for (let a = 0; a < cutLv.length; a++) {
       let c = cutLv[a];
       for (let b = 0; b < keptLv.length && c.length; b++) {
@@ -6904,10 +6911,20 @@ export async function buildPasirRisCourse(
         yield;
         const kb = new Paths64();
         for (const r of keptLv[b]) kb.push(r.map((q) => new Point64(q.x, q.y)) as Path64);
-        c = Clipper.Difference(c, kb, FillRule.NonZero);
+        if (lvLv[a] < 0) {
+          const cc = new Paths64();
+          for (const r of c) cc.push(r.map((q) => new Point64(q.x, q.y)) as Path64);
+          for (const q of Clipper.Intersect(cc, kb, FillRule.NonZero)) under.push(q);
+          const kb2 = new Paths64();
+          for (const r of keptLv[b]) kb2.push(r.map((q) => new Point64(q.x, q.y)) as Path64);
+          c = Clipper.Difference(c, kb2, FillRule.NonZero);
+        } else c = Clipper.Difference(c, kb, FillRule.NonZero);
       }
       for (const q of c) cut.push(q);
     }
+    paveUnder.delete(`${ix},${iz}`);
+    paveUnder.set(`${ix},${iz}`, under);
+    if (paveUnder.size > 300) paveUnder.delete(paveUnder.keys().next().value!);
     paveCuts.delete(`${ix},${iz}`);
     paveCuts.set(`${ix},${iz}`, cut);
     if (paveCuts.size > 300) paveCuts.delete(paveCuts.keys().next().value!);
@@ -7721,9 +7738,8 @@ export async function buildPasirRisCourse(
   const bareHoles = new Map<string, XZ[][]>();
   const kerbSides = new Map<string, Paths64>();
   function* cutPaving(k: string, road: Acc): Generator<void, void, void> {
-    const C0 = paveCuts.get(k);
     const K = kerbSides.get(k);
-    if (!C0 || !C0.length || !K?.length) return;
+    if (!K?.length) return;
     // (A slice at a time: the whole tile at once held a frame up for
     // seconds. Every step below hands back once it has run 4 ms.)
     let slice = performance.now();
@@ -7735,6 +7751,8 @@ export async function buildPasirRisCourse(
     };
     const meets = (a: number[], b: number[], pad = 0) => a[0] - pad < b[2] && a[2] + pad > b[0] && a[1] - pad < b[3] && a[3] + pad > b[1];
     const copyOf = (c: Path64) => c.map((q) => new Point64(q.x, q.y)) as Path64;
+    function* narrow(C0: Paths64 | undefined): Generator<void, Path64[], void> {
+    if (!C0?.length) return [];
     const boxC0 = C0.map(box);
     // (Only beside a kerb, within half a metre of its line: what shows over
     // it. Where the outline runs with no kerb, at a road's end, a level's
@@ -7743,9 +7761,9 @@ export async function buildPasirRisCourse(
     // sides at a time, each band against the cuts beside it; the pieces may
     // overlap, which the cut below takes as one.)
     let C: Path64[] = [];
-    for (let s = 0; s < K.length; s += 48) {
+    for (let s = 0; s < K!.length; s += 48) {
       const part = new Paths64();
-      for (const c of K.slice(s, s + 48)) part.push(copyOf(c));
+      for (const c of K!.slice(s, s + 48)) part.push(copyOf(c));
       // (Each side as a box half a metre round it: InflatePaths, rounding
       // every end, took 34 ms a few dozen sides.)
       const band = new Paths64();
@@ -7774,7 +7792,7 @@ export async function buildPasirRisCourse(
         slice = performance.now();
       }
     }
-    if (!C.length) return;
+    if (!C.length) return C;
     // (Not inside a hole no kerb runs round: paving the union missed inside
     // a junction, paved over as it is, not an island. Cut there, the road's
     // own paving left a hole in it, grass showing through at Tampines
@@ -7802,8 +7820,12 @@ export async function buildPasirRisCourse(
         }
       }
       C = D;
-      if (!C.length) return;
     }
+    return C;
+    }
+    const C1 = yield* narrow(paveCuts.get(k)), nPlain = C1.length;
+    const C = C1.concat(yield* narrow(paveUnder.get(k)));
+    if (!C.length) return;
     // (Each cut in the 4 m squares its box covers, for a quick look past
     // most of the paving.)
     const G = 4;
@@ -7818,6 +7840,29 @@ export async function buildPasirRisCourse(
       return b;
     });
     const { pos, uv, idx } = road;
+    // (Is there paving 2 m or more over triangle t's middle? Its triangles by 4 m square, worked out when first asked.)
+    let over: Map<number, number[]> | null = null;
+    const overlaid = (t: number) => {
+      if (!over) {
+        over = new Map();
+        for (let q = 0; q < idx.length; q += 3) {
+          const xs = [idx[q], idx[q + 1], idx[q + 2]].map((i) => pos[i * 3]), zs = [idx[q], idx[q + 1], idx[q + 2]].map((i) => pos[i * 3 + 2]);
+          for (let gx = Math.floor(Math.min(...xs) / G); gx <= Math.floor(Math.max(...xs) / G); gx++)
+            for (let gz = Math.floor(Math.min(...zs) / G); gz <= Math.floor(Math.max(...zs) / G); gz++) (over.get(gx * 65536 + gz) ?? over.set(gx * 65536 + gz, []).get(gx * 65536 + gz)!).push(q);
+        }
+      }
+      const [a, b, c] = [idx[t], idx[t + 1], idx[t + 2]];
+      const x = (pos[a * 3] + pos[b * 3] + pos[c * 3]) / 3, y = (pos[a * 3 + 1] + pos[b * 3 + 1] + pos[c * 3 + 1]) / 3, z = (pos[a * 3 + 2] + pos[b * 3 + 2] + pos[c * 3 + 2]) / 3;
+      for (const q of over.get(Math.floor(x / G) * 65536 + Math.floor(z / G)) ?? []) {
+        const P = [idx[q], idx[q + 1], idx[q + 2]].map((i) => [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]);
+        const det = (P[1][2] - P[2][2]) * (P[0][0] - P[2][0]) + (P[2][0] - P[1][0]) * (P[0][2] - P[2][2]);
+        if (Math.abs(det) < 1e-9) continue;
+        const l1 = ((P[1][2] - P[2][2]) * (x - P[2][0]) + (P[2][0] - P[1][0]) * (z - P[2][2])) / det, l2 = ((P[2][2] - P[0][2]) * (x - P[2][0]) + (P[0][0] - P[2][0]) * (z - P[2][2])) / det, l3 = 1 - l1 - l2;
+        if (l1 < 0 || l2 < 0 || l3 < 0) continue;
+        if (l1 * P[0][1] + l2 * P[1][1] + l3 * P[2][1] > y + 2) return true;
+      }
+      return false;
+    };
     const keep: number[] = [];
     const add: number[] = [];
     for (let t = 0; t < idx.length; t += 3) {
@@ -7836,8 +7881,10 @@ export async function buildPasirRisCourse(
             if (seen.has(i)) continue;
             seen.add(i);
             const b = boxes[i];
+            if (!(b[0] < tx1 && b[2] > tx0 && b[1] < tz1 && b[3] > tz0)) continue;
+            if (i >= nPlain && !overlaid(t)) continue;
             // (Copies: the library moves the points it is handed.)
-            if (b[0] < tx1 && b[2] > tx0 && b[1] < tz1 && b[3] > tz0) near.push(copyOf(C[i]));
+            near.push(copyOf(C[i]));
           }
       if (!near.length) {
         keep.push(ia, ib, ic);

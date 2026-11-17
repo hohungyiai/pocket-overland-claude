@@ -144,10 +144,8 @@ window.__checkGaps = (all = false) => {
 // on is a gap or a fragment; one carried on off-line or at another height is
 // a step. And nothing of the road's surface lies over a kerb: where paving
 // or road lies over it, part of its width is hidden (a notch).
-// (Passed for now, the user's call on 16 Nov, to fix straight after the
-// PR: a bit of kerb buried 6 cm in the middle of an expressway where its
-// slip lane merges, and an island's point 2 cm under the paving beside it.)
-const KERBS_FOR_NOW = [[1776.44, 1423.72], [2260.8, 2832.13]];
+// (The two kerbs passed for now on 16 Nov, buried 2 and 6 cm, went with
+// rebuild B, 17 Nov: the paving is cut to the finished kerb line.)
 window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
   // (Redrawn maps only, the user's call on 16 Nov: today's map keeps its
   // old kerbs, which these rules were never written for.)
@@ -224,7 +222,7 @@ window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
       const x = (pos[a] + pos[b] + pos[c]) / 3, z = (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3, y = (pos[a + 1] + pos[b + 1] + pos[c + 1]) / 3;
       n++;
       const over = at(x, z).reduce((m, f) => (f.kind === 'road' && f.h > y + 0.01 && f.h < y + 0.3 ? Math.max(m, f.h - y) : m), 0);
-      if (over && !KERBS_FOR_NOW.some(([px, pz]) => Math.hypot(x - px, z - pz) < 1.5)) pts.push({ what: 'hidden under paving', x: +x.toFixed(2), z: +z.toFixed(2), value: +over.toFixed(2) });
+      if (over) pts.push({ what: 'hidden under paving', x: +x.toFixed(2), z: +z.toFixed(2), value: +over.toFixed(2) });
     }
   }
   const grid = new Map();
