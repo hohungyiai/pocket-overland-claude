@@ -7863,9 +7863,14 @@ export async function buildPasirRisCourse(
       // (Level with the kerb's top for its first 15 cm, then on to the
       // middle: across a narrow island between two roads at different
       // heights, sloping from the kerb's very edge, it lay 2-3 cm under the
-      // kerb's top a hand's width in.)
-      const sh = Math.min(KERB_OUT + 0.15, wi - 0.01);
-      const sec = [put(x0, t0, z0), put(P[v][0] + ox * sh, t0, P[v][1] + oz * sh), put(x1, y1, z1)];
+      // kerb's top a hand's width in. Only where it falls away from this
+      // kerb, and never more than half the way across: level on both sides,
+      // and near a point level to 1 cm short of its edge, the whole rise
+      // from one kerb's top to the other's came in a sliver of lawn, a face
+      // all but upright, a dark wedge at the island's tip.)
+      const fall = y1 < t0 - 0.005;
+      const sh = fall ? KERB_OUT + Math.min(0.15, (wi - KERB_OUT) / 2) : (KERB_OUT + wi) / 2;
+      const sec = [put(x0, t0, z0), put(P[v][0] + ox * sh, fall ? t0 : (t0 + y1) / 2, P[v][1] + oz * sh), put(x1, y1, z1)];
       if (open) {
         const bank = cut ? 0.25 : ISLE_BANK;
         const x2 = P[v][0] + ox * (wi + bank), z2 = P[v][1] + oz * (wi + bank);
