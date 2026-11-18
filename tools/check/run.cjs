@@ -82,7 +82,7 @@ const CHECKS = [
   // The sides of raised roads (edges.js): a parapet wherever the road's edge
   // drops away, and walls that end by coming down to the ground, not as a
   // square stub. (Known: counted on today's map when these were written.)
-  ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, 31],
+  ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, 24],
   ['A wall beside a road never ends as a square stub on the verge', 'edges.js', '__checkWallEnds', 0, 97],
   ['The ground beside a raised road keeps its bank: the road never cuts it away', 'edges.js', '__checkBanks', 0],
   // (Roads as one line: where the map marks a road as carrying straight on
@@ -95,7 +95,7 @@ const CHECKS = [
   ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0, { trial: 2 }],
   ['Every marking lies on the surface drawn under it, never more than 1 cm under it', 'marks.js', '__checkMarkDepth', 0],
   // (A count that may only go down: 233 when it was written, the live build 262. The user's call, 2026-11-16: fixed in the next round.)
-  ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0, 233],
+  ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0, 231],
   ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
   ['Every island narrows smoothly to its point: no corner of its outline turns more than 4 deg within 10 m of it', 'marks.js', '__checkNoseCorners', 0],
   ['A kerb runs wherever an edge line has ground beyond it', 'marks.js', '__checkKerbBeside', 0],
