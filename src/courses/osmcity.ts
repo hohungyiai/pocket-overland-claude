@@ -3913,6 +3913,34 @@ export async function buildPasirRisCourse(
   /** (brk: whether the piece's first and last rows end where the two roads stand apart in height, not where they part on the map: no nose there.) */
   const gores: { ring: XZ[]; rows: GoreRow[]; deck: number; A?: number; B?: number; brk?: [boolean, boolean] }[] = [];
   /**
+   * Dividers (the user's rules 1 and 2 at every point, 18 Nov): where two
+   * roads on the ground lie on one another, or run less than DIV_W apart,
+   * but stand more than GORE_STEP apart in height, they are not one
+   * surface and do not meet in a point. A strip DIV_W wide, down the middle
+   * between their facing edges and round-ended, is cut out of the ground's
+   * outline there: each road keeps its own kerb, and the island between
+   * carries the step (its top level from the higher kerb, one face down).
+   * Before, the outline joined them into one paving with a step across it,
+   * and where they drew apart it came to a sharp point of two kerbs
+   * folded together, the higher road's side and bank standing in it.
+   */
+  const DIV_W = 0.8;
+  /**
+   * (A divider only where the two stand this far apart in height: as the
+   * split check takes two roads to be at different levels. Begun at 12 cm,
+   * at a split where a viaduct's ramp leaves an expressway, the divider
+   * opened a gap between the two, 0.66 m across, where they were still
+   * all but level; and on two carriageways lying over one another as
+   * they met, it cut into their lanes.)
+   */
+  const DIV_FROM = 0.5;
+  /** (Nor where they lie further over one another than this: one paving, its lanes, not a strip's place.) */
+  const DIV_OVER = 0.7;
+  /** The shortest divider. */
+  const DIV_LEN = 6;
+  let divMs = 0;
+  const dividers: { ring: XZ[]; ends: XZ[]; A: number; B: number; dyMax: number; gapMin: number; gapMax: number; len: number; x0: number; z0: number; x1: number; z1: number }[] = [];
+  /**
    * Road i's edge exactly as its strip draws it, beside its middle line's
    * point (x, z) on piece k, on the side nearer (rx, rz): straight between
    * the strip's own corners, each square to the line between the points
@@ -4335,7 +4363,9 @@ export async function buildPasirRisCourse(
         let prevHit = false;
         for (const sA of stations) {
           const at = probe(sA);
-          if ((at || prevHit) && sA - prevS > 1.2) take(probe((prevS + sA) / 2));
+          if ((at || prevHit) && sA - prevS > 1.2) {
+            take(probe((prevS + sA) / 2));
+          }
           take(at);
           prevS = sA;
           prevHit = !!at;
@@ -4343,6 +4373,172 @@ export async function buildPasirRisCourse(
         finish();
       }
     });
+    // Dividers (see DIV_W): each pair of roads on the ground once, from the
+    // lower-numbered, along its whole length, its junctions' paving too
+    // (there the junction's paving has the roads' heights): a slip road
+    // dropping away from the road it left inside a tee's paving came to a
+    // point at a step of 0.7 m all the same.
+    const divT0 = performance.now();
+    // (Two roads that both follow the ground stand level: only beside a
+    // road with a profile of its own, a ramp's or a bank's, is there one.)
+    const boxOf = (i: number) => {
+      const P = EP[i];
+      let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+      for (const p of P) (x0 = Math.min(x0, p[0])), (z0 = Math.min(z0, p[1])), (x1 = Math.max(x1, p[0])), (z1 = Math.max(z1, p[1]));
+      return [x0, z0, x1, z1];
+    };
+    const profBoxes = edges.flatMap((e, i) => (hasProfile[i] && !JX.internal[i] && !isDeck[i] && e.a !== e.b ? [boxOf(i)] : []));
+    edges.forEach((eA, A) => {
+      if (JX.internal[A] || eA.a === eA.b || isDeck[A] || ELEN[A] < 4) return;
+      const reach = GORE + widest + EP[A].reduce((m, _, k) => Math.max(m, halfAtE(A, k)), 0) + 1.5;
+      if (!hasProfile[A]) {
+        const [x0, z0, x1, z1] = boxOf(A);
+        const R = reach + 4;
+        if (!profBoxes.some((b) => b[0] < x1 + R && b[2] > x0 - R && b[1] < z1 + R && b[3] > z0 - R)) return;
+      }
+      const at = walker(A);
+      let rows: { l: XZ; r: XZ; c: XZ; n: XZ; t: XZ; w: number; gap: number; dy: number; ext?: boolean }[] = [];
+      let besideB = -1;
+      const finish = () => {
+        // (Not a scrap of two rows: where one road carries on from another
+        // round a bend, the two edges' crossfall alone stood 0.3 m apart
+        // for a metre.)
+        // (Its own rows: not the ends carried on past them.)
+        const own = rows.filter((r) => !r.ext);
+        let len = 0;
+        for (let q = 1; q < own.length; q++) len += Math.hypot(own[q].c[0] - own[q - 1].c[0], own[q].c[1] - own[q - 1].c[1]);
+        // (Only where the two part, an island's point between them: a
+        // narrow island, under 0.7 m across, as it begins. Where they only
+        // lie on one another and part nowhere, as a slip road merging into
+        // an expressway's lanes, a divider stood alone as a pill in the
+        // middle of the carriageway.)
+        const parts = own.some((r) => r.gap >= 0 && r.gap < 0.7);
+        const apart = own.some((r) => r.dy > DIV_FROM);
+        // (And at least DIV_LEN long: 3 m of strip on to an island's point,
+        // at 1768.1,2113.2, stood off the point with a notch between, the
+        // lawn over it broken and folded.)
+        if (own.length >= 3 && len >= DIV_LEN && parts && apart) {
+          // (Round at each end: half a circle about the row's middle.)
+          const cap = (row: (typeof rows)[number], back: number): XZ[] =>
+            Array.from({ length: 7 }, (_, q): XZ => {
+              const a = ((q + 1) / 8) * Math.PI;
+              return [row.c[0] + back * (row.n[0] * Math.cos(a) - row.t[0] * Math.sin(a)) * row.w, row.c[1] + back * (row.n[1] * Math.cos(a) - row.t[1] * Math.sin(a)) * row.w];
+            });
+          const ring: XZ[] = [...rows.map((r) => r.l), ...cap(rows[rows.length - 1], -1), ...rows.map((r) => r.r).reverse(), ...cap(rows[0], 1)];
+          const xs = ring.map((p) => p[0]), zs = ring.map((p) => p[1]);
+          // (Each end's tip: its middle, a half width on.)
+          const tipOf = (row: (typeof rows)[number], back: number): XZ => [row.c[0] - back * row.t[0] * row.w, row.c[1] - back * row.t[1] * row.w];
+          dividers.push({ ring, ends: [tipOf(rows[0], 1), tipOf(rows[rows.length - 1], -1)], A, B: besideB, dyMax: Math.max(...own.map((r) => r.dy)), gapMin: Math.min(...own.map((r) => r.gap)), gapMax: Math.max(...own.map((r) => r.gap)), len, x0: Math.min(...xs), z0: Math.min(...zs), x1: Math.max(...xs), z1: Math.max(...zs) });
+        }
+        rows = [];
+        besideB = -1;
+      };
+      // (First every 4 m, whether any road runs alongside within GORE +
+      // 4 m: a metre at a time along every road, asked of every road
+      // within reach, held the game's start up by seconds.)
+      const C4 = 4;
+      const near4: boolean[] = [];
+      for (let s = 0; s <= ELEN[A] + C4; s += C4) {
+        const pa = at(Math.min(s, ELEN[A]));
+        const ha = lerp(halfAtE(A, pa.k), halfAtE(A, pa.k + 1), pa.u);
+        let hit = false;
+        roads.each(pa.x, pa.z, reach + C4, (B, seg) => {
+          if (hit || B <= A || JX.internal[B] || isDeck[B] || elevated[B] !== elevated[A] || edges[B].a === edges[B].b || (!hasProfile[A] && !hasProfile[B])) return;
+          const Q = EP[B];
+          const vx = Q[seg + 1][0] - Q[seg][0], vz = Q[seg + 1][1] - Q[seg][1];
+          const sl2 = vx * vx + vz * vz || 1;
+          const u = Math.max(0, Math.min(1, ((pa.x - Q[seg][0]) * vx + (pa.z - Q[seg][1]) * vz) / sl2));
+          const x = Q[seg][0] + vx * u, z = Q[seg][1] + vz * u;
+          const hb = Math.max(halfAtE(B, seg), halfAtE(B, seg + 1));
+          if (Math.hypot(pa.x - x, pa.z - z) - ha - hb < GORE + C4) hit = true;
+        });
+        near4.push(hit);
+      }
+      const mayBe = (s: number) => {
+        const k = Math.round(s / C4);
+        return !!(near4[k - 1] || near4[k] || near4[k + 1]);
+      };
+      if (!near4.some(Boolean)) return;
+      for (const sgn of [-1, 1]) {
+        let wasNone = true;
+        for (let s = 0; s <= ELEN[A]; s += 1) {
+          const pa = at(s);
+          const nx = -pa.tz * sgn, nz = pa.tx * sgn;
+          const ha = lerp(halfAtE(A, pa.k), halfAtE(A, pa.k + 1), pa.u);
+          const ea0: XZ = [pa.x + nx * ha, pa.z + nz * ha];
+          // The nearest road beside this edge, on it or within GORE of it
+          // (where a junction's paving may fill the ground between them).
+          type Beside = { B: number; seg: number; u: number; gap: number; hb: number; x: number; z: number; s: number };
+          let best: Beside | null = null;
+          if (mayBe(s)) roads.each(ea0[0], ea0[1], reach, (B, seg) => {
+            // (Two roads that both follow the ground stand level.)
+            if (B <= A || JX.internal[B] || isDeck[B] || elevated[B] !== elevated[A] || edges[B].a === edges[B].b || (!hasProfile[A] && !hasProfile[B])) return;
+            const Q = EP[B];
+            const vx = Q[seg + 1][0] - Q[seg][0], vz = Q[seg + 1][1] - Q[seg][1];
+            const sl2 = vx * vx + vz * vz || 1;
+            const u = Math.max(0, Math.min(1, ((ea0[0] - Q[seg][0]) * vx + (ea0[1] - Q[seg][1]) * vz) / sl2));
+            if ((seg === 0 && u <= 0) || (seg === Q.length - 2 && u >= 1)) return;
+            const sl = Math.sqrt(sl2);
+            if (Math.abs((vx * pa.tx + vz * pa.tz) / sl) < COS_NEAR) return;
+            const x = Q[seg][0] + vx * u, z = Q[seg][1] + vz * u;
+            if ((x - pa.x) * nx + (z - pa.z) * nz <= 0) return;
+            const hb = lerp(halfAtE(B, seg), halfAtE(B, seg + 1), u);
+            const gap = Math.hypot(ea0[0] - x, ea0[1] - z) - hb;
+            if (gap >= GORE || (best && gap >= best.gap)) return;
+            best = { B, seg, u, gap, hb, x, z, s: ECUM[B][seg] + u * sl };
+          });
+          const m = best as Beside | null;
+          // (On to the next piece of the road beside, round its joint: one divider.)
+          const next = (B: number) => besideB >= 0 && [edges[besideB].a, edges[besideB].b].some((j) => j === edges[B].a || j === edges[B].b);
+          if (!m && rows.length) {
+            // (Where they draw more than GORE apart, on 1.5 m into the
+            // ground between, to meet the island there: a junction's paving
+            // reaching on between them left a neck of paving between the
+            // divider's end and the island's point, the two kerbs crossing.)
+            const r = rows[rows.length - 1];
+            const c: XZ = [r.c[0] + r.t[0] * 1.5, r.c[1] + r.t[1] * 1.5];
+            rows.push({ ...r, c, l: [c[0] - r.n[0] * r.w, c[1] - r.n[1] * r.w], r: [c[0] + r.n[0] * r.w, c[1] + r.n[1] * r.w], ext: true });
+          }
+          if (!m || (besideB >= 0 && m.B !== besideB && !next(m.B))) finish();
+          const none = wasNone;
+          wasNone = !m;
+          if (!m) continue;
+          const ea = stripEdgeAt(A, pa.k, pa.x, pa.z, ea0[0], ea0[1]) ?? ea0;
+          // (B's edge on the side towards A's middle line, on it or not.)
+          const ul = Math.hypot(pa.x - m.x, pa.z - m.z) || 1;
+          const eb0: XZ = [m.x + ((pa.x - m.x) / ul) * m.hb, m.z + ((pa.z - m.z) / ul) * m.hb];
+          const eb = stripEdgeAt(m.B, m.seg, m.x, m.z, eb0[0], eb0[1]) ?? eb0;
+          const ya = roadY(A, pa.k, pa.u, pa.s, ea[0], ea[1]);
+          const yb = roadY(m.B, m.seg, m.u, m.s, eb[0], eb[1]);
+          // (Only where they stand more than DIV_FROM apart in height, and do
+          // not lie over one another more than DIV_OVER.)
+          const c: XZ = [(ea[0] + eb[0]) / 2, (ea[1] + eb[1]) / 2];
+          // (Nor within 1.2 m of a junction's paving, its round end and the
+          // lines round it clear of it: run on into the junction by
+          // -2772.9,2246.5, its yellow line lay in the junction.)
+          const inJunction = (x: number, z: number) => JX.shapes.some((sh) => Math.hypot(x - sh.centre[0], z - sh.centre[1]) < sh.radius + 2 && inRingXZ(sh.ring, x, z));
+          if (Math.abs(ya - yb) <= DIV_FROM || m.gap < -DIV_OVER || inJunction(c[0] + pa.tx * 1.2, c[1] + pa.tz * 1.2) || inJunction(c[0] - pa.tx * 1.2, c[1] - pa.tz * 1.2) || inJunction(c[0], c[1])) {
+            finish();
+            continue;
+          }
+          besideB = m.B;
+          // (Wider where they stand further apart: all the ground between,
+          // so no sliver of what paves it is left beside either at the
+          // other's height. And where they lie further over one another:
+          // all of that, so neither's strip reaches past it to the other's
+          // side.)
+          const w = Math.max(DIV_W, Math.abs(m.gap) + 0.02) / 2;
+          // (And likewise back from where they first draw within GORE of each other.)
+          if (!rows.length && none && s > 0) {
+            const b: XZ = [c[0] - pa.tx * 1.5, c[1] - pa.tz * 1.5];
+            rows.push({ l: [b[0] - nx * w, b[1] - nz * w], r: [b[0] + nx * w, b[1] + nz * w], c: b, n: [nx, nz], t: [pa.tx, pa.tz], w, gap: m.gap, dy: 0, ext: true });
+          }
+          rows.push({ l: [c[0] - nx * w, c[1] - nz * w], r: [c[0] + nx * w, c[1] + nz * w], c, n: [nx, nz], t: [pa.tx, pa.tz], w, gap: m.gap, dy: Math.abs(ya - yb) });
+        }
+        finish();
+      }
+    });
+    divMs = performance.now() - divT0;
   }
   // Does road `line` have a parapet beside piece kk of its middle line, off
   // metres out? Not where another road at its level, a junction's paving
@@ -4785,7 +4981,12 @@ export async function buildPasirRisCourse(
             const W: XZ[] = [[c.a[0] + c.d[0] * 0.3, c.a[1] + c.d[1] * 0.3], [c.b[0] + c.d[0] * 0.3, c.b[1] + c.d[1] * 0.3]];
             const cw = [0, Math.hypot(c.a[0] - c.b[0], c.a[1] - c.b[1])];
             const yk = (q: number) => (q ? c.yb : c.ya) + 0.09;
-            if (dk > 0 && !oneLine) {
+            // (Between two decks, a deck's edge only where the nose stands
+            // up off the ground as a deck does, as on a redrawn map below:
+            // on today's map too, the nose between two low bridges over a
+            // drain (gore 211) stood a full parapet over 12 cm.)
+            const wd = dk > 0 ? Math.max(...W.map((p, q) => yk(q) - heightAt(p[0], p[1]))) : c.drop;
+            if (dk > 0 && !oneLine && wd >= LOW_DECK) {
               band(deck, W, cw, 0, 1, 0, yk, dk, 0.05, () => true);
               band(deck, W, cw, 0, 1, 0, yk, 0, PARAPET_H, () => true);
             } else if (oneLine) {
@@ -4813,16 +5014,22 @@ export async function buildPasirRisCourse(
               // round the point the same way. Straight across from one
               // road's edge to the other's, 0.3 m past the wedge, they stood
               // on the nose's paving past its point, a full parapet across.)
-              if (dk > 0) {
+              // (Only where the nose stands up off the ground as a deck does:
+              // a nose between two low bridges over a drain, at the junction
+              // where they leave the ground, had a full parapet standing on
+              // the island there, 1 m tall over no drop at all. The user's
+              // rule, 18 Nov: a bridge's parapets and walls begin where the
+              // ground drops. On the ground, as a raised road's below.)
+              if (dk > 0 && Math.max(...nd) >= LOW_DECK) {
                 band(deck, NW, nc, 0, NW.length - 1, 0, ny, dk, 0, () => true);
                 band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, PARAPET_H, () => true);
                 continue;
               }
               band(deck, NW, nc, 0, NW.length - 1, 0, ny, (q) => Math.max(0, nd[q]) + 0.3, (q) => wallTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > WALL_FROM || onA(q) || onB(q), [0, 0], (q) => (nd[q] > WALL_FROM ? Infinity : -nd[q]));
               band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, (q) => parapetTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > PARAPET_FROM);
-            } else if (c.drop > WALL_FROM) {
-              band(deck, W, cw, 0, 1, 0, yk, Math.max(0, c.drop) + 0.3, wallTop(c.drop), () => true);
-              if (c.drop > PARAPET_FROM) band(deck, W, cw, 0, 1, 0, yk, 0, parapetTop(c.drop), () => true);
+            } else if (wd > WALL_FROM) {
+              band(deck, W, cw, 0, 1, 0, yk, Math.max(0, wd) + 0.3, wallTop(wd), () => true);
+              if (wd > PARAPET_FROM) band(deck, W, cw, 0, 1, 0, yk, 0, parapetTop(wd), () => true);
             }
           }
           const base = road.pos.length / 3;
@@ -4877,11 +5084,14 @@ export async function buildPasirRisCourse(
         }
       });
     // (The parapet across a nose stops the car as the roads' own do.)
+    // (Two noses a slice: ten, a busy tile's took 100 to 120 ms in one.)
     for (const [k, all] of byTile)
-      inChunks('near', k, 'nose barriers', all.filter((id) => gores[id].deck >= 0), 10, (list, kit) => {
+      inChunks('near', k, 'nose barriers', all.filter((id) => gores[id].deck >= 0), 2, (list, kit) => {
         for (const id of list)
           for (const c of goreCaps(id)) {
-            const h = gores[id].deck > 0 ? PARAPET_H : parapetTop(c.drop);
+            const dropAtEnd = (p: XZ, y: number) => y + 0.09 - heightAt(p[0] + c.d[0] * 0.3, p[1] + c.d[1] * 0.3);
+            const wd = gores[id].deck > 0 ? Math.max(dropAtEnd(c.a, c.ya), dropAtEnd(c.b, c.yb)) : c.drop;
+            const h = gores[id].deck > 0 && wd >= LOW_DECK ? PARAPET_H : parapetTop(wd);
             if (!oneLine) {
               if (h >= 0.3) barrierBox(tileBody(kit), c.a[0] + c.d[0] * 0.3, c.a[1] + c.d[1] * 0.3, c.b[0] + c.d[0] * 0.3, c.b[1] + c.d[1] * 0.3, (c.ya + c.yb) / 2 + 0.09, h);
               continue;
@@ -4892,8 +5102,10 @@ export async function buildPasirRisCourse(
             // (Each piece as tall as its parapet is drawn, by its own drop.)
             const { NP, NW } = noseWall(id, c);
             const ny = (q: number) => c.yAt(NP[q]) + 0.09;
+            // (A deck's only where it stands up off the ground as drawn.)
+            const high = gores[id].deck > 0 && NW.some((p, q) => ny(q) - heightAt(p[0], p[1]) >= LOW_DECK);
             for (let q = 1; q < NW.length; q++) {
-              const ph = gores[id].deck > 0 ? PARAPET_H : parapetTop(Math.max(ny(q - 1) - heightAt(NW[q - 1][0], NW[q - 1][1]), ny(q) - heightAt(NW[q][0], NW[q][1])));
+              const ph = high ? PARAPET_H : parapetTop(Math.max(ny(q - 1) - heightAt(NW[q - 1][0], NW[q - 1][1]), ny(q) - heightAt(NW[q][0], NW[q][1])));
               if (ph >= 0.3) barrierBox(tileBody(kit), NW[q - 1][0], NW[q - 1][1], NW[q][0], NW[q][1], (ny(q - 1) + ny(q)) / 2, ph);
             }
           }
@@ -5369,7 +5581,20 @@ export async function buildPasirRisCourse(
             // ground the kerb runs round, as a raised road's wall is.)
             const open = oneLine ? openBesideOf(pts, side(sgn), y, sgn) : undefined;
             band(deck, pts, cum, k0, k1, side(sgn), y, depth, 0, (kk) => !low(kk) && !onPaving(kk), ext(sgn), undefined, open, sec);
-            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, 0.95, (kk) => !low(kk) && parapetClear(line, kk, side(sgn)(kk)) && !onPaving(kk), ext(sgn), undefined, open, sec);
+            // (As tall as the fall beside it, as a raised road's: full where
+            // the ground lies 1.2 m or more under the deck, and none where it
+            // does not fall away at all. The user's rule, 18 Nov: a bridge's
+            // parapets begin where the ground drops. Full all along, a little
+            // bridge over a drain had one standing 1 m tall at each end,
+            // where it left the ground, over a fall of 10 to 30 cm.)
+            const dr = (kk: number) => {
+              const a = pts[Math.max(0, kk - 1)], b = pts[Math.min(pts.length - 1, kk + 1)];
+              const tl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+              const o = side(sgn)(kk);
+              const g = (e: number) => heightAt(pts[kk][0] + ((b[1] - a[1]) / tl) * (o + sgn * e), pts[kk][1] - ((b[0] - a[0]) / tl) * (o + sgn * e));
+              return y(kk) - Math.min(g(0.6), g(1.6));
+            };
+            band(deck, pts, cum, k0, k1, side(sgn, WALL_OUT), y, 0, (kk) => parapetTop(dr(kk)), (kk) => !low(kk) && Math.max(dr(kk), dr(kk + 1)) > PARAPET_FROM && parapetClear(line, kk, side(sgn)(kk)) && !onPaving(kk), ext(sgn), undefined, open, sec);
           }
           for (let a = k0; a < k1; ) {
             if (low(a)) {
@@ -5558,7 +5783,8 @@ export async function buildPasirRisCourse(
             if (coveredBy(line, mx + dz * sgn * 0.6, mz - dx * sgn * 0.6, y) || !parapetClear(line, kk, sgn * (halfAtE(line, kk) + halfAtE(line, kk + 1)) / 2 + sgn * 0.45)) continue;
             // A raised road only needs one where its side drops away: as
             // tall as the parapet drawn there (it ramps up with the drop).
-            const ph = isDeck[line] && lvlOf(line, kk) >= 0 ? PARAPET_H : parapetTop(y - heightAt(mx + dz * sgn * 0.6, mz - dx * sgn * 0.6));
+            // (A deck's too, by the fall beside it: see the deck's parapet.)
+            const ph = isDeck[line] && lvlOf(line, kk) >= 0 ? parapetTop(y - Math.min(heightAt(mx + dz * sgn * 0.6, mz - dx * sgn * 0.6), heightAt(mx + dz * sgn * 1.6, mz - dx * sgn * 1.6))) : parapetTop(y - heightAt(mx + dz * sgn * 0.6, mz - dx * sgn * 0.6));
             if (ph < 0.3) continue;
             world.createCollider(
               RAPIER.ColliderDesc.cuboid(sl / 2 + 0.15, ph / 2 + 0.125, 0.25)
@@ -6471,6 +6697,14 @@ export async function buildPasirRisCourse(
     if (fine) fineOf.set(r, fine.reverse());
   };
   const fineOf = new WeakMap<Path64, [number, number][]>();
+  /**
+   * How far round, within 2.5 m, an outline turns at an island's point:
+   * 130 deg, a point up to 50 deg wide. (At 150 deg, the island at
+   * -139.8,-57 (I0), its point 45 deg wide, was no point: its sides were
+   * never eased into it, and bent 10 deg 1 to 5 m from it, a jog in the
+   * kerb and the yellow line.)
+   */
+  const TIP_TURN = (130 * Math.PI) / 180;
   const easeRing = (r: Path64, merge: boolean) => {
     const N = r.length;
     if (N < 6) return;
@@ -6485,27 +6719,34 @@ export async function buildPasirRisCourse(
     }
     const tips: number[] = [], all: number[] = [];
     const used = new Uint8Array(N);
-    const cand: { i: number; s: number; arc: number }[] = [];
-    for (let i = 0; i < N; i++) {
-      if (turn[i] <= 0) continue;
-      let t = 0, arc = 0;
-      for (let s = 0; s < N; s++) {
-        const j = (i + s) % N;
-        t += turn[j];
-        if (t >= (150 * Math.PI) / 180) {
-          cand.push({ i, s, arc });
-          break;
+    // (The points turning 150 deg first, as before, then the wider ones
+    // up to TIP_TURN on what is left: a wide one, found first, took the
+    // corners of a sharp one beside it, which then went uneased.)
+    const candAt = (th: number) => {
+      const cs: { i: number; s: number; arc: number }[] = [];
+      for (let i = 0; i < N; i++) {
+        if (turn[i] <= 0) continue;
+        let t = 0, arc = 0;
+        for (let s = 0; s < N; s++) {
+          const j = (i + s) % N;
+          t += turn[j];
+          if (t >= th) {
+            cs.push({ i, s, arc });
+            break;
+          }
+          arc += len[j];
+          if (arc > 2.5 || t < -0.2) break;
         }
-        arc += len[j];
-        if (arc > 2.5 || t < -0.2) break;
       }
-    }
-    cand.sort((p, q) => p.arc - q.arc);
-    for (const c of cand) {
+      return cs.sort((p, q) => p.arc - q.arc);
+    };
+    const sharpN = candAt((150 * Math.PI) / 180);
+    const cand = [...sharpN, ...candAt(TIP_TURN)];
+    for (let k = 0; k < cand.length; k++) {
+      const c = cand[k], wide = k >= sharpN.length;
       let free = true;
       for (let s = 0; s <= c.s; s++) if (used[(c.i + s) % N]) free = false;
       if (!free) continue;
-      for (let s = 0; s <= c.s; s++) used[(c.i + s) % N] = 1;
       let t = 0, tip = c.i, flat = 0, sharp = 0;
       for (let s = 0; s <= c.s; s++) {
         const j = (c.i + s) % N;
@@ -6514,7 +6755,12 @@ export async function buildPasirRisCourse(
         sharp = Math.max(sharp, turn[j]);
         if (s < c.s) flat = Math.max(flat, len[j]);
       }
-      if (flat <= 0.35 && c.arc <= 1.6 && sharp <= Math.PI / 6) tips.push(tip);
+      const isTip = flat <= 0.35 && c.arc <= 1.6 && sharp <= Math.PI / 6;
+      // (A wide one counts only if it is a rounded point itself: as any
+      // other rounding it would keep the easing off the corners near it.)
+      if (wide && !isTip) continue;
+      for (let s = 0; s <= c.s; s++) used[(c.i + s) % N] = 1;
+      if (isTip) tips.push(tip);
       all.push(tip);
     }
     if (!tips.length) return;
@@ -6524,10 +6770,14 @@ export async function buildPasirRisCourse(
     for (const tp of tips)
       for (const dir of [1, -1]) {
         let arc = 0;
-        for (let s = 1; s < N && arc < 10; s++) {
+        // (Out to 11 m from it as the crow flies, as the check measures, not
+        // 10 m along the ring: where the point was taken a corner or two
+        // round, a corner 9.8 m from where the check puts it was 10.2 m
+        // along, left as it was, at 1335.5,571.6.)
+        for (let s = 1; s < N && arc < 16; s++) {
           const j = (((tp + dir * s) % N) + N) % N;
           arc += len[dir > 0 ? (j - 1 + N) % N : j];
-          if (arc >= 10) break;
+          if (arc >= 16 || Math.hypot(r[j].x - r[tp].x, r[j].y - r[tp].y) >= 11 * OUT_S) break;
           if (near(j)) continue;
           const a = Math.abs(turn[j]);
           if (a > Math.PI / 3) break;
@@ -6849,7 +7099,23 @@ export async function buildPasirRisCourse(
     const lv: { lvl: number; U: Paths64; U0: Paths64 }[] = [];
     for (const [lvl, paths] of [...byLvl].sort((p, q) => p[0] - q[0])) {
       yield;
-      const U = Clipper.Union(paths, undefined, FillRule.NonZero);
+      let U = Clipper.Union(paths, undefined, FillRule.NonZero);
+      // (Less the dividers, on the ground: see dividers.)
+      if (lvl < 0) {
+        const D = new Paths64();
+        for (const dv of dividers) {
+          if (dv.x1 < bx0 || dv.x0 > bx1 || dv.z1 < bz0 || dv.z0 > bz1) continue;
+          const p = new Path64();
+          for (const q of dv.ring) p.push(new Point64(Math.round(q[0] * OUT_S), Math.round(q[1] * OUT_S)));
+          if (Clipper.area(p) < 0) p.reverse();
+          D.push(p);
+        }
+        if (D.length) {
+          // (A slice of its own: with the union, over 100 ms in one.)
+          yield;
+          U = Clipper.Difference(U, D, FillRule.NonZero);
+        }
+      }
       yield;
       // (As the pieces pave it, before the outline is tidied: see the
       // end. Each road piece as its strip draws it, not 5 cm on past its
@@ -7236,6 +7502,8 @@ export async function buildPasirRisCourse(
     // off its end: there the outline is round its end, not along its side.)
     let lined = -1;
     let ls = 0;
+    let lo = Infinity;
+    const onDiv = lvl < 0 && dividers.some((v) => mx > v.x0 - 0.1 && mx < v.x1 + 0.1 && mz > v.z0 - 0.1 && mz < v.z1 + 0.1 && v.ring.some((p, q) => segDist(v.ring[(q + 1) % v.ring.length], p, mx, mz) < 0.1));
     let off = Infinity;
     for (const [i, { seg, u, d }] of near) {
       if (!outlined[i] || JX.internal[i] || rankOf(edges[i].cls) < 2) continue;
@@ -7244,7 +7512,12 @@ export async function buildPasirRisCourse(
       if ((seg === 0 && u <= 0 && thruMate(i, edges[i].a) === undefined) || (seg === EP[i].length - 2 && u >= 1 && thruMate(i, edges[i].b) === undefined)) continue;
       const o = d - drawnHalf(i, seg, u);
       // (A little inside its edge too: where two roads overlap, one may be drawn a little narrower than its width says.)
-      if (o > -1 && o < 0.6 && (lined < 0 || Math.abs(o) < Math.abs(off))) (lined = i), (ls = seg);
+      // (A road the outline lies on or inside first: along a divider's
+      // kerb, 0.4 m in from one road's edge, the other road's edge lay
+      // nearer, 0.4 m beyond the kerb across the divider, and its line
+      // hooked over to that one.)
+      const better = lined < 0 || (onDiv && (o <= 0.02) !== (lo <= 0.02) ? o <= 0.02 : Math.abs(o) < Math.abs(lo));
+      if (o > -1 && o < 0.6 && better) (lined = i), (ls = seg), (lo = o);
       if (Math.abs(o) < Math.abs(off)) off = o;
     }
     // (A slip road's wedge between lined roads: its outside carries the
@@ -7570,6 +7843,11 @@ export async function buildPasirRisCourse(
     roads.each(x, z, 12, (o, seg, u, d) => {
       const out = d - drawnHalf(o, seg, u);
       if (JX.internal[o] || !onLvl(o, seg, lvl) || !outlined[o] || out > 1.5) return;
+      // (Nor a road's strip where it is not drawn, inside its junction's
+      // trim: by -2772.9,2246.5, 0.4 m over the paving drawn there, stood
+      // the fill at a divider's end up as a dark wedge.)
+      const at = ECUM[o][seg] + u * (ECUM[o][seg + 1] - ECUM[o][seg]);
+      if (at < (JX.trimA[o] || 0) - 0.05 || at > ELEN[o] - (JX.trimB[o] || 0) + 0.05) return;
       const h = stripTop(o, x, z, seg - 1, seg + 1);
       if (h !== h) return;
       low = Math.min(low, h);
@@ -7678,6 +7956,8 @@ export async function buildPasirRisCourse(
    * a pit, the road's edge face showing into it.)
    */
   const ISLE_W = 12.5, ISLE_TAPER = 6, ISLE_BANK = 1.5, KERB_OUT = 0.35;
+  /** How far under the kerb the ground beside it may lie for the island's top to be lifted to it (fading out over the next metre). */
+  const ISLE_DEEP = 2.5;
   const ISLE_STEP = 1;
   /** The outline's sides of each level in a tile, on a 4 m grid: [ax, az, bx, bz, lvl]. */
   const outSegs = (w: { rings: OutRing[]; segs?: Map<number, number[][]> }) => {
@@ -7774,7 +8054,11 @@ export async function buildPasirRisCourse(
         const f = farTop(mm, P[v][0] - nx * (d + 0.05), P[v][1] - nz * (d + 0.05));
         const t0 = top(v);
         ap = f === f && Math.abs(f + ROAD_LIFT + 0.03 - t0) >= 0.5;
-        m = f === f && !ap ? (t0 + f + ROAD_LIFT + 0.03) / 2 : t0;
+        // (On a wide island, between two roads at different heights, a bank
+        // from one kerb's top to the other's, never a level top each side
+        // ending at the middle: the higher one's stood there as a cliff
+        // with no face, at -139.8,-57 (I0) a spike seen from the road.)
+        m = f === f && (!ap || d / 2 >= 0.75) ? (t0 + f + ROAD_LIFT + 0.03) / 2 : t0;
       }
       mid.push(m);
       apart.push(ap);
@@ -7824,8 +8108,13 @@ export async function buildPasirRisCourse(
       });
     }
     const col = new THREE.Color();
-    const put = (x: number, y: number, z: number) => {
-      heightAt(x, z);
+    let fade = 0;
+    const put = (x: number, yIn: number, z: number) => {
+      // (The ground's colour wants only what the bare ground's height leaves
+      // in probe, the same as heightAt leaves: the roads' search in heightAt,
+      // here at every point of every island, was 3 s of a start.)
+      const y = fade > 0 ? lerp(yIn, Math.min(yIn, heightAt(x, z) + 0.02), fade) : yIn;
+      rawHeight(x, z);
       colorAt(x, z, y, col);
       const s = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
       lawn.pos.push(x, y, z);
@@ -7835,7 +8124,7 @@ export async function buildPasirRisCourse(
     };
     // (Each cross-section: the kerb's outer edge, the island's middle or
     // its open edge, the bank's foot. Only on the ground: not where the
-    // ground beside the kerb stands above it, or more than 1.2 m under it.)
+    // ground beside the kerb stands above it, or more than ISLE_DEEP under it.)
     const secs: (number[] | null)[] = [];
     for (let i = 0; i < n; i++) {
       if (i % 8 === 7) yield;
@@ -7858,10 +8147,15 @@ export async function buildPasirRisCourse(
         if (onPath(P[v][0] + ox * t, P[v][1] + oz * t)) (cut = true), (wi = Math.min(wi, t - 0.05));
       const x0 = P[v][0] + ox * KERB_OUT, z0 = P[v][1] + oz * KERB_OUT;
       const x1 = P[v][0] + ox * wi, z1 = P[v][1] + oz * wi;
-      // (The ground just past the kerb within a metre under its top: past
+      // (The ground just past the kerb within ISLE_DEEP under its top: past
       // that the kerb stands at a drop, a wall's business.)
+      // (Fading out between ISLE_DEEP and ISLE_DEEP + 1 m, not cut off at
+      // a depth: an island in a pit 1.2 to 1.6 m deep between roads on an
+      // embankment, lifted where the ground lay under 1.2 m below the kerb
+      // and left in the pit beside, stood up out of it as a spike.)
       const g = heightAt(x0, z0);
-      if (!(t0 === t0) || g > t0 || g < t0 - 1.2 || wi <= KERB_OUT + 0.02) {
+      fade = smoothstep(ISLE_DEEP, ISLE_DEEP + 1, t0 - g);
+      if (!(t0 === t0) || g > t0 || fade >= 1 || wi <= KERB_OUT + 0.02) {
         secs.push(null);
         continue;
       }
@@ -7879,7 +8173,10 @@ export async function buildPasirRisCourse(
       const sh = fall ? KERB_OUT + Math.min(0.15, (wi - KERB_OUT) / 2) : (KERB_OUT + wi) / 2;
       const sec = [put(x0, t0, z0), put(P[v][0] + ox * sh, fall ? t0 : (t0 + y1) / 2, P[v][1] + oz * sh), put(x1, y1, z1)];
       if (open) {
-        const bank = cut ? 0.25 : ISLE_BANK;
+        // (No steeper than 1 in 3: where the island stands a metre over
+        // the ground beyond, a bank 1.5 m wide was a dark face, and the
+        // next section's, open or not, a fold beside it.)
+        const bank = cut ? 0.25 : Math.max(ISLE_BANK, Math.min(6, 3 * (y1 - heightAt(x1, z1))));
         const x2 = P[v][0] + ox * (wi + bank), z2 = P[v][1] + oz * (wi + bank);
         sec.push(put(x2, Math.min(y1, heightAt(x2, z2) + 0.02), z2));
       }
@@ -10615,9 +10912,14 @@ export async function buildPasirRisCourse(
       // Where any mark may stop (for the checks: no one road asked about).
       outlineAt,
       gores,
+      dividers,
+      divMs: () => divMs,
       goreCaps,
       sAlong,
       fillY,
+      drawnHalf: (o: number, seg: number, u: number) => drawnHalf(o, seg, u),
+      outlineY: (x: number, z: number, lvl = -1) => outlineY(x, z, nearRoads(x, z), lvl),
+      onLvl,
       surfacePoly: (i: number) => surfacePoly(i),
       outSources: () => outSources(),
       padsAt, stripOutNow: () => stripOut, drapedPadAt, padShapeOf: (j: number) => padShape(j), padYOf: (j: number) => padY(j), padsByTile,

@@ -482,3 +482,48 @@ window.__checkIslandTops = (all = false) => {
   const pl = window.__finishIndex().places(bad, 4);
   return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
+
+// The user's rule (18 Nov): a bridge's parapets and walls begin where the
+// ground actually drops, never on an island at the junction. Every upright
+// sheet standing on a road's level (a parapet, its foot over the ground)
+// and over 0.5 m tall has a fall of at least 0.45 m beside it: the ground
+// 0.6 or 1.6 m out from it, either side, that far under the road. (Elias
+// Road's two little bridges over a drain: a full parapet round the island
+// at the junction where they leave the ground, 1 m tall over no drop.)
+window.__checkParapetDrop = (all = false) => {
+  const d = globalThis.__osm;
+  const F = window.__finishIndex();
+  const bad = [];
+  let n = 0;
+  for (const s of F.sheets) {
+    if (s.hi - s.lo < 0.5) continue;
+    const l = Math.hypot(s.x1 - s.x0, s.z1 - s.z0) || 1;
+    const nx = -(s.z1 - s.z0) / l, nz = (s.x1 - s.x0) / l;
+    // (Measured at each upright edge of the sheet, where it stands as tall
+    // as it is: a parapet's piece rises along its length from where the
+    // ground begins to fall away, so its middle is no measure.)
+    const cols = [];
+    for (const [x, y, z] of s.c) {
+      const c = cols.find((q) => Math.hypot(q.x - x, q.z - z) < 0.02);
+      if (c) (c.lo = Math.min(c.lo, y)), (c.hi = Math.max(c.hi, y));
+      else cols.push({ x, z, lo: y, hi: y });
+    }
+    for (const c of cols) {
+      if (c.hi - c.lo < 0.5) continue;
+      const g = (o) => d.heightAt(c.x + nx * o, c.z + nz * o);
+      // (Its foot up off the ground, on a road's level beside it: a parapet,
+      // not a wall down into the ground or a beam under a deck.)
+      if (c.lo < Math.min(g(0), g(0.3), g(-0.3)) + 0.05) continue;
+      const road = c.lo - 0.09;
+      let beside = false;
+      for (const o of [-0.6, -0.3, 0.3, 0.6])
+        if (F.flatAt(c.x + nx * o, c.z + nz * o).some((q) => Math.abs(q.h - road) < 0.15)) beside = true;
+      if (!beside) continue;
+      n++;
+      const drop = road - Math.min(g(0.6), g(1.6), g(-0.6), g(-1.6));
+      if (drop < 0.45) bad.push({ x: +c.x.toFixed(1), z: +c.z.toFixed(1), value: +(c.hi - c.lo).toFixed(2), what: `parapet ${(c.hi - c.lo).toFixed(2)} m tall over a fall of ${drop.toFixed(2)} m` });
+    }
+  }
+  const pl = F.places(bad, 2);
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
+};

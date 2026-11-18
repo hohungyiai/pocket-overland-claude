@@ -387,6 +387,7 @@ window.__checkNoses = (all = false) => {
         if (!d.outlineAt(x, z, 0.6).some((q) => q.kerb)) continue;
         n++;
         tips.push([x, z]);
+        if (window.__noseTips) window.__noseTips.push({ x, z, R, tip, lvl: g.lvl });
         // (Feedback 9 rule 3: nor any corner along it within 10 m of its
         // point, either way round: the kerb runs in to the point in one
         // smooth line. Its own rounding, within 1.2 m of the point, apart.)
@@ -624,4 +625,60 @@ window.__checkNoseCorners = (all = false) => {
   const bad = P.filter((p) => p.deg > 4).map((p) => ({ x: p.x, z: p.z, value: +((p.deg - 4) / 4).toFixed(2), what: `corner ${p.deg} deg, ${Math.hypot(p.x - p.tip[0], p.z - p.tip[1]).toFixed(1)} m from the point at ${p.tip}` }));
   const pl = window.__finishIndex().places(bad, 4);
   return { samples: P.length, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'x 4 deg' };
+};
+
+// The user's rules 1 and 2 at every point (18 Nov): where two roads at
+// different heights touch, they never fold together into one point. At
+// every point the nose check finds, 1.5 m back along each side: if the
+// island there is under 0.7 m across (a point, not a divider's round end),
+// the paving 0.3 m in from each side is at one height, within 0.3 m.
+// (At -2772.9,2246.5 and 1768.1,2113.2: two kerbs folded into one sharp
+// point at a step of 1.2 m and 0.7 m, an upright face and a green flap
+// standing in it.)
+window.__checkTipSteps = (all = false) => {
+  const d = globalThis.__osm;
+  if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
+  window.__noseTips = [];
+  try {
+    window.__checkNoses(true);
+  } finally {
+    var L = window.__noseTips;
+    window.__noseTips = null;
+  }
+  const F = window.__finishIndex();
+  const bad = [];
+  let n = 0;
+  for (const t of L) {
+    const { R, tip } = t;
+    const N = R.length;
+    const back = (dir, want) => {
+      let arc = 0, j = tip;
+      for (let s = 1; s < N; s++) {
+        const k = (((tip + dir * s) % N) + N) % N;
+        const l = Math.hypot(R[k][0] - R[j][0], R[k][1] - R[j][1]);
+        if (arc + l >= want) {
+          const u = (want - arc) / (l || 1);
+          return [R[j][0] + (R[k][0] - R[j][0]) * u, R[j][1] + (R[k][1] - R[j][1]) * u];
+        }
+        arc += l;
+        j = k;
+      }
+      return R[j];
+    };
+    const a = back(1, 1.5), b = back(-1, 1.5);
+    const w = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    if (w >= 0.7 || w < 1e-3) continue;
+    n++;
+    // (0.3 m in from each side, away from the other: into the paving.)
+    const into = (p, o) => [p[0] + ((p[0] - o[0]) / w) * 0.3, p[1] + ((p[1] - o[1]) / w) * 0.3];
+    const pa = into(a, b), pb = into(b, a);
+    const ha = F.flatAt(pa[0], pa[1]).filter((q) => q.kind === 'road').map((q) => q.h);
+    const hb = F.flatAt(pb[0], pb[1]).filter((q) => q.kind === 'road').map((q) => q.h);
+    if (!ha.length || !hb.length) continue;
+    let dy = Infinity;
+    for (const p of ha) for (const q of hb) dy = Math.min(dy, Math.abs(p - q));
+    if (dy > 0.3) bad.push({ x: +t.x.toFixed(1), z: +t.z.toFixed(1), value: +dy.toFixed(2), what: `point between roads ${dy.toFixed(2)} m apart in height` });
+  }
+  const pl = F.places(bad, 2);
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
