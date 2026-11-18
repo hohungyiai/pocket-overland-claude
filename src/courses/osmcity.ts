@@ -7787,8 +7787,10 @@ export async function buildPasirRisCourse(
     };
     // (Where it widens past ISLE_W, narrowing away along the kerb.)
     const W: number[] = half.map((h, i) => {
-      // (A narrow one, its two kerbs all but meeting, all the way across.)
-      if (h < 0.75) return 2 * h;
+      // (A narrow one, its two kerbs all but meeting, all the way across to
+      // the far kerb's outer edge: on to the far side's own edge, it lay
+      // over that kerb, the two fighting to show, a pale wedge in the lawn.)
+      if (h < 0.75) return 2 * h - KERB_OUT;
       if (h < Infinity) return h + 0.05;
       let best = 0;
       near(i, ISLE_TAPER, (j) => {
@@ -7858,7 +7860,12 @@ export async function buildPasirRisCourse(
       }
       const open = !(half[i] < Infinity) || cut;
       const y1 = !(half[i] < Infinity) ? t0 : lerp(t0, mid[i], Math.min(2, wi / half[i]));
-      const sec = [put(x0, t0, z0), put(x1, y1, z1)];
+      // (Level with the kerb's top for its first 15 cm, then on to the
+      // middle: across a narrow island between two roads at different
+      // heights, sloping from the kerb's very edge, it lay 2-3 cm under the
+      // kerb's top a hand's width in.)
+      const sh = Math.min(KERB_OUT + 0.15, wi - 0.01);
+      const sec = [put(x0, t0, z0), put(P[v][0] + ox * sh, t0, P[v][1] + oz * sh), put(x1, y1, z1)];
       if (open) {
         const bank = cut ? 0.25 : ISLE_BANK;
         const x2 = P[v][0] + ox * (wi + bank), z2 = P[v][1] + oz * (wi + bank);
@@ -8051,6 +8058,48 @@ export async function buildPasirRisCourse(
             // (Copies: the library moves the points it is handed.)
             near.push(copyOf(C[i]));
           }
+      // (Paving below the kerb's top, under the kerb itself, shows
+      // nowhere: the kerb is drawn over it. Left there, it closes what
+      // would be a crack under the kerb, between two roads at different
+      // heights meeting at an island's point.)
+      if (near.length) {
+        // (This triangle's own plane, for its height under each kerb.)
+        const det0 = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+        const ay = pos[ia * 3 + 1], by = pos[ib * 3 + 1], cy = pos[ic * 3 + 1];
+        const planeY = (x: number, z: number) => {
+          const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det0, l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det0;
+          return l1 * ay + l2 * by + (1 - l1 - l2) * cy;
+        };
+        const foot = new Paths64();
+        const had = new Set<number>();
+        for (let gx = Math.floor(tx0 / G); gx <= Math.floor(tx1 / G); gx++)
+          for (let gz = Math.floor(tz0 / G); gz <= Math.floor(tz1 / G); gz++)
+            for (const i of KG.get(gx * 65536 + gz) ?? []) {
+              if (had.has(i)) continue;
+              had.add(i);
+              const e = KE[i];
+              if (e.length < 12 || Math.max(e[0], e[3], e[8], e[10]) < tx0 || Math.min(e[0], e[3], e[8], e[10]) > tx1 || Math.max(e[1], e[4], e[9], e[11]) < tz0 || Math.min(e[1], e[4], e[9], e[11]) > tz1) continue;
+              // (Only a kerb whose top the paving stays under, each kerb by
+              // its own top: round an island's point between two roads at
+              // different heights, one side's kerb stands lower than the
+              // other's.)
+              if (Math.abs(det0) < 1e-9 || Math.max(planeY(e[0], e[1]), planeY(e[3], e[4]), planeY(e[8], e[9]), planeY(e[10], e[11])) > Math.min(e[2], e[5]) - 0.02) continue;
+              const r = new Path64();
+              // (Its inner side 5 cm into the road: on the outline's own
+              // line, it left slivers a millimetre wide between it and the
+              // cut, and the road there in hairline pieces.)
+              const ix = -e[6] * 0.05, iz = -e[7] * 0.05;
+              for (const [x, z] of [[e[8] + ix, e[9] + iz], [e[10] + ix, e[11] + iz], [e[3], e[4]], [e[0], e[1]]]) r.push(new Point64(Math.round(x * OUT_S), Math.round(z * OUT_S)));
+              // (All one way round: two the other way over each other would cancel.)
+              if (Clipper.area(r) < 0) r.reverse();
+              foot.push(r);
+            }
+        if (foot.length) {
+          const left = Clipper.Difference(near, foot, FillRule.NonZero);
+          near.length = 0;
+          for (const c of left) if (Math.abs(Clipper.area(c)) >= 100) near.push(c);
+        }
+      }
       if (!near.length) {
         keep.push(ia, ib, ic);
         continue;
@@ -8062,8 +8111,11 @@ export async function buildPasirRisCourse(
       const subj = new Paths64();
       subj.push(tri);
       const left = Clipper.Difference(subj, near, FillRule.NonZero);
-      // (Untouched: as it was.)
-      if (left.length === 1 && left[0].length === 3 && Math.abs(Math.abs(Clipper.area(left[0])) - Math.abs(Clipper.area(tri))) < 1) {
+      // (Untouched, or all but: as it was. Under 25 cm² taken off, nothing
+      // of it shows, and a long thin triangle of a junction's fan, cut for
+      // so little, came back as needles with hairlines between them.)
+      const lost = Math.abs(Clipper.area(tri)) - Math.abs(left.reduce((a, c) => a + Clipper.area(c), 0));
+      if ((left.length === 1 && left[0].length === 3 && Math.abs(Math.abs(Clipper.area(left[0])) - Math.abs(Clipper.area(tri))) < 1) || Math.abs(lost) < 2500) {
         keep.push(ia, ib, ic);
         continue;
       }
@@ -8829,13 +8881,13 @@ export async function buildPasirRisCourse(
                 const E: number[][] = [];
                 for (let j = a; j <= b; j++) {
                   const { nx, nz, mm } = section(Q2, j, lo, hi, undefined, true);
-                  E.push([Q2[j][0] - nx * KERB_OUT * mm, Q2[j][1] - nz * KERB_OUT * mm, hK2[j] + 0.07, -nx, -nz]);
+                  E.push([Q2[j][0] - nx * KERB_OUT * mm, Q2[j][1] - nz * KERB_OUT * mm, hK2[j] + 0.07, -nx, -nz, Q2[j][0], Q2[j][1]]);
                 }
                 const ko = kerbOuter.get(k) ?? kerbOuter.set(k, []).get(k)!;
                 for (let j = 1; j < E.length; j++) {
                   const [p, q] = [E[j - 1], E[j]];
                   const ol = Math.hypot(p[3] + q[3], p[4] + q[4]) || 1;
-                  if (p[2] === p[2] && q[2] === q[2]) ko.push([p[0], p[1], p[2], q[0], q[1], q[2], (p[3] + q[3]) / ol, (p[4] + q[4]) / ol]);
+                  if (p[2] === p[2] && q[2] === q[2]) ko.push([p[0], p[1], p[2], q[0], q[1], q[2], (p[3] + q[3]) / ol, (p[4] + q[4]) / ol, p[5], p[6], q[5], q[6]]);
                 }
               });
               yield;

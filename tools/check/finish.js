@@ -9,7 +9,8 @@
 //   flatAt(x, z)        every flat piece over (x, z): [{ kind, h }, ...]
 //   asphaltAt(x, z, y)  height of the asphalt nearest y there, NaN if none within tol
 //   sheets              every upright sheet of deck (parapet, wall, beam) as a
-//                       ground segment with its bottom and top heights
+//                       ground segment with its bottom and top heights (and c:
+//                       its triangle's three corners)
 window.__finishIndex = () => {
   if (window.__finIdx) return window.__finIdx;
   const d = globalThis.__osm;
@@ -48,7 +49,7 @@ window.__finishIndex = () => {
         }
         if (best < 0.3) continue;
         const ys = v.map((p) => pos[p + 1]);
-        sheets.push({ x0: s[0], z0: s[1], x1: s[2], z1: s[3], lo: Math.min(...ys), hi: Math.max(...ys) });
+        sheets.push({ x0: s[0], z0: s[1], x1: s[2], z1: s[3], lo: Math.min(...ys), hi: Math.max(...ys), c: v.map((p) => [pos[p], pos[p + 1], pos[p + 2]]) });
       }
     }
   }

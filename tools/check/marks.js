@@ -543,6 +543,40 @@ window.__checkKerbBeside = (all = false) => {
     }
     return false;
   };
+  // (The line's points, by 1 m square.)
+  const LG = new Map();
+  for (const v of lines)
+    for (let c = 0; c < 9; c += 3) {
+      const key = Math.floor(v[c]) * 100003 + Math.floor(v[c + 2]);
+      (LG.get(key) ?? LG.set(key, []).get(key)).push(v[c], v[c + 1], v[c + 2]);
+    }
+  /** Square to the line at (x, z): the main axis of its points within 0.5 m, or the triangle's longest side where too few. */
+  const lineAcross = (v, x, y, z) => {
+    let n = 0, mx = 0, mz = 0;
+    const P = [];
+    for (let i = Math.floor(x) - 1; i <= Math.floor(x) + 1; i++)
+      for (let j = Math.floor(z) - 1; j <= Math.floor(z) + 1; j++) {
+        const q = LG.get(i * 100003 + j) ?? [];
+        for (let c = 0; c < q.length; c += 3) if (Math.hypot(q[c] - x, q[c + 2] - z) < 0.5 && Math.abs(q[c + 1] - y) < 0.3) P.push(q[c], q[c + 2]), n++, (mx += q[c]), (mz += q[c + 2]);
+      }
+    if (n >= 6) {
+      mx /= n;
+      mz /= n;
+      let sxx = 0, sxz = 0, szz = 0;
+      for (let c = 0; c < P.length; c += 2) {
+        const dx = P[c] - mx, dz = P[c + 1] - mz;
+        (sxx += dx * dx), (sxz += dx * dz), (szz += dz * dz);
+      }
+      const a = 0.5 * Math.atan2(2 * sxz, sxx - szz);
+      const along = [Math.cos(a), Math.sin(a)];
+      // (A clear way along: the points spread along it well past across it.)
+      const l1 = sxx * along[0] ** 2 + 2 * sxz * along[0] * along[1] + szz * along[1] ** 2, l2 = sxx + szz - l1;
+      if (l1 > 4 * l2) return [-along[1], along[0]];
+    }
+    const E = [[0, 3], [3, 6], [6, 0]].map(([a, b]) => [v[b] - v[a], v[b + 2] - v[a + 2]]).reduce((m, e) => (Math.hypot(...e) > Math.hypot(...m) ? e : m));
+    const el = Math.hypot(...E) || 1;
+    return [-E[1] / el, E[0] / el];
+  };
   const bad = [];
   const seen = new Set();
   let n = 0;
@@ -551,10 +585,11 @@ window.__checkKerbBeside = (all = false) => {
     const key = Math.round(x * 4) + ',' + Math.round(z * 4);
     if (seen.has(key)) continue;
     seen.add(key);
-    // (Along its longest side; across, either way.)
-    const E = [[0, 3], [3, 6], [6, 0]].map(([a, b]) => [v[b] - v[a], v[b + 2] - v[a + 2]]).reduce((m, e) => (Math.hypot(...e) > Math.hypot(...m) ? e : m));
-    const el = Math.hypot(...E) || 1;
-    const nx = -E[1] / el, nz = E[0] / el;
+    // (Along the line, as the line's own points within half a metre lie;
+    // across, either way. Read by the triangle's longest side, a line drawn
+    // in pieces shorter than it is wide was read across itself, its
+    // diagonal taken for its way: the user's call on 17 Nov.)
+    const [nx, nz] = lineAcross(v, x, y, z);
     // (On the ground: a raised road's edge has its parapet.)
     if (y - d.heightAt(x, z) > 1.5) continue;
     if (window.__markStopOk(x, z, y)) continue;
