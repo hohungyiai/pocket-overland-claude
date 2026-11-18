@@ -7744,7 +7744,7 @@ export async function buildPasirRisCourse(
   const islandTopIn = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
     const segs = outSegs(w);
     const n = v1 - v0 + 1;
-    const out: XZ[] = [], half: number[] = [], mid: number[] = [], M: (OutMark | null)[] = [];
+    const out: XZ[] = [], half: number[] = [], mid: number[] = [], apart: boolean[] = [], M: (OutMark | null)[] = [];
     for (let v = v0; v <= v1; v++) {
       if ((v - v0) % 8 === 7) yield;
       const mm = mark(v);
@@ -7769,13 +7769,15 @@ export async function buildPasirRisCourse(
         }
       half.push(d / 2);
       // (Its middle as high as both sides' kerbs, the far one's from what is drawn there.)
-      let m = NaN;
+      let m = NaN, ap = false;
       if (mm && d < Infinity) {
         const f = farTop(mm, P[v][0] - nx * (d + 0.05), P[v][1] - nz * (d + 0.05));
         const t0 = top(v);
-        m = f === f && Math.abs(f + ROAD_LIFT + 0.03 - t0) < 0.5 ? (t0 + f + ROAD_LIFT + 0.03) / 2 : t0;
+        ap = f === f && Math.abs(f + ROAD_LIFT + 0.03 - t0) >= 0.5;
+        m = f === f && !ap ? (t0 + f + ROAD_LIFT + 0.03) / 2 : t0;
       }
       mid.push(m);
+      apart.push(ap);
     }
     // (The sections within r along the kerb either side of i, cum rising
     // along it: each against all, with sections a metre apart, a long kerb
@@ -7790,7 +7792,12 @@ export async function buildPasirRisCourse(
       // (A narrow one, its two kerbs all but meeting, all the way across to
       // the far kerb's outer edge: on to the far side's own edge, it lay
       // over that kerb, the two fighting to show, a pale wedge in the lawn.)
-      if (h < 0.75) return 2 * h - KERB_OUT;
+      // (But where the far kerb stands half a metre or more above or below
+      // this one, a wall between, across to the far side's edge after all:
+      // the higher side's lawn a level top over the wall, the lower kerb
+      // under it, and no fight. Stopped at the far kerb there, the strip
+      // between the two roads was two bare kerbs and a crack from above.)
+      if (h < 0.75) return apart[i] ? 2 * h : 2 * h - KERB_OUT;
       if (h < Infinity) return h + 0.05;
       let best = 0;
       near(i, ISLE_TAPER, (j) => {
