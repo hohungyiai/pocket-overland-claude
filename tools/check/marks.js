@@ -387,6 +387,7 @@ window.__checkNoses = (all = false) => {
         if (!d.outlineAt(x, z, 0.6).some((q) => q.kerb)) continue;
         n++;
         tips.push([x, z]);
+        if (window.__noseTips) window.__noseTips.push({ x, z, R, tip, lvl: g.lvl });
         // (Feedback 9 rule 3: nor any corner along it within 10 m of its
         // point, either way round: the kerb runs in to the point in one
         // smooth line. Its own rounding, within 1.2 m of the point, apart.)
@@ -543,6 +544,40 @@ window.__checkKerbBeside = (all = false) => {
     }
     return false;
   };
+  // (The line's points, by 1 m square.)
+  const LG = new Map();
+  for (const v of lines)
+    for (let c = 0; c < 9; c += 3) {
+      const key = Math.floor(v[c]) * 100003 + Math.floor(v[c + 2]);
+      (LG.get(key) ?? LG.set(key, []).get(key)).push(v[c], v[c + 1], v[c + 2]);
+    }
+  /** Square to the line at (x, z): the main axis of its points within 0.5 m, or the triangle's longest side where too few. */
+  const lineAcross = (v, x, y, z) => {
+    let n = 0, mx = 0, mz = 0;
+    const P = [];
+    for (let i = Math.floor(x) - 1; i <= Math.floor(x) + 1; i++)
+      for (let j = Math.floor(z) - 1; j <= Math.floor(z) + 1; j++) {
+        const q = LG.get(i * 100003 + j) ?? [];
+        for (let c = 0; c < q.length; c += 3) if (Math.hypot(q[c] - x, q[c + 2] - z) < 0.5 && Math.abs(q[c + 1] - y) < 0.3) P.push(q[c], q[c + 2]), n++, (mx += q[c]), (mz += q[c + 2]);
+      }
+    if (n >= 6) {
+      mx /= n;
+      mz /= n;
+      let sxx = 0, sxz = 0, szz = 0;
+      for (let c = 0; c < P.length; c += 2) {
+        const dx = P[c] - mx, dz = P[c + 1] - mz;
+        (sxx += dx * dx), (sxz += dx * dz), (szz += dz * dz);
+      }
+      const a = 0.5 * Math.atan2(2 * sxz, sxx - szz);
+      const along = [Math.cos(a), Math.sin(a)];
+      // (A clear way along: the points spread along it well past across it.)
+      const l1 = sxx * along[0] ** 2 + 2 * sxz * along[0] * along[1] + szz * along[1] ** 2, l2 = sxx + szz - l1;
+      if (l1 > 4 * l2) return [-along[1], along[0]];
+    }
+    const E = [[0, 3], [3, 6], [6, 0]].map(([a, b]) => [v[b] - v[a], v[b + 2] - v[a + 2]]).reduce((m, e) => (Math.hypot(...e) > Math.hypot(...m) ? e : m));
+    const el = Math.hypot(...E) || 1;
+    return [-E[1] / el, E[0] / el];
+  };
   const bad = [];
   const seen = new Set();
   let n = 0;
@@ -551,10 +586,11 @@ window.__checkKerbBeside = (all = false) => {
     const key = Math.round(x * 4) + ',' + Math.round(z * 4);
     if (seen.has(key)) continue;
     seen.add(key);
-    // (Along its longest side; across, either way.)
-    const E = [[0, 3], [3, 6], [6, 0]].map(([a, b]) => [v[b] - v[a], v[b + 2] - v[a + 2]]).reduce((m, e) => (Math.hypot(...e) > Math.hypot(...m) ? e : m));
-    const el = Math.hypot(...E) || 1;
-    const nx = -E[1] / el, nz = E[0] / el;
+    // (Along the line, as the line's own points within half a metre lie;
+    // across, either way. Read by the triangle's longest side, a line drawn
+    // in pieces shorter than it is wide was read across itself, its
+    // diagonal taken for its way: the user's call on 17 Nov.)
+    const [nx, nz] = lineAcross(v, x, y, z);
     // (On the ground: a raised road's edge has its parapet.)
     if (y - d.heightAt(x, z) > 1.5) continue;
     if (window.__markStopOk(x, z, y)) continue;
@@ -589,4 +625,60 @@ window.__checkNoseCorners = (all = false) => {
   const bad = P.filter((p) => p.deg > 4).map((p) => ({ x: p.x, z: p.z, value: +((p.deg - 4) / 4).toFixed(2), what: `corner ${p.deg} deg, ${Math.hypot(p.x - p.tip[0], p.z - p.tip[1]).toFixed(1)} m from the point at ${p.tip}` }));
   const pl = window.__finishIndex().places(bad, 4);
   return { samples: P.length, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'x 4 deg' };
+};
+
+// The user's rules 1 and 2 at every point (18 Nov): where two roads at
+// different heights touch, they never fold together into one point. At
+// every point the nose check finds, 1.5 m back along each side: if the
+// island there is under 0.7 m across (a point, not a divider's round end),
+// the paving 0.3 m in from each side is at one height, within 0.3 m.
+// (At -2772.9,2246.5 and 1768.1,2113.2: two kerbs folded into one sharp
+// point at a step of 1.2 m and 0.7 m, an upright face and a green flap
+// standing in it.)
+window.__checkTipSteps = (all = false) => {
+  const d = globalThis.__osm;
+  if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
+  window.__noseTips = [];
+  try {
+    window.__checkNoses(true);
+  } finally {
+    var L = window.__noseTips;
+    window.__noseTips = null;
+  }
+  const F = window.__finishIndex();
+  const bad = [];
+  let n = 0;
+  for (const t of L) {
+    const { R, tip } = t;
+    const N = R.length;
+    const back = (dir, want) => {
+      let arc = 0, j = tip;
+      for (let s = 1; s < N; s++) {
+        const k = (((tip + dir * s) % N) + N) % N;
+        const l = Math.hypot(R[k][0] - R[j][0], R[k][1] - R[j][1]);
+        if (arc + l >= want) {
+          const u = (want - arc) / (l || 1);
+          return [R[j][0] + (R[k][0] - R[j][0]) * u, R[j][1] + (R[k][1] - R[j][1]) * u];
+        }
+        arc += l;
+        j = k;
+      }
+      return R[j];
+    };
+    const a = back(1, 1.5), b = back(-1, 1.5);
+    const w = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    if (w >= 0.7 || w < 1e-3) continue;
+    n++;
+    // (0.3 m in from each side, away from the other: into the paving.)
+    const into = (p, o) => [p[0] + ((p[0] - o[0]) / w) * 0.3, p[1] + ((p[1] - o[1]) / w) * 0.3];
+    const pa = into(a, b), pb = into(b, a);
+    const ha = F.flatAt(pa[0], pa[1]).filter((q) => q.kind === 'road').map((q) => q.h);
+    const hb = F.flatAt(pb[0], pb[1]).filter((q) => q.kind === 'road').map((q) => q.h);
+    if (!ha.length || !hb.length) continue;
+    let dy = Infinity;
+    for (const p of ha) for (const q of hb) dy = Math.min(dy, Math.abs(p - q));
+    if (dy > 0.3) bad.push({ x: +t.x.toFixed(1), z: +t.z.toFixed(1), value: +dy.toFixed(2), what: `point between roads ${dy.toFixed(2)} m apart in height` });
+  }
+  const pl = F.places(bad, 2);
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };

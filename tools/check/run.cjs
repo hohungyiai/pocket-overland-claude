@@ -82,7 +82,7 @@ const CHECKS = [
   // The sides of raised roads (edges.js): a parapet wherever the road's edge
   // drops away, and walls that end by coming down to the ground, not as a
   // square stub. (Known: counted on today's map when these were written.)
-  ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, 31],
+  ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, 24],
   ['A wall beside a road never ends as a square stub on the verge', 'edges.js', '__checkWallEnds', 0, 97],
   ['The ground beside a raised road keeps its bank: the road never cuts it away', 'edges.js', '__checkBanks', 0],
   // (Roads as one line: where the map marks a road as carrying straight on
@@ -95,15 +95,20 @@ const CHECKS = [
   ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0, { trial: 2 }],
   ['Every marking lies on the surface drawn under it, never more than 1 cm under it', 'marks.js', '__checkMarkDepth', 0],
   // (A count that may only go down: 233 when it was written, the live build 262. The user's call, 2026-11-16: fixed in the next round.)
-  ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0, 233],
+  ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0, 231],
   ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
+  ['Every island narrows smoothly to its point: no corner of its outline turns more than 4 deg within 10 m of it', 'marks.js', '__checkNoseCorners', 0],
+  // (The user's rules 1 and 2 at every point, 18 Nov.)
+  ['Two roads at different heights never fold into one point: at every point, the paving either side within 0.3 m of one height', 'marks.js', '__checkTipSteps', 0],
   ['A kerb runs wherever an edge line has ground beyond it', 'marks.js', '__checkKerbBeside', 0],
   // (The road's outline as drawn, outline.js: the rules from feedback 8.)
   ['No uncovered gap inside the road: no crack between pieces of its surface', 'outline.js', '__checkGaps', 0],
   ['Every kerb runs on unbroken, its whole width showing: no step, gap or fragment over 2 cm', 'outline.js', '__checkKerbLoops', 0],
   ['No wall or parapet stands more than 2 cm out past the kerb beside it', 'outline.js', '__checkUprightsInKerb', 0],
+  // (The user's rule, 18 Nov: a bridge's parapets begin where the ground drops.)
+  ['A parapet stands only where the ground beside it falls away: none on an island or verge level with the road', 'outline.js', '__checkParapetDrop', 0],
   // (A count that may only go down: 23 when it was written, most where two roads at different heights fold into one nose. The user's call, 2026-11-17: fixed in the next round with the floating lines.)
-  ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, 23],
+  ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, 21],
 ];
 
 (async () => {

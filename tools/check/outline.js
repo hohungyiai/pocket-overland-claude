@@ -144,10 +144,8 @@ window.__checkGaps = (all = false) => {
 // on is a gap or a fragment; one carried on off-line or at another height is
 // a step. And nothing of the road's surface lies over a kerb: where paving
 // or road lies over it, part of its width is hidden (a notch).
-// (Passed for now, the user's call on 16 Nov, to fix straight after the
-// PR: a bit of kerb buried 6 cm in the middle of an expressway where its
-// slip lane merges, and an island's point 2 cm under the paving beside it.)
-const KERBS_FOR_NOW = [[1776.44, 1423.72], [2260.8, 2832.13]];
+// (The two kerbs passed for now on 16 Nov, buried 2 and 6 cm, went with
+// rebuild B, 17 Nov: the paving is cut to the finished kerb line.)
 window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
   // (Redrawn maps only, the user's call on 16 Nov: today's map keeps its
   // old kerbs, which these rules were never written for.)
@@ -224,7 +222,7 @@ window.__checkKerbLoops = (all = false, STEP = 0.02, PLAIN = 0.5) => {
       const x = (pos[a] + pos[b] + pos[c]) / 3, z = (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3, y = (pos[a + 1] + pos[b + 1] + pos[c + 1]) / 3;
       n++;
       const over = at(x, z).reduce((m, f) => (f.kind === 'road' && f.h > y + 0.01 && f.h < y + 0.3 ? Math.max(m, f.h - y) : m), 0);
-      if (over && !KERBS_FOR_NOW.some(([px, pz]) => Math.hypot(x - px, z - pz) < 1.5)) pts.push({ what: 'hidden under paving', x: +x.toFixed(2), z: +z.toFixed(2), value: +over.toFixed(2) });
+      if (over) pts.push({ what: 'hidden under paving', x: +x.toFixed(2), z: +z.toFixed(2), value: +over.toFixed(2) });
     }
   }
   const grid = new Map();
@@ -277,25 +275,33 @@ const UPRIGHTS_SEEN = [
   { a: [-2068.72, -1071.77], b: [-2068.72, -1071.77], r: 3 },
   { a: [1789.93, 2072.64], b: [1789.93, 2072.64], r: 3 },
 ];
-// (Passed for now, the user's call on 16 Nov: open the PR and fix these
-// straight after it. Two walls 3-5 cm out on the whole map, two of 3-4 cm
-// on the trial map. Three more, one 29 cm out, went when a deck's beam and
-// parapet were cut back at a split's nose.)
-const UPRIGHTS_FOR_NOW = [
-  [-3024.5, -1945.9], [100.36, 2763.52], [1750.15, 1827.29], [1779.1, 1797.64],
-  // (The user's call, 17 Nov: by Upper Changi, a wall 6 cm out that was
-  // always there, seen once its kerb stood at its true height; rebuild B
-  // builds walls from the kerb.)
-  [1809.05, 1746.32],
-];
-// (The one at -3024.5 runs 12 samples along: 3 m about it.)
-for (const [x, z] of UPRIGHTS_FOR_NOW) UPRIGHTS_SEEN.push({ a: [x, z], b: [x, z], r: x === -3024.5 ? 3 : 2 });
+// (The walls passed for now on 16 and 17 Nov, 3 to 7 cm out, went with
+// rebuild B, 17 Nov: every wall, edge beam and parapet now follows its
+// kerb's outer edge, point by point. See wallsToKerb.)
 const uprightSeen = (x, z) =>
   UPRIGHTS_SEEN.some(({ a, b, r }) => {
     const dx = b[0] - a[0], dz = b[1] - a[1], L = dx * dx + dz * dz;
     const t = L ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / L)) : 0;
     return Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t) <= r;
   });
+/** An upright sheet's bottom and top at fraction f along its ground line: where the triangle meets the upright through that point (null if it does not). */
+window.__sheetSpan = (s, f) => {
+  const L = Math.hypot(s.x1 - s.x0, s.z1 - s.z0) || 1;
+  const ux = (s.x1 - s.x0) / L, uz = (s.z1 - s.z0) / L, t = f * L;
+  const P = s.c.map(([x, y, z]) => [(x - s.x0) * ux + (z - s.z0) * uz, y]);
+  const ys = [];
+  for (let e = 0; e < 3; e++) {
+    const [a, b] = [P[e], P[(e + 1) % 3]];
+    if (Math.abs(b[0] - a[0]) < 1e-6) {
+      if (Math.abs(t - a[0]) < 1e-6) ys.push(a[1], b[1]);
+      continue;
+    }
+    const w = (t - a[0]) / (b[0] - a[0]);
+    if (w >= -1e-6 && w <= 1 + 1e-6) ys.push(a[1] + (b[1] - a[1]) * w);
+  }
+  return ys.length ? [Math.min(...ys), Math.max(...ys)] : null;
+};
+
 window.__checkUprightsInKerb = (all = false, OUT = 0.02) => {
   // (Redrawn maps only, the user's call on 16 Nov: today's map keeps its
   // old kerbs, which these rules were never written for.)
@@ -304,16 +310,43 @@ window.__checkUprightsInKerb = (all = false, OUT = 0.02) => {
   const at = window.__flatIndex(['kerb']);
   const pts = [];
   let n = 0;
+  // (Every sheet by the 2 m squares its ground line crosses.)
+  const SG = new Map();
+  F.sheets.forEach((s, i) => {
+    for (let a = Math.floor(Math.min(s.x0, s.x1) / 2); a <= Math.floor(Math.max(s.x0, s.x1) / 2); a++)
+      for (let b = Math.floor(Math.min(s.z0, s.z1) / 2); b <= Math.floor(Math.max(s.z0, s.z1) / 2); b++) (SG.get(a * 100003 + b) ?? SG.set(a * 100003 + b, []).get(a * 100003 + b)).push(i);
+  });
+  /** The lowest bottom and highest top of every sheet standing within 1 cm of (x, z). */
+  const spanAt = (x, z) => {
+    let lo = Infinity, hi = -Infinity;
+    for (const i of SG.get(Math.floor(x / 2) * 100003 + Math.floor(z / 2)) ?? []) {
+      const s = F.sheets[i];
+      const dx = s.x1 - s.x0, dz = s.z1 - s.z0, L2 = dx * dx + dz * dz;
+      const f = ((x - s.x0) * dx + (z - s.z0) * dz) / L2;
+      if (f < -1e-3 || f > 1 + 1e-3 || Math.hypot(x - s.x0 - dx * f, z - s.z0 - dz * f) > 0.01) continue;
+      const sp = window.__sheetSpan(s, Math.max(0, Math.min(1, f)));
+      if (sp) (lo = Math.min(lo, sp[0])), (hi = Math.max(hi, sp[1]));
+    }
+    return lo < hi ? [lo, hi] : null;
+  };
   for (const s of F.sheets) {
     const L = Math.hypot(s.x1 - s.x0, s.z1 - s.z0);
     const nx = (s.z1 - s.z0) / L, nz = -(s.x1 - s.x0) / L;
     for (let u = 0.25; u < L; u += 0.5) {
       const x = s.x0 + ((s.x1 - s.x0) * u) / L, z = s.z0 + ((s.z1 - s.z0) * u) / L;
+      // (The upright's own bottom and top there, every sheet standing on
+      // that spot taken together, not one triangle's corners' lowest and
+      // highest: a sloping wall's triangle reaches its top only at one end,
+      // and read by its corners it stood lower than the kerb beside it all
+      // along. The user's call on 17 Nov.)
+      const sp = spanAt(x, z);
+      if (!sp) continue;
+      const [lo, hi] = sp;
       // (Nearest kerb either side, at a height the sheet stands up past by
       // more than a centimetre: a deck's edge beam level with the deck
       // below it stands up past nothing.)
       const reach = (sg) => {
-        for (let o = 0; o <= 0.6; o += 0.01) if (at(x + nx * sg * o, z + nz * sg * o).some((f) => f.h >= s.lo - 0.05 && f.h <= s.hi - 0.01)) return o;
+        for (let o = 0; o <= 0.6; o += 0.01) if (at(x + nx * sg * o, z + nz * sg * o).some((f) => f.h >= lo - 0.05 && f.h <= hi - 0.01)) return o;
         return Infinity;
       };
       const r = Math.min(reach(1), reach(-1));
@@ -324,7 +357,7 @@ window.__checkUprightsInKerb = (all = false, OUT = 0.02) => {
       // Passed over for being level with it, the reach ran on across the
       // grass to another road's kerb, lower, and took that for its own.)
       const flush = [1, -1].some((sg) => {
-        for (let o = 0; o <= OUT + 1e-9; o += 0.01) if (at(x + nx * sg * o, z + nz * sg * o).some((f) => f.h > s.hi - 0.01 && f.h <= s.hi + 0.05)) return true;
+        for (let o = 0; o <= OUT + 1e-9; o += 0.01) if (at(x + nx * sg * o, z + nz * sg * o).some((f) => f.h > hi - 0.01 && f.h <= hi + 0.05)) return true;
         return false;
       });
       const seen = uprightSeen(x, z);
@@ -447,5 +480,50 @@ window.__checkIslandTops = (all = false) => {
     if (worst > 0) bad.push({ x: +cx.toFixed(1), z: +cz.toFixed(1), value: +worst.toFixed(3), what });
   }
   const pl = window.__finishIndex().places(bad, 4);
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
+};
+
+// The user's rule (18 Nov): a bridge's parapets and walls begin where the
+// ground actually drops, never on an island at the junction. Every upright
+// sheet standing on a road's level (a parapet, its foot over the ground)
+// and over 0.5 m tall has a fall of at least 0.45 m beside it: the ground
+// 0.6 or 1.6 m out from it, either side, that far under the road. (Elias
+// Road's two little bridges over a drain: a full parapet round the island
+// at the junction where they leave the ground, 1 m tall over no drop.)
+window.__checkParapetDrop = (all = false) => {
+  const d = globalThis.__osm;
+  const F = window.__finishIndex();
+  const bad = [];
+  let n = 0;
+  for (const s of F.sheets) {
+    if (s.hi - s.lo < 0.5) continue;
+    const l = Math.hypot(s.x1 - s.x0, s.z1 - s.z0) || 1;
+    const nx = -(s.z1 - s.z0) / l, nz = (s.x1 - s.x0) / l;
+    // (Measured at each upright edge of the sheet, where it stands as tall
+    // as it is: a parapet's piece rises along its length from where the
+    // ground begins to fall away, so its middle is no measure.)
+    const cols = [];
+    for (const [x, y, z] of s.c) {
+      const c = cols.find((q) => Math.hypot(q.x - x, q.z - z) < 0.02);
+      if (c) (c.lo = Math.min(c.lo, y)), (c.hi = Math.max(c.hi, y));
+      else cols.push({ x, z, lo: y, hi: y });
+    }
+    for (const c of cols) {
+      if (c.hi - c.lo < 0.5) continue;
+      const g = (o) => d.heightAt(c.x + nx * o, c.z + nz * o);
+      // (Its foot up off the ground, on a road's level beside it: a parapet,
+      // not a wall down into the ground or a beam under a deck.)
+      if (c.lo < Math.min(g(0), g(0.3), g(-0.3)) + 0.05) continue;
+      const road = c.lo - 0.09;
+      let beside = false;
+      for (const o of [-0.6, -0.3, 0.3, 0.6])
+        if (F.flatAt(c.x + nx * o, c.z + nz * o).some((q) => Math.abs(q.h - road) < 0.15)) beside = true;
+      if (!beside) continue;
+      n++;
+      const drop = road - Math.min(g(0.6), g(1.6), g(-0.6), g(-1.6));
+      if (drop < 0.45) bad.push({ x: +c.x.toFixed(1), z: +c.z.toFixed(1), value: +(c.hi - c.lo).toFixed(2), what: `parapet ${(c.hi - c.lo).toFixed(2)} m tall over a fall of ${drop.toFixed(2)} m` });
+    }
+  }
+  const pl = F.places(bad, 2);
   return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
