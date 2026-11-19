@@ -14,6 +14,7 @@ import { Weather } from './weather';
 import { Camps } from './camp';
 import { loadJourney, saveJourney, spotOf, checkStorage, storageWarning, backupPanel, restorePanel, describe, encodeCode, decodeCode, normalise, type Journey, type StorageHealth } from './save';
 import { Fuel, CRAWL_SPEED, distText } from './fuel';
+import { Stations } from './station';
 import { Garages, garagePanel, homePicker, garageById, type GarageSpot } from './garage';
 import './style.css';
 
@@ -238,6 +239,9 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   });
   // Dust and mud build up off the tarmac; the garage washes them off.
   car.setDust(journey.dust ?? 0);
+
+  // Petrol stations as places (station.ts): forecourt, canopy, pumps, sign.
+  const stations = new Stations(scene, world, RAPIER, course.fuel ?? []);
 
   // ---- Garages (garage.ts): drive into the bay, tap Enter garage ----
   const garages = new Garages(scene, courseId, (x, z) => {
@@ -617,6 +621,15 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
         const hit = world.castRay(new RAPIER.Ray({ x, y: course.heightAt(x, z) + 6, z }, { x: 0, y: -1, z: 0 }), 12, true, undefined, undefined, undefined, car.body);
         return hit ? course.heightAt(x, z) + 6 - hit.timeOfImpact : null;
       });
+      stations.settle(
+        (x, z) => course.heightAt(x, z),
+        (x, z) => !course.solidAt || course.solidAt(x, z),
+        (x, z) => {
+          const hit = world.castRay(new RAPIER.Ray({ x, y: course.heightAt(x, z) + 6, z }, { x: 0, y: -1, z: 0 }), 12, true, undefined, undefined, undefined, car.body);
+          return hit ? { y: course.heightAt(x, z) + 6 - hit.timeOfImpact, ground: hit.collider.shape.type === RAPIER.ShapeType.HeightField } : null;
+        },
+        (x, z) => course.safeSpot?.(x, z) ?? null,
+      );
       // Garage: Enter garage when stopped in its bay.
       const bay = garages.at(p.x, p.z);
       btnGarage.hidden = !bay || Math.abs(car.speed) > 0.8 || paused;
@@ -665,7 +678,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   $('loading').remove();
 
   // Handy for testing in the console.
-  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera, weather, camps, sim, journey, autosave, openBackup, fuel, garages, enterGarage, save: { encodeCode, decodeCode, normalise, loadJourney } } });
+  Object.assign(window, { game: { RAPIER, car, course, controls, world, renderer, scene, camera, weather, camps, sim, journey, autosave, openBackup, fuel, stations, garages, enterGarage, save: { encodeCode, decodeCode, normalise, loadJourney } } });
 }
 
 // ---- Course picker ----

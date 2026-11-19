@@ -404,22 +404,104 @@ export function build(raw, origin) {
     });
 
   // --- Petrol stations (amenity=fuel, as an outline or a point): where the
-  // car refuels. Named by brand, the way people know them. ---
+  // car refuels. Named by brand, the way people know them. Each becomes a
+  // place, not a building: a paved forecourt (the station's outline, with
+  // its canopy roof, rounded out 3 m and kept clear of the kerbed roads
+  // beside it), on which the game puts a canopy, pumps and a sign. ---
   const fuel = [];
-  for (const el of raw.elements) {
-    if (el.tags?.amenity !== 'fuel') continue;
-    let pts = null;
-    if (el.type === 'way') pts = wayPts(el);
-    else if (el.type === 'node') {
-      nodes.set(el.id, [el.lat, el.lon]);
-      pts = [proj(el.id)];
+  const fuelWays = new Set(); // outlines and canopy roofs the forecourt replaces
+  {
+    const feats = [];
+    for (const el of raw.elements) {
+      if (el.tags?.amenity !== 'fuel') continue;
+      let pts = null;
+      if (el.type === 'way') pts = wayPts(el);
+      else if (el.type === 'node') {
+        nodes.set(el.id, [el.lat, el.lon]);
+        const [x, z] = proj(el.id);
+        // (A point only: a forecourt about 24 x 16 m round it.)
+        pts = [[x - 12, z - 8], [x + 12, z - 8], [x + 12, z + 8], [x - 12, z + 8]];
+      }
+      if (!pts?.length) continue;
+      if (el.type === 'way') fuelWays.add(el.id);
+      const x = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+      const z = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+      const name = el.tags.brand || el.tags.name || el.tags.operator || '';
+      const same = feats.find((f) => Math.hypot(f.x - x, f.z - z) < 30); // a station drawn twice (roof and site)
+      if (same) {
+        same.pts.push(...pts);
+        same.name ||= name;
+      } else feats.push({ name, x, z, pts: [...pts] });
     }
-    if (!pts?.length) continue;
-    const x = pts.reduce((s, p) => s + p[0], 0) / pts.length;
-    const z = pts.reduce((s, p) => s + p[1], 0) / pts.length;
-    const r = Math.max(10, ...pts.map((p) => Math.hypot(p[0] - x, p[1] - z)));
-    if (fuel.some((f) => Math.hypot(f.x - x, f.z - z) < 30)) continue; // a station drawn twice (roof and site)
-    fuel.push({ name: el.tags.brand || el.tags.name || el.tags.operator || 'Petrol station', x: q(x), z: q(z), r: q(Math.min(r, 40)) });
+    // Canopy roofs on the forecourt (often drawn apart from the site).
+    for (const wy of ways) {
+      if (wy.tags?.building !== 'roof' || !closed(wy)) continue;
+      const pts = wayPts(wy);
+      const x = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+      const z = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+      const f = feats.find((f) => Math.hypot(f.x - x, f.z - z) < 25);
+      if (!f) continue;
+      f.pts.push(...pts);
+      fuelWays.add(wy.id);
+    }
+    const hull = (P) => {
+      const p = [...P].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+      const lo = [];
+      const hi = [];
+      for (const v of p) {
+        while (lo.length > 1 && cross(lo[lo.length - 2], lo[lo.length - 1], v) <= 0) lo.pop();
+        lo.push(v);
+      }
+      for (const v of p.reverse()) {
+        while (hi.length > 1 && cross(hi[hi.length - 2], hi[hi.length - 1], v) <= 0) hi.pop();
+        hi.push(v);
+      }
+      return lo.slice(0, -1).concat(hi.slice(0, -1));
+    };
+    // Kerbed roads near a station: the forecourt stops 1 m short of their edge.
+    const kerbed = edges.filter((e) => e.cls !== 'service' && !e.lv);
+    const pushOff = (p) => {
+      for (let round = 0; round < 3; round++)
+        for (const e of kerbed) {
+          for (let k = 0; k + 1 < e.pts.length; k++) {
+            const [ax, az] = e.pts[k];
+            const [bx, bz] = e.pts[k + 1];
+            const dx = bx - ax;
+            const dz = bz - az;
+            const ll = dx * dx + dz * dz || 1;
+            const u = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - az) * dz) / ll));
+            const cx = ax + dx * u;
+            const cz = az + dz * u;
+            const d = Math.hypot(p[0] - cx, p[1] - cz);
+            const need = e.w / 2 + 1;
+            if (d >= need || d < 1e-6) continue;
+            p[0] = cx + ((p[0] - cx) / d) * need;
+            p[1] = cz + ((p[1] - cz) / d) * need;
+          }
+        }
+      return p;
+    };
+    for (const f of feats) {
+      // Rounded out 3 m: the hull of the outline with a ring round each corner.
+      const h = hull(f.pts);
+      const round = [];
+      for (const [x, z] of h) for (let a = 0; a < 8; a++) round.push([x + 3 * Math.cos((a * Math.PI) / 4), z + 3 * Math.sin((a * Math.PI) / 4)]);
+      let ring = hull(round).map(pushOff);
+      ring = simplifyRing([...ring, ring[0]], 0.4).slice(0, -1);
+      if (ringArea(ring) < 0) ring.reverse();
+      if (Math.abs(ringArea(ring)) < 120) continue; // squeezed out by the roads beside it
+      const x = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+      const z = ring.reduce((s, p) => s + p[1], 0) / ring.length;
+      const r = Math.max(...ring.map((p) => Math.hypot(p[0] - x, p[1] - z)));
+      const pts = qp(ring);
+      fuel.push({ name: f.name || 'Petrol station', x: q(x), z: q(z), r: q(r), pts });
+      // (The ground under it is paved too, a cell beyond its edge: the land
+      // raster is 4 m, and a car on the forecourt is on asphalt.)
+      const wide = [];
+      for (const [x, z] of ring) for (let a = 0; a < 8; a++) wide.push([x + 4 * Math.cos((a * Math.PI) / 4), z + 4 * Math.sin((a * Math.PI) / 4)]);
+      areas.push({ kind: 'parking', name: 'Forecourt', pts: qp(hull(wide)) });
+    }
   }
 
   // --- Coastline: joined into long lines (land on the left in OSM) ---
@@ -430,7 +512,7 @@ export function build(raw, origin) {
   // --- Buildings ---
   const buildings = [];
   for (const wy of ways) {
-    if (!wy.tags?.building || !closed(wy)) continue;
+    if (!wy.tags?.building || !closed(wy) || fuelWays.has(wy.id)) continue;
     let pts = simplifyRing(wayPts(wy), 0.5).slice(0, -1);
     if (pts.length < 3) continue;
     if (ringArea(pts) < 0) pts = pts.reverse(); // consistent winding
@@ -438,6 +520,35 @@ export function build(raw, origin) {
     const levels = +t['building:levels'] || 0;
     const height = parseFloat(t.height) || 0;
     buildings.push({ k: t.building, l: levels || undefined, h: height || undefined, name: t.name, pts: qp(pts) });
+  }
+
+  // Buildings standing on a forecourt (the shop): the canopy keeps clear.
+  // (The buildings list is filled just above.)
+  for (const f of fuel) {
+    const inRing = (x, z) => {
+      let c = false;
+      for (let i = 0, j = f.pts.length - 1; i < f.pts.length; j = i++) {
+        const [ax, az] = f.pts[i];
+        const [bx, bz] = f.pts[j];
+        if (az > z !== bz > z && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+      }
+      return c;
+    };
+    const shops = [];
+    for (let i = buildings.length - 1; i >= 0; i--) {
+      const b = buildings[i];
+      const x = b.pts.reduce((s, p) => s + p[0], 0) / b.pts.length;
+      const z = b.pts.reduce((s, p) => s + p[1], 0) / b.pts.length;
+      if (!inRing(x, z) && !b.pts.some((p) => inRing(p[0], p[1]))) continue;
+      // (A big one is the station itself drawn as a building, canopy and
+      // all: the game builds that. A small one is the shop.)
+      if (inRing(x, z) && Math.abs(ringArea(b.pts)) > 250) {
+        buildings.splice(i, 1);
+        continue;
+      }
+      shops.push([q(x), q(z), q(Math.max(...b.pts.map((p) => Math.hypot(p[0] - x, p[1] - z))))]);
+    }
+    if (shops.length) f.shops = shops;
   }
 
   // --- Land mask: 10 m cells, sea flood-filled from the water side of

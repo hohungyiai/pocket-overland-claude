@@ -20,20 +20,141 @@ window.__checkFuelCrawl = async () => {
   return { samples: 1, bad: bad.length, worst: bad, note: `top speed ${(top * 3.6).toFixed(0)} km/h` };
 };
 
-window.__checkStations = () => {
+// Every petrol station is a place you can drive into and fill up at, and
+// only there: its forecourt is built (paved, solid, flush with the lane
+// onto it: no step anywhere on it), a road or lane runs onto it, it stays
+// clear of the kerbed roads beside it, and the pump works on the forecourt
+// and nowhere off it.
+window.__checkStations = async () => {
   const g = window.game;
   const d = globalThis.__osm;
   const bad = [];
   const stations = g.course.fuel ?? [];
+  let samples = 0;
+  const inRing = (x, z, P) => {
+    let c = false;
+    for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+      const [ax, az] = P[i];
+      const [bx, bz] = P[j];
+      if (az > z !== bz > z && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+    }
+    return c;
+  };
   for (const s of stations) {
-    let nearest = Infinity;
-    d.roads.each(s.x, s.z, s.r + 40, (i, seg, u, dd) => {
-      nearest = Math.min(nearest, dd - d.halfNear(i, seg, u));
-    });
-    // The fill-up zone reaches r + 6 m from the middle: a road's paving must be inside it.
-    const over = nearest - (s.r + 6);
-    if (over > 0) bad.push({ station: s.name, x: s.x, z: s.z, over: +over.toFixed(1) });
+    const P = s.pts;
+    if (!P?.length) {
+      bad.push({ station: s.name, x: s.x, z: s.z, field: 'no forecourt outline', over: 1 });
+      continue;
+    }
+    // Drive up to it (the car on the road beside it), and let it build
+    // once the ground and lanes round it are.
+    const sp = g.course.safeSpot(s.x, s.z);
+    g.course.prepareAt?.(s.x, s.z);
+    g.car.placeAt({ x: sp.x, y: g.course.surfaceY(sp.x, sp.z, 999), z: sp.z }, sp.yaw);
+    const ready = (x, z) => !g.course.solidAt || g.course.solidAt(x, z);
+    for (const t0 = performance.now(); !P.every(([x, z]) => ready(x, z)) && performance.now() - t0 < 90000; ) await new Promise((r) => setTimeout(r, 50));
+    g.world.step();
+    for (let k = 0; k < 2; k++) g.stations.settle(
+      (x, z) => g.course.heightAt(x, z),
+      ready,
+      (x, z) => {
+        const hit = g.world.castRay(new g.RAPIER.Ray({ x, y: g.course.heightAt(x, z) + 6, z }, { x: 0, y: -1, z: 0 }), 12, true, undefined, undefined, undefined, g.car.body);
+        return hit ? { y: g.course.heightAt(x, z) + 6 - hit.timeOfImpact, ground: hit.collider.shape.type === g.RAPIER.ShapeType.HeightField } : null;
+      },
+      (x, z) => g.course.safeSpot?.(x, z) ?? null,
+    );
+    if (!s.canopy) {
+      bad.push({ station: s.name, x: s.x, z: s.z, field: 'forecourt never built', over: 1 });
+      continue;
+    }
+    // (One physics step: rays only meet what the world has taken in.)
+    g.world.step();
+    const c = s.canopy;
+    const ang = Math.atan2(...(() => { // (the canopy's long way, as station.ts worked it out)
+      let sxx = 0, szz = 0, sxz = 0;
+      const cx = P.reduce((t, p) => t + p[0], 0) / P.length;
+      const cz = P.reduce((t, p) => t + p[1], 0) / P.length;
+      for (const [x, z] of P) { sxx += (x - cx) ** 2; szz += (z - cz) ** 2; sxz += (x - cx) * (z - cz); }
+      const a = 0.5 * Math.atan2(2 * sxz, sxx - szz);
+      return [Math.sin(a), Math.cos(a)];
+    })());
+    const underIsland = (x, z) => {
+      const u = (x - c.x) * Math.cos(ang) + (z - c.z) * Math.sin(ang);
+      const v = -(x - c.x) * Math.sin(ang) + (z - c.z) * Math.cos(ang);
+      return Math.abs(u) < c.L / 2 + 0.5 && Math.abs(v) < 1.5;
+    };
+    let onRoad = 0;
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const [x, z] of P) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z); }
+    for (let x = minX + 1; x < maxX; x += 3)
+      for (let z = minZ + 1; z < maxZ; z += 3) {
+        if (!inRing(x, z, P)) continue;
+        // (Not right at the edge: the kerb's own 1 m.)
+        if (P.some((p, i) => { const q = P[(i + 1) % P.length]; const dx = q[0] - p[0], dz = q[1] - p[1]; const u = Math.max(0, Math.min(1, ((x - p[0]) * dx + (z - p[1]) * dz) / (dx * dx + dz * dz || 1))); return Math.hypot(p[0] + dx * u - x, p[1] + dz * u - z) < 1; })) continue;
+        samples++;
+        const y0 = g.course.heightAt(x, z);
+        // Paved.
+        const surf = g.course.surfaceAt?.(x, z, y0)?.name;
+        if (surf && surf !== 'Asphalt') bad.push({ station: s.name, x: +x.toFixed(1), z: +z.toFixed(1), field: `surface is ${surf}`, over: 1 });
+        // Solid, nothing standing on it, and flush: no step where a lane
+        // runs onto it (the height never jumps 3 cm in 10 cm: a slope, never a lip).
+        const onShop = (px, pz) => (s.shops ?? []).some(([bx, bz, br]) => Math.hypot(px - bx, pz - bz) < br + 1);
+        if (!underIsland(x, z) && !onShop(x, z)) {
+          const topAt = (px, pz) => {
+            const hit = g.world.castRay(new g.RAPIER.Ray({ x: px, y: y0 + 12, z: pz }, { x: 0, y: -1, z: 0 }), 20, true, undefined, undefined, undefined, g.car.body);
+            return hit ? y0 + 12 - hit.timeOfImpact : -Infinity;
+          };
+          const top = topAt(x, z);
+          const off = top - (y0 + 0.2);
+          // (Against the map's ground: the built ground can sit a little off it, but a hole drops the full 20 cm and more.)
+          if (off < -0.25 || off > 0.6) bad.push({ station: s.name, x: +x.toFixed(1), z: +z.toFixed(1), field: off > 0 ? 'something stands on the forecourt' : 'no solid forecourt', over: +Math.min(9, Math.abs(off)).toFixed(2) });
+          else
+            for (const [dx, dz] of [[0.1, 0], [-0.1, 0], [0, 0.1], [0, -0.1]]) {
+              if (underIsland(x + dx, z + dz) || onShop(x + dx, z + dz) || !inRing(x + dx, z + dz, P)) continue;
+              const next = topAt(x + dx, z + dz);
+              if (next - (y0 + 0.2) > 0.6) continue; // (the sign's post)
+              const step = Math.abs(next - top);
+              if (step > 0.03) {
+                bad.push({ station: s.name, x: +x.toFixed(1), z: +z.toFixed(1), field: 'a step in the forecourt (where a lane meets it?)', over: +Math.min(9, step).toFixed(2) });
+                break;
+              }
+            }
+        }
+        // The pump works here.
+        if (g.fuel.at(x, z) !== s) bad.push({ station: s.name, x: +x.toFixed(1), z: +z.toFixed(1), field: 'no pump on the forecourt', over: 1 });
+        // A road or lane runs onto it.
+        d.roads.each(x, z, 12, (i, seg, u, dd) => {
+          if (dd < d.halfNear(i, seg, u)) onRoad++;
+        });
+      }
+    // (Or a lane's middle runs inside it, along its edge.)
+    for (const e of d.edges)
+      for (let k = 0; !onRoad && k + 1 < e.pts.length; k++) {
+        const [ax, az] = e.pts[k];
+        const [bx, bz] = e.pts[k + 1];
+        if (Math.hypot(ax - s.x, az - s.z) > s.r + 200) break;
+        const n = Math.ceil(Math.hypot(bx - ax, bz - az));
+        for (let t = 0; t <= n && !onRoad; t++) if (inRing(ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n, P)) onRoad++;
+      }
+    if (!onRoad) bad.push({ station: s.name, x: s.x, z: s.z, field: 'no road or lane runs onto the forecourt', over: 1 });
+    // Off the forecourt: no pump, and no forecourt over a kerbed road's paving.
+    for (let a = 0; a < 360; a += 5)
+      for (let r = 2; r < s.r + 20; r += 1.5) {
+        const x = s.x + r * Math.cos((a * Math.PI) / 180);
+        const z = s.z + r * Math.sin((a * Math.PI) / 180);
+        let kerbed = false;
+        d.roads.each(x, z, 20, (i, seg, u, dd) => {
+          if (dd < d.halfNear(i, seg, u) && d.edges[i].cls !== 'service' && !d.edges[i].lv) kerbed = true;
+        });
+        if (!kerbed) continue;
+        samples++;
+        if (inRing(x, z, P)) bad.push({ station: s.name, x: +x.toFixed(1), z: +z.toFixed(1), field: 'forecourt over a public road', over: 1 });
+        if (g.fuel.at(x, z)) bad.push({ station: s.name, x: +x.toFixed(1), z: +z.toFixed(1), field: 'pump works on a public road', over: 1 });
+      }
   }
   if (!stations.length) bad.push({ field: 'no petrol stations on the map', over: 1 });
-  return { samples: stations.length, bad: bad.length, worst: bad };
+  // (One line per station and fault is plenty.)
+  const seen = new Set();
+  const worst = bad.filter((b) => { const k = `${b.station}|${b.field}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  return { samples, bad: bad.length, worst };
 };

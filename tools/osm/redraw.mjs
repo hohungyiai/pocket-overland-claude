@@ -10,7 +10,8 @@
 //          kept only where it is the quickest way between two roads: a run
 //          of lanes between two proper roads that is shorter than 2/3 of
 //          the way round by those roads. Car park aisles, driveways and
-//          loops off one street go.
+//          loops off one street go, but for the way in to a petrol
+//          station's forecourt or a garage's bay.
 //   corners  a short slip road that only cuts the corner of a junction (its
 //          two ends are joined by two other short roads through one
 //          joint) is folded into the junction: the junction gives the
@@ -40,6 +41,9 @@
 // Map data © OpenStreetMap contributors, ODbL 1.0.
 
 import fs from 'node:fs';
+
+// Garage bays (the lane to each is kept).
+const BAYS = JSON.parse(fs.readFileSync(new URL('../../src/garage-bays.json', import.meta.url), 'utf8'));
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -145,9 +149,58 @@ if (steps.has('lanes')) {
         for (const i of by.used) keep.add(i);
       }
   }
+  // Lanes to a place: a run that reaches a petrol station's forecourt or a
+  // garage's bay keeps the way in, from where it leaves a road to the lane
+  // nearest the place (a dead end, but the place is what it leads to).
+  const places = [
+    ...(M.fuel ?? []).map((f) => ({ x: f.x, z: f.z, r: f.r })),
+    ...Object.entries(BAYS).filter(([k]) => !k.startsWith('/')).map(([, b]) => ({ x: b.x, z: b.z, r: 4 })),
+  ];
+  const nearPt = (e, x, z) => {
+    let best = Infinity;
+    for (let k = 0; k + 1 < e.pts.length; k++) {
+      const [ax, az] = e.pts[k];
+      const [bx, bz] = e.pts[k + 1];
+      const dx = bx - ax;
+      const dz = bz - az;
+      const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+      best = Math.min(best, Math.hypot(ax + dx * u - x, az + dz * u - z));
+    }
+    return best;
+  };
+  let toPlaces = 0;
+  for (const pl of places) {
+    // The lane that comes nearest the place, inside it (or within 3 m).
+    let lane = -1;
+    let d = pl.r + 3;
+    edges.forEach((e, i) => {
+      if (!isLane(e)) return;
+      const di = Math.min(nearPt(e, pl.x, pl.z), d + 1);
+      if (di < d) [lane, d] = [i, di];
+    });
+    if (lane < 0) continue;
+    toPlaces++;
+    keep.add(lane);
+    if (run[lane] < 0) continue;
+    const allow = new Set(runs[run[lane]]);
+    // The shortest way from that lane's ends to any road.
+    let best = null;
+    for (const from of [edges[lane].a, edges[lane].b]) {
+      if (roadAt[from].length) {
+        best = { len: 0, used: [] };
+        break;
+      }
+      for (const to of new Set(runs[run[lane]].flatMap((i) => [edges[i].a, edges[i].b]))) {
+        if (!roadAt[to].length) continue;
+        const w = way(laneAt, from, to, Infinity, allow);
+        if (w && (!best || w.len < best.len)) best = w;
+      }
+    }
+    for (const i of best?.used ?? []) keep.add(i);
+  }
   const before = edges.filter(isLane).length;
   edges = edges.filter((e, i) => !isLane(e) || keep.has(i));
-  report.lanes = { runs: runs.length, lanes: before, kept: keep.size, dropped: before - keep.size, through };
+  report.lanes = { runs: runs.length, lanes: before, kept: keep.size, dropped: before - keep.size, through, toPlaces };
 }
 
 // ---------- corners ----------

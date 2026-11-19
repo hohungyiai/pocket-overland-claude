@@ -114,10 +114,10 @@ const CHECKS = [
   ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, 21],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
-  ['Every petrol station has a road through its forecourt', 'fuel.js', '__checkStations', 0],
+  ['Every petrol station is a place: a paved, solid forecourt a road runs onto, clear of public roads, and the pump works only on it', 'fuel.js', '__checkStations', 0],
   ['With an empty tank the car still climbs the steepest slip road, at a crawl', 'fuel.js', '__checkFuelCrawl', 0],
   // Garages (garage.ts).
-  ['Every garage bay lies wholly on a road, and a car in it is offered the garage', 'garage.js', '__checkGarageBay', 0],
+  ['Every garage bay lies wholly on a road, clear overhead and paved on its approach, and a car in it is offered the garage', 'garage.js', '__checkGarageBay', 0],
 ];
 
 (async () => {

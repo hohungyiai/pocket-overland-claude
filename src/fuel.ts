@@ -10,7 +10,26 @@ export interface Station {
   z: number;
   /** How far the forecourt reaches from its middle (m). */
   r: number;
+  /** The forecourt's outline: you fill up on it, and only on it. */
+  pts?: [number, number][];
+  /** Buildings on the forecourt (the shop): [x, z, radius]. */
+  shops?: [number, number, number][];
+  /** Where the canopy went (station.ts), once built. */
+  canopy?: { x: number; z: number; L: number; W: number };
 }
+
+/** Is (x, z) on the station's forecourt? */
+export const onForecourt = (s: Station, x: number, z: number) => {
+  const P = s.pts;
+  if (!P?.length) return Math.hypot(s.x - x, s.z - z) < s.r;
+  let c = false;
+  for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+    const [ax, az] = P[i];
+    const [bx, bz] = P[j];
+    if (az > z !== bz > z && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+  }
+  return c;
+};
 
 /** How far a full tank goes, in game km on easy roads (the user's choice). */
 export const TANK_KM = 60;
@@ -73,7 +92,7 @@ export class Fuel {
 
   /** The station whose forecourt the car is on, if any. */
   at(x: number, z: number): Station | null {
-    for (const s of this.stations) if (Math.hypot(s.x - x, s.z - z) < s.r + 6) return s;
+    for (const s of this.stations) if (onForecourt(s, x, z)) return s;
     return null;
   }
 
