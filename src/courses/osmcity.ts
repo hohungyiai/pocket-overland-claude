@@ -2997,7 +2997,7 @@ export async function buildPasirRisCourse(
    */
   const SEAL = 6;
   /** The ground an island closed in by raised roads is raised to at (x, z), or -Infinity: set once the roads' outlines are known (see islandsIn). */
-  let islandFill: (x: number, z: number) => number = () => -Infinity;
+  let islandFill: (x: number, z: number, lawn?: boolean) => number = () => -Infinity;
   /** How far the sealed ground lies below a road's own height (its drawn surface is ROAD_LIFT above that). */
   const UNDER = 0.12;
   const ROAD_LIFT = 0.09;
@@ -6649,7 +6649,7 @@ export async function buildPasirRisCourse(
     }
     return out;
   };
-  islandFill = (x: number, z: number) => {
+  islandFill = (x: number, z: number, lawn = false) => {
     if (islBusy) return -Infinity;
     for (const I of islandsIn(Math.floor(x / ISL_CELL), Math.floor(z / ISL_CELL))) {
       if (x < I.x0 || x > I.x1 || z < I.z0 || z > I.z1 || !inRingXZ(I.ring, x, z)) continue;
@@ -6669,6 +6669,10 @@ export async function buildPasirRisCourse(
       // road climbing beside it, lower where the square reaches it than
       // where this is nearest: 2 cm through at -206,170. The lawn over it runs from
       // the kerb's top on up: see islandTopIn.)
+      // (The lawn over it, a mesh of its own from the kerbs' tops, needs no
+      // cap: held down by it, it fell 11 cm in a hand's width beside a kerb,
+      // a dark sliver at 1800.3,2092.1.)
+      if (lawn) return sh / sw + ISL_UP;
       let cap = Infinity;
       roads.each(x, z, 14, (o, seg, u, d) => {
         if (isDeck[o] || JX.internal[o]) return;
@@ -8182,13 +8186,14 @@ export async function buildPasirRisCourse(
   const ISLE_W = 12.5, ISLE_TAPER = 6, ISLE_BANK = 1.5, KERB_OUT = 0.35;
   /**
    * How far under the kerb the ground beside it may lie for the island's
-   * top to be lifted to it, fading out over the next ISLE_FADE m: gone by
-   * 1.2 m, where a drop is the walls' business. (Lifted on to 3.5 m deep,
-   * with banks up to 6 m wide, a bank ended where the lifting did with an
-   * open face, a dark notch from above at 1867.4,1818.2. A pit between
-   * raised roads is filled instead: see islandFill.)
+   * top to be lifted to it: past that a drop is the walls' business.
+   * (Lifted on to 3.5 m deep, with banks up to 6 m wide, a bank ended where
+   * the lifting did with an open face, a dark notch from above at
+   * 1867.4,1818.2. Let down part way between 0.9 and 1.2 m, it stood as a
+   * grass hump half up a wall's face there. A pit between raised roads, the
+   * spike at -139.8,-57, is filled instead: see islandFill.)
    */
-  const ISLE_DEEP = 0.9, ISLE_FADE = 0.3;
+  const ISLE_DEEP = 1.2;
   const ISLE_STEP = 1;
   /** The outline's sides of each level in a tile, on a 4 m grid: [ax, az, bx, bz, lvl]. */
   const outSegs = (w: { rings: OutRing[]; segs?: Map<number, number[][]> }) => {
@@ -8340,12 +8345,10 @@ export async function buildPasirRisCourse(
       });
     }
     const col = new THREE.Color();
-    let fade = 0;
-    const put = (x: number, yIn: number, z: number) => {
+    const put = (x: number, y: number, z: number) => {
       // (The ground's colour wants only what the bare ground's height leaves
       // in probe, the same as heightAt leaves: the roads' search in heightAt,
       // here at every point of every island, was 3 s of a start.)
-      const y = fade > 0 ? lerp(yIn, Math.min(yIn, heightAt(x, z) + 0.02), fade) : yIn;
       rawHeight(x, z);
       colorAt(x, z, y, col);
       const s = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
@@ -8381,12 +8384,8 @@ export async function buildPasirRisCourse(
       const x1 = P[v][0] + ox * wi, z1 = P[v][1] + oz * wi;
       // (The ground just past the kerb within ISLE_DEEP under its top: past
       // that the kerb stands at a drop, a wall's business.)
-      // (Fading out between ISLE_DEEP and ISLE_DEEP + ISLE_FADE, not cut
-      // off at a depth: lifted where the ground lay under 1.2 m below the
-      // kerb and left beside where it lay deeper, it stood up as a spike.)
       const g = heightAt(x0, z0);
-      fade = smoothstep(ISLE_DEEP, ISLE_DEEP + ISLE_FADE, t0 - g);
-      if (!(t0 === t0) || g > t0 || fade >= 1 || wi <= KERB_OUT + 0.02) {
+      if (!(t0 === t0) || g > t0 || g < t0 - ISLE_DEEP || wi <= KERB_OUT + 0.02) {
         secs.push(null);
         continue;
       }
@@ -8394,7 +8393,7 @@ export async function buildPasirRisCourse(
       // (On an island closed in by raised roads, on to its ground, raised
       // to the roads round it (see islandFill), at the kerbs' height over
       // it: the lawn and the ground one surface, no crease where it ends.)
-      const fill = islandFill(x1, z1);
+      const fill = islandFill(x1, z1, true);
       const y1 = fill > -Infinity ? fill + 0.06 : !(half[i] < Infinity) ? t0 : lerp(t0, mid[i], Math.min(2, wi / half[i]));
       // (Level with the kerb's top for its first 15 cm, then on to the
       // middle: across a narrow island between two roads at different
@@ -8406,7 +8405,11 @@ export async function buildPasirRisCourse(
       // all but upright, a dark wedge at the island's tip.)
       const fall = y1 < t0 - 0.005;
       const sh = fall ? KERB_OUT + Math.min(0.15, (wi - KERB_OUT) / 2) : (KERB_OUT + wi) / 2;
-      const sec = [put(x0, t0, z0), put(P[v][0] + ox * sh, fall ? t0 : (t0 + y1) / 2, P[v][1] + oz * sh), put(x1, y1, z1)];
+      // (On a filled island none: all its lawn past the kerb from the one
+      // ground. A narrow section's inner end landing on its neighbour's
+      // ledge, level with the kerb, 11 cm over that ground, stood a face
+      // upright between them, a dark sliver at 1800.3,2092.1.)
+      const sec = fill > -Infinity ? [put(x0, t0, z0), put(x1, y1, z1)] : [put(x0, t0, z0), put(P[v][0] + ox * sh, fall ? t0 : (t0 + y1) / 2, P[v][1] + oz * sh), put(x1, y1, z1)];
       if (open) {
         const bank = cut ? 0.25 : ISLE_BANK;
         const x2 = P[v][0] + ox * (wi + bank), z2 = P[v][1] + oz * (wi + bank);
@@ -8414,6 +8417,30 @@ export async function buildPasirRisCourse(
       }
       secs.push(sec);
     }
+    // (Points of different sections at one spot, one height, the highest:
+    // round a point, a section's inner end landing on a kerb's top across
+    // the way 11 cm under it stood a face upright between them, a dark
+    // sliver at 1800.3,2092.1.)
+    const at = new Map<number, number[]>();
+    const key = (i: number, j: number) => i * 1000003 + j;
+    for (const sec of secs)
+      for (const q of sec ?? []) {
+        const i = Math.round(lawn.pos[3 * q] / 0.05), j = Math.round(lawn.pos[3 * q + 2] / 0.05);
+        let hit: number[] | undefined;
+        for (let di = -1; di <= 1 && !hit; di++)
+          for (let dj = -1; dj <= 1 && !hit; dj++) {
+            for (const r of at.get(key(i + di, j + dj)) ?? [])
+              if (Math.hypot(lawn.pos[3 * r] - lawn.pos[3 * q], lawn.pos[3 * r + 2] - lawn.pos[3 * q + 2]) < 0.03) {
+                const y = Math.max(lawn.pos[3 * r + 1], lawn.pos[3 * q + 1]);
+                lawn.pos[3 * r + 1] = lawn.pos[3 * q + 1] = y;
+                hit = [r];
+                break;
+              }
+          }
+        const l = at.get(key(i, j));
+        if (l) l.push(q);
+        else at.set(key(i, j), [q]);
+      }
     for (let i = 0; i + 1 < n; i++) {
       const a = secs[i], b = secs[i + 1];
       if (!a || !b) continue;
