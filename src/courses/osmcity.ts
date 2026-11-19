@@ -8752,6 +8752,207 @@ export async function buildPasirRisCourse(
   const WALL_SNAP = 0.15;
   /** How far a wall's piece may pass off the kerb points it skips, where it follows a kerb (m). */
   const WALL_BOW = 0.008;
+  /**
+   * The user's rule, 19 Nov: a raised road's sides are complete, no gap
+   * showing its inside or underside. Each road draws its own side, and
+   * where none of them owns a stretch of the outline's edge it was left
+   * open: where a flyover splits, the through road's outside edge across
+   * the split is past the end of one road's side and short of the start of
+   * the next's (a 2.5 m slot at -3502,2717.8). So, once the sides are
+   * drawn and brought to their kerbs, the kerb's outer edge is walked, and
+   * wherever it stands over a drop with nothing drivable past it and no
+   * side drawn along it, one is drawn there: a deck's edge beam and
+   * parapet, or a raised road's wall and parapet, as tall as the fall.
+   */
+  const gapWhy = (i: number, seg: number, x: number, z: number, y: number) => {
+    const P = EP[i], a = P[seg], b = P[seg + 1];
+    const dx = b[0] - a[0], dz = b[1] - a[1], L2 = dx * dx + dz * dz || 1;
+    const u = ((x - a[0]) * dx + (z - a[1]) * dz) / L2;
+    const uc = Math.max(0, Math.min(1, u));
+    const d = Math.hypot(a[0] + dx * uc - x, a[1] + dz * uc - z);
+    const at = ECUM[i][seg] + uc * (ECUM[i][seg + 1] - ECUM[i][seg]);
+    return { i, seg, n: P.length, u: +u.toFixed(3), d: +d.toFixed(2), half: +halfNear(i, seg, uc).toFixed(2), at: +at.toFixed(1), len: +ELEN[i].toFixed(1), tA: JX.trimA[i], tB: JX.trimB[i], internal: JX.internal[i], prof: hasProfile[i], y: +((hasProfile[i] ? deckAtHit(i, seg, uc) : heightAt(x, z)) + ROAD_LIFT).toFixed(2), want: +y.toFixed(2) };
+  };
+  /** How far the ground must fall past a raised road's edge for a missing side to be drawn there (m): less, and its side would be a kerb's height, nothing showing under it. */
+  const GAP_DROP = 1;
+  const gapWalls = new Map<string, { x0: number; z0: number; x1: number; z1: number; y0: number; y1: number; ph0: number; ph1: number }[]>();
+  function* wallGaps(k: string, deck: Acc, kit: TileKit): Generator<void, void, void> {
+    const E = kerbOuter.get(k);
+    if (!E?.length) return;
+    let slice = performance.now();
+    const pause = () => performance.now() - slice > 4;
+    const G = 2;
+    // (The upright sheets drawn so far, by 2 m square: [x0, z0, x1, z1, lo, hi].)
+    const sheets: number[][] = [];
+    const grid = new Map<number, number[]>();
+    const { pos, uv, idx } = deck;
+    for (let t = 0; t < idx.length; t += 3) {
+      const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+      const ar = (pos[b] - pos[a]) * (pos[c + 2] - pos[a + 2]) - (pos[b + 2] - pos[a + 2]) * (pos[c] - pos[a]);
+      const P = [a, b, c];
+      let i0 = a, i1 = b, dm = -1;
+      for (const u of P) for (const v of P) {
+        const d = Math.hypot(pos[u] - pos[v], pos[u + 2] - pos[v + 2]);
+        if (d > dm) (dm = d), (i0 = u), (i1 = v);
+      }
+      if (dm < 0.05 || Math.abs(ar) / dm > 0.02) continue;
+      const lo = Math.min(pos[a + 1], pos[b + 1], pos[c + 1]), hi = Math.max(pos[a + 1], pos[b + 1], pos[c + 1]);
+      const n = sheets.length;
+      sheets.push([pos[i0], pos[i0 + 2], pos[i1], pos[i1 + 2], lo, hi]);
+      for (let gx = Math.floor(Math.min(pos[i0], pos[i1]) / G); gx <= Math.floor(Math.max(pos[i0], pos[i1]) / G); gx++)
+        for (let gz = Math.floor(Math.min(pos[i0 + 2], pos[i1 + 2]) / G); gz <= Math.floor(Math.max(pos[i0 + 2], pos[i1 + 2]) / G); gz++)
+          (grid.get(gx * 65536 + gz) ?? grid.set(gx * 65536 + gz, []).get(gx * 65536 + gz)!).push(n);
+      if ((t & 1023) === 0 && pause()) {
+        yield;
+        slice = performance.now();
+      }
+    }
+    /** Is there a sheet within 15 cm of (x, z) standing to `top`? Its foot, if so. */
+    const sheetAt = (x: number, z: number, top: number) => {
+      let foot = NaN;
+      const gx = Math.floor(x / G), gz = Math.floor(z / G);
+      for (const i of [-1, 0, 1].flatMap((a) => [-1, 0, 1].flatMap((b) => grid.get((gx + a) * 65536 + gz + b) ?? []))) {
+        const [x0, z0, x1, z1, lo, hi] = sheets[i];
+        if (hi < top) continue;
+        const dx = x1 - x0, dz = z1 - z0, L2 = dx * dx + dz * dz || 1;
+        const t = Math.max(0, Math.min(1, ((x - x0) * dx + (z - z0) * dz) / L2));
+        if (Math.hypot(x0 + dx * t - x, z0 + dz * t - z) < 0.15) foot = foot === foot ? Math.min(foot, lo) : lo;
+      }
+      return foot;
+    };
+    // (Is the edge at (x, z) one a road draws its own side along: beside
+    // one of its pieces, square to it and between its ends, at its level?
+    // Asked of the roads' lines, not of what is drawn: a road's side may lie
+    // in the next tile, not built yet. Past the end of every road, where a
+    // split's through road hands on to its branch, nobody draws it.)
+    const owned = (x: number, z: number, y: number, nx: number, nz: number, top: number) => {
+      let hit = false, here = false;
+      // (Its wall's end is cut back to where a circle the size of a nose's
+      // round, just past the road's edge, lies clear of all other paving:
+      // see openBesideOf. So a road owns the edge only where that holds.)
+      const R = NOSE_R - 0.02;
+      const cx = x + nx * 0.14, cz = z + nz * 0.14;
+      roads.each(x, z, 16, (i, seg) => {
+        if (hit || JX.internal[i]) return;
+        const P = EP[i], a = P[seg], b = P[seg + 1];
+        const dx = b[0] - a[0], dz = b[1] - a[1], L2 = dx * dx + dz * dz || 1;
+        const u = ((x - a[0]) * dx + (z - a[1]) * dz) / L2;
+        if ((u < -0.01 && seg === 0) || (u > 1.01 && seg === P.length - 2)) return;
+        const uc = Math.max(0, Math.min(1, u));
+        const d = Math.hypot(a[0] + dx * uc - x, a[1] + dz * uc - z);
+        if (d > halfNear(i, seg, uc) + 0.9) return;
+        const at = ECUM[i][seg] + uc * (ECUM[i][seg + 1] - ECUM[i][seg]);
+        if (at < (JX.trimA[i] || 0) - 0.05 || at > ELEN[i] - (JX.trimB[i] || 0) + 0.05) return;
+        if (Math.abs((hasProfile[i] ? deckAtHit(i, seg, uc) : heightAt(x, z)) + ROAD_LIFT - y) > 0.5) return;
+        // (Drawn in this tile, what was drawn answers: see sheetAt.)
+        if (tileKey((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) === k) {
+          here = true;
+          return;
+        }
+        const clear = (px: number, pz: number) => !coveredBy(i, px, pz, y) && !inJoint(px, pz, y) && !inGore(px, pz) && !inNose(px, pz) && !(oneLine && onPaved(px, pz, y));
+        let ok = clear(cx, cz);
+        for (let q = 0; q < 8 && ok; q++) ok = clear(cx + Math.cos((q * Math.PI) / 4) * R, cz + Math.sin((q * Math.PI) / 4) * R);
+        hit = ok;
+      });
+      return hit || (here && sheetAt(x, z, top) === sheetAt(x, z, top));
+    };
+    // (Only beside a raised road or a deck, at its level: a road on the ground has no sides of its own.)
+    const raisedBy = (x: number, z: number, y: number) => {
+      let hit = false;
+      roads.each(x, z, 16, (i, seg, u, d) => {
+        if (!hit && hasProfile[i] && !JX.internal[i] && d < halfNear(i, seg, u) + 2) hit = Math.abs(deckAtHit(i, seg, u) + ROAD_LIFT - y) < 0.5;
+      });
+      return hit;
+    };
+    const out: { x0: number; z0: number; x1: number; z1: number; y0: number; y1: number; ph0: number; ph1: number }[] = [];
+    const acc = { pos, uv, idx };
+    const quad = (ax: number, az: number, a0: number, a1: number, bx: number, bz: number, b0: number, b1: number, s: number) => {
+      const q = acc.pos.length / 3;
+      acc.pos.push(ax, a0, az, ax, a1, az, bx, b0, bz, bx, b1, bz);
+      acc.uv.push(0, s / 6, 1, s / 6, 0, (s + Math.hypot(bx - ax, bz - az)) / 6, 1, (s + Math.hypot(bx - ax, bz - az)) / 6);
+      // (One face, facing out over the drop: the material shows both. Both
+      // drawn, the two faces' shading fought, a pale patch in the beam.)
+      if ((az - bz) * on[0] + (bx - ax) * on[1] > 0) acc.idx.push(q, q + 2, q + 1, q + 1, q + 2, q + 3);
+      else acc.idx.push(q, q + 1, q + 2, q + 1, q + 3, q + 2);
+    };
+    const on = [0, 0];
+    for (const e of E) {
+      const [x0, z0, y0, x1, z1, y1, nx, nz] = e;
+      (on[0] = nx), (on[1] = nz);
+      const L = Math.hypot(x1 - x0, z1 - z0);
+      if (!(L > 0.05) || !(y0 === y0 && y1 === y1)) continue;
+      const n = Math.max(1, Math.round(L / 0.5));
+      // (Each sample: does it want a side, and is there none?)
+      const miss: boolean[] = [];
+      const drop: number[] = [];
+      for (let q = 0; q <= n; q++) {
+        const t = q / n;
+        const x = x0 + (x1 - x0) * t + nx * 0.01, z = z0 + (z1 - z0) * t + nz * 0.01;
+        const yr = y0 + (y1 - y0) * t - 0.03;
+        const dr = yr - Math.min(heightAt(x + nx * 0.6, z + nz * 0.6), heightAt(x + nx * 1.6, z + nz * 1.6));
+        drop.push(dr);
+        // (Nothing drivable or paved past it at its level: another road, a junction, a wedge, a nose, an island.)
+        const goesOn = (o: number) => {
+          const ox = x + nx * o, oz = z + nz * o;
+          return onPaved(ox, oz, yr) || inPaving(ox, oz, yr) || inGore(ox, oz) || inNose(ox, oz) || drawnRoadAt(ox, oz, yr);
+        };
+        const ix = x - nx * 0.5, iz = z - nz * 0.5;
+        miss.push(dr > GAP_DROP && raisedBy(x, z, yr) && !owned(x, z, yr, nx, nz, yr + Math.min(0.3, parapetTop(dr) * 0.5)) && !goesOn(0.6) && !goesOn(1.0) && !(inJoint(ix, iz, yr) || inPaving(ix, iz, yr) || inGore(ix, iz) || inNose(ix, iz)));
+      }
+      for (let q = 0; q < n; q++) {
+        if (!miss[q] && !miss[q + 1]) continue;
+        // (A piece either side of a missing sample, carried on 25 cm into
+        // what stands either side, past the kerb's own point if need be:
+        // met end to end, a hairline of sky showed between it and the beam
+        // it carries on from at -3502,2717.4, the beam's end being found
+        // only within 15 cm of the last sample it covers.)
+        const ta = q / n - (miss[q] ? 0.1 / n : 0.25 / L), tb = (q + 1) / n + (miss[q + 1] ? 0.1 / n : 0.25 / L);
+        const ax = x0 + (x1 - x0) * ta + nx * 0.01, az = z0 + (z1 - z0) * ta + nz * 0.01;
+        const bx = x0 + (x1 - x0) * tb + nx * 0.01, bz = z0 + (z1 - z0) * tb + nz * 0.01;
+        const ya = y0 + (y1 - y0) * ta - 0.03, yb = y0 + (y1 - y0) * tb - 0.03;
+        const da = Math.max(drop[q], 0), db = Math.max(drop[q + 1], 0);
+        // (A deck's edge where the ground under the road itself lies well down; a raised road's wall to the ground elsewhere.)
+        const under = (x: number, z: number, y: number) => y - heightAt(x - nx * 0.6, z - nz * 0.6);
+        const s = Math.hypot(ax - x0, az - z0);
+        if (under(ax, az, ya) >= JOINT_DECK_FROM && under(bx, bz, yb) >= JOINT_DECK_FROM) {
+          // (As deep as the beam beside it, where one is near.)
+          let foot = NaN;
+          for (const r of [0.5, 1.5, 3]) {
+            for (const sg of [-1, 1]) {
+              const f = sheetAt(ax + ((bx - ax) / (Math.hypot(bx - ax, bz - az) || 1)) * r * sg, az + ((bz - az) / (Math.hypot(bx - ax, bz - az) || 1)) * r * sg, ya - 0.05);
+              if (f === f && ya - f < 1.6) foot = foot === foot ? Math.max(foot, f) : f;
+            }
+            if (foot === foot) break;
+          }
+          const depth = foot === foot ? Math.max(0.6, ya - foot) : 1.2;
+          quad(ax, az, ya - depth, ya, bx, bz, yb - depth, yb, s);
+          quad(ax, az, ya, ya + PARAPET_H, bx, bz, yb, yb + PARAPET_H, s);
+          out.push({ x0: ax, z0: az, x1: bx, z1: bz, y0: ya, y1: yb, ph0: PARAPET_H, ph1: PARAPET_H });
+        } else {
+          quad(ax, az, ya - da - 0.3, ya + wallTop(da), bx, bz, yb - db - 0.3, yb + wallTop(db), s);
+          quad(ax, az, ya, ya + parapetTop(da), bx, bz, yb, yb + parapetTop(db), s);
+          out.push({ x0: ax, z0: az, x1: bx, z1: bz, y0: ya, y1: yb, ph0: parapetTop(da), ph1: parapetTop(db) });
+        }
+      }
+      if (pause()) {
+        yield;
+        slice = performance.now();
+      }
+    }
+    // (Each parapet stops the car as the roads' own do: see the deck barriers.)
+    for (const w of out) {
+      const sl = Math.hypot(w.x1 - w.x0, w.z1 - w.z0), ph = Math.min(w.ph0, w.ph1);
+      if (sl < 0.05 || ph < 0.3) continue;
+      const yaw = Math.atan2(-(w.z1 - w.z0), w.x1 - w.x0), y = (w.y0 + w.y1) / 2;
+      world.createCollider(
+        RAPIER.ColliderDesc.cuboid(sl / 2, ph / 2, 0.15)
+          .setTranslation((w.x0 + w.x1) / 2, y + ph / 2, (w.z0 + w.z1) / 2)
+          .setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }),
+        tileBody(kit),
+      );
+    }
+    gapWalls.set(k, out);
+  }
   function* wallsToKerb(k: string, deck: Acc): Generator<void, void, void> {
     const E = kerbOuter.get(k), runs = bandSheets.get(deck);
     if (!E?.length || !runs?.length) return;
@@ -9498,6 +9699,7 @@ export async function buildPasirRisCourse(
       );
       onTile('far', k, 'paving cut', (_kit, acc) => cutPaving(k, acc('road')));
       onTile('far', k, 'walls to kerb', (_kit, acc) => wallsToKerb(k, acc('deck')));
+      onTile('far', k, 'wall gaps', (kit, acc) => wallGaps(k, acc('deck'), kit));
     }
   }
   /** (For the checks: the outline's sides within r of (x, z), and what each gets at its nearest point.) */
@@ -11259,7 +11461,7 @@ export async function buildPasirRisCourse(
       halfAtE,
       halfNear,
       cutOf,
-      jointWalls, jointDeck, onTeeOf, isDeckSplit: (j: number) => deckSplits.has(j), needs, jCap, jCeil, deckEnd, sepA, sepB, ptA, ptB, thruJoint, relAlong, relOwn, stripShape, landOver, trims: (i: number) => [trimA(i), trimB(i)], stepAt, holdBase, ptMateA, ptMateB, roadBase, mates, jE, ELEN, tiltAt, crossDrop, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
+      gapWalls, gapWhyAt: (x: number, z: number, y: number) => { const w: unknown[] = []; roads.each(x, z, 16, (i, seg) => w.push(gapWhy(i, seg, x, z, y))); return w; }, jointWalls, jointDeck, onTeeOf, isDeckSplit: (j: number) => deckSplits.has(j), needs, jCap, jCeil, deckEnd, sepA, sepB, ptA, ptB, thruJoint, relAlong, relOwn, stripShape, landOver, trims: (i: number) => [trimA(i), trimB(i)], stepAt, holdBase, ptMateA, ptMateB, roadBase, mates, jE, ELEN, tiltAt, crossDrop, LIMITS, WL, throughOf, mateOf: mate, WIDTH_RATE, runOf, runs,
       fillTop: (k: number, x: number, z: number) => fillTop(JX.shapes.length + k, x, z),
       jTop: (k: number, x: number, z: number) => jTop(k, x, z),
       stripTop, oneLine, edges, EP, ECUM, EHALF, elevated, isDeck, embank, hasProfile, deckY, jRel, baseAt, heightAt, paths, PHALF, roads, jointsOf, drape, PCUM, pathDeck };
