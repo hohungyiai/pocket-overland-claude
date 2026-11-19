@@ -151,7 +151,8 @@ canvas { display: block; }
 /* ---- Saving: warnings, backup and restore ---- */
 .notice {
   position: absolute; left: 50%; top: calc(max(10px, env(safe-area-inset-top)) + 96px); transform: translateX(-50%);
-  width: min(560px, 80vw); display: flex; align-items: center; gap: 12px; z-index: 7;
+  /* (Clear of the minimap on the left and the buttons on the right.) */
+  width: min(540px, calc(100vw - 360px)); min-width: 300px; display: flex; align-items: center; gap: 12px; z-index: 7;
   background: rgba(20, 28, 30, 0.82); color: #fff; border-radius: 14px; padding: 10px 12px 10px 16px; font-size: 14px; line-height: 1.35;
 }
 .notice[hidden] { display: none; }
