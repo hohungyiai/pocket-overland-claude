@@ -2996,6 +2996,8 @@ export async function buildPasirRisCourse(
    * surface, and only rises again beyond that.
    */
   const SEAL = 6;
+  /** The ground an island closed in by raised roads is raised to at (x, z), or -Infinity: set once the roads' outlines are known (see islandsIn). */
+  let islandFill: (x: number, z: number) => number = () => -Infinity;
   /** How far the sealed ground lies below a road's own height (its drawn surface is ROAD_LIFT above that). */
   const UNDER = 0.12;
   const ROAD_LIFT = 0.09;
@@ -3003,6 +3005,17 @@ export async function buildPasirRisCourse(
   /** (Each road piece's edge heights as drawn, for heightAt: worked out once. By road, point, side and the piece whose normal it is.) */
   const edgeHMemo = new Map<number, number>();
   function heightAt(x: number, z: number): number {
+    const h = groundAt(x, z);
+    // (Inside an island closed in by raised roads, never under the ground
+    // the roads round it give it: see islandFill. After the roads' seal and
+    // banks, which held it down in a pit.)
+    const ps = probe.s, pw = probe.w;
+    const f = islandFill(x, z);
+    probe.s = ps;
+    probe.w = pw;
+    return f > h ? f : h;
+  }
+  function groundAt(x: number, z: number): number {
     let h = rawHeight(x, z);
     if (!(cell(x, z) & NEAR_ROAD)) return h;
     const ps = probe.s;
@@ -6476,6 +6489,215 @@ export async function buildPasirRisCourse(
     return outSrcs;
   };
   /**
+   * Islands closed in by raised roads (the user's call, 18 Nov): their
+   * ground raised to the roads round them. Between two roads on banks, an
+   * island lay in a pit, 1.3 m deep at -139.8,-57 (I0): its lawn lifted to
+   * the kerbs over it showed hollows, its footpath lay in a trench, and the
+   * car would have fallen through the grass.
+   *
+   * An island: a hole in the ground-level paving (roads, junctions, pads,
+   * split wedges, all as the outline takes them, but for the wedges'
+   * rounded points, which are worked out from the ground), no more than
+   * ISL_MAX m across and ISL_AREA m², with a road somewhere round it
+   * standing ISL_RAISED m or more over the ground inside. Its ground: the
+   * roads' heights all round its edge, blended across it by inverse
+   * distance, 3 cm under their surface, and never lower than the ground
+   * already there. Found a cell of ISL_CELL m at a
+   * time, from the paving within ISL_MARGIN m of it: an island with any
+   * point in the cell lies wholly in that, so every cell finds it the same.
+   */
+  const ISL_CELL = 100, ISL_MARGIN = 45, ISL_MAX = 40, ISL_AREA = 3000, ISL_RAISED = 0.5, ISL_NEAR = 60;
+  /** The island's ground over the sealed ground round it: 3 cm under the roads' drawn surface (its lawn 6 cm over that, level with the kerbs' tops). */
+  const ISL_UP = UNDER + ROAD_LIFT - 0.03;
+  type Island = { ring: XZ[]; x0: number; z0: number; x1: number; z1: number; S: number[] };
+  let islSrcs: { ring: XZ[]; x0: number; z0: number; x1: number; z1: number }[] | null = null;
+  const islSources = () => {
+    if (islSrcs) return islSrcs;
+    const rings: XZ[][] = [];
+    edges.forEach((_, i) => {
+      if (!outlined[i]) return;
+      if (deckGrp[i] < 0) return rings.push(surfacePoly(i));
+      const { lo, hi } = cutOf(i);
+      let k0 = lo;
+      for (let k = lo; k < hi; k++)
+        if (k + 1 === hi || lvlOf(i, k + 1) !== lvlOf(i, k)) {
+          if (lvlOf(i, k) < 0) rings.push(surfacePoly(i, k0, k + 1));
+          k0 = k + 1;
+        }
+    });
+    JPOLY.forEach((sh, id) => void (jLvl(id) < 0 && rings.push(sh.ring)));
+    for (const all of padsByTile.values())
+      for (const j of all) {
+        if (!jEdges[j].some((i) => outlined[i]) || jEdges[j].some((i) => isDeck[i])) continue;
+        const { x, z, r, ring } = padShape(j);
+        rings.push(ring ?? Array.from({ length: 24 }, (_, q): XZ => [x + Math.cos((q / 24) * Math.PI * 2) * r, z + Math.sin((q / 24) * Math.PI * 2) * r]));
+      }
+    gores.forEach((g) => void (goreLvl(g) < 0 && rings.push(g.ring)));
+    islSrcs = rings
+      .filter((r) => r.length >= 3)
+      .map((ring) => {
+        const xs = ring.map((p) => p[0]), zs = ring.map((p) => p[1]);
+        return { ring, x0: Math.min(...xs), z0: Math.min(...zs), x1: Math.max(...xs), z1: Math.max(...zs) };
+      });
+    return islSrcs;
+  };
+  /** Cells within ISL_NEAR m of a raised (profiled, not deck) road: only there can an island lie in a pit. */
+  let islNear: Set<number> | null = null;
+  const cellKey = (ci: number, cj: number) => ci * 100003 + cj;
+  const islNearCells = () => {
+    if (islNear) return islNear;
+    islNear = new Set();
+    edges.forEach((_, i) => {
+      if (!hasProfile[i] || isDeck[i]) return;
+      for (const [x, z] of EP[i])
+        for (let ci = Math.floor((x - ISL_NEAR) / ISL_CELL); ci <= Math.floor((x + ISL_NEAR) / ISL_CELL); ci++)
+          for (let cj = Math.floor((z - ISL_NEAR) / ISL_CELL); cj <= Math.floor((z + ISL_NEAR) / ISL_CELL); cj++) islNear!.add(cellKey(ci, cj));
+    });
+    return islNear;
+  };
+  /**
+   * The ground as sealed under the road nearest (x, z), on the paving just
+   * outside an island: that road's own height there, UNDER below it. (Not
+   * heightAt: under a split's wedge or a junction's paving away from any
+   * road's strip the ground is not sealed, and lay 0.7 m under the pit.)
+   */
+  const pavedGround = (x: number, z: number) => {
+    let best = Infinity, y = NaN;
+    roads.each(x, z, 14, (o, seg, u, d) => {
+      if (isDeck[o] || JX.internal[o]) return;
+      const half = halfNear(o, seg, u);
+      if (d - half >= best) return;
+      best = d - half;
+      if (hasProfile[o]) y = deckAtHit(o, seg, u);
+      else {
+        const pts = EP[o];
+        const cx = lerp(pts[seg][0], pts[seg + 1][0], u), cz = lerp(pts[seg][1], pts[seg + 1][1], u);
+        const t = d > half ? half / d : 1;
+        y = Math.max(rawHeight(cx + (x - cx) * t, cz + (z - cz) * t), WL + 0.15);
+      }
+    });
+    return y - UNDER;
+  };
+  const islCells = new Map<number, Island[]>();
+  let islBusy = false;
+  const islandsIn = (ci: number, cj: number): Island[] => {
+    const key = cellKey(ci, cj);
+    const got = islCells.get(key);
+    if (got) return got;
+    const out: Island[] = [];
+    islCells.set(key, out);
+    if (!islNearCells().has(key)) return out;
+    islBusy = true;
+    try {
+      const wx0 = ci * ISL_CELL - ISL_MARGIN, wz0 = cj * ISL_CELL - ISL_MARGIN, wx1 = (ci + 1) * ISL_CELL + ISL_MARGIN, wz1 = (cj + 1) * ISL_CELL + ISL_MARGIN;
+      const P = new Paths64();
+      for (const sr of islSources()) {
+        if (sr.x1 < wx0 || sr.x0 > wx1 || sr.z1 < wz0 || sr.z0 > wz1) continue;
+        const p = new Path64();
+        for (const q of sr.ring) p.push(new Point64(Math.round(q[0] * OUT_S), Math.round(q[1] * OUT_S)));
+        if (Clipper.area(p) < 0) p.reverse();
+        P.push(p);
+      }
+      if (!P.length) return out;
+      for (const h of Clipper.Union(P, undefined, FillRule.NonZero)) {
+        const a = Clipper.area(h);
+        if (a >= 0 || -a / (OUT_S * OUT_S) > ISL_AREA) continue;
+        const ring: XZ[] = h.map((q) => [q.x / OUT_S, q.y / OUT_S]);
+        const xs = ring.map((q) => q[0]), zs = ring.map((q) => q[1]);
+        const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+        if (x1 - x0 > ISL_MAX || z1 - z0 > ISL_MAX) continue;
+        // (Not one that reaches into another cell's own window's edge: see above.)
+        if (x1 < ci * ISL_CELL || x0 > (ci + 1) * ISL_CELL || z1 < cj * ISL_CELL || z0 > (cj + 1) * ISL_CELL) continue;
+        // (Nor one any road runs through, a bridge or a road the outline
+        // leaves out: raised, the ground buried a road crossing an island
+        // at -198,184.)
+        let crossed = false;
+        for (let i = 0; i < EP.length && !crossed; i++) {
+          const pts = EP[i];
+          for (let k = 0; k + 1 < pts.length && !crossed; k++) {
+            const [ax, az] = pts[k], [bx, bz] = pts[k + 1];
+            if (Math.max(ax, bx) < x0 || Math.min(ax, bx) > x1 || Math.max(az, bz) < z0 || Math.min(az, bz) > z1) continue;
+            const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az)));
+            for (let t = 0; t <= n && !crossed; t++) crossed = inRingXZ(ring, ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n);
+          }
+        }
+        if (crossed) continue;
+        // (Its edge every 2 m: the ground under the paving just outside it,
+        // and how far that stands over the ground just inside, as it is
+        // without this: islBusy.)
+        const S: number[] = [];
+        let raised = -Infinity;
+        for (let q = 0; q < ring.length; q++) {
+          const [ax, az] = ring[q], [bx, bz] = ring[(q + 1) % ring.length];
+          const L = Math.hypot(bx - ax, bz - az);
+          if (L < 1e-6) continue;
+          let nx = (bz - az) / L, nz = -(bx - ax) / L;
+          const n = Math.max(1, Math.ceil(L / 2));
+          for (let t = 0; t < n; t++) {
+            const sx = ax + ((bx - ax) * (t + 0.5)) / n, sz = az + ((bz - az) * (t + 0.5)) / n;
+            if (t === 0 && inRingXZ(ring, sx + nx * 0.3, sz + nz * 0.3)) (nx = -nx), (nz = -nz);
+            const bh = pavedGround(sx + nx * 0.5, sz + nz * 0.5);
+            raised = Math.max(raised, bh - heightAt(sx - nx * 1.5, sz - nz * 1.5));
+            S.push(sx, sz, bh);
+          }
+        }
+        if (!(raised >= ISL_RAISED) || !S.length || S.some((v) => v !== v)) continue;
+        out.push({ ring, x0, z0, x1, z1, S });
+      }
+    } finally {
+      islBusy = false;
+    }
+    return out;
+  };
+  islandFill = (x: number, z: number) => {
+    if (islBusy) return -Infinity;
+    for (const I of islandsIn(Math.floor(x / ISL_CELL), Math.floor(z / ISL_CELL))) {
+      if (x < I.x0 || x > I.x1 || z < I.z0 || z > I.z1 || !inRingXZ(I.ring, x, z)) continue;
+      let sw = 0, sh = 0;
+      for (let q = 0; q < I.S.length; q += 3) {
+        const w = 1 / Math.max(0.01, (I.S[q] - x) ** 2 + (I.S[q + 1] - z) ** 2);
+        sw += w;
+        sh += w * I.S[q + 2];
+      }
+      // (Low enough near each road round it that no 4 m mesh square
+      // reaching from under the road out to here rises through the road:
+      // e m past its kerb, a square's corner 4.5 - e m in under the road
+      // sealed 21 cm down, the line between them crosses the kerb under the
+      // road's surface while this stands under 0.21 e / (4.5 - e) over it.
+      // From a high island standing straight up off a low road's kerb, the
+      // mesh rose through that road at -198,184. The lawn over it runs from
+      // the kerb's top on up: see islandTopIn.)
+      let cap = Infinity;
+      roads.each(x, z, 14, (o, seg, u, d) => {
+        if (isDeck[o] || JX.internal[o]) return;
+        const half = halfNear(o, seg, u);
+        let y: number;
+        if (hasProfile[o]) y = deckAtHit(o, seg, u);
+        else {
+          const pts = EP[o];
+          const cx = lerp(pts[seg][0], pts[seg + 1][0], u), cz = lerp(pts[seg][1], pts[seg + 1][1], u);
+          const t = d > half ? half / d : 1;
+          y = Math.max(rawHeight(cx + (x - cx) * t, cz + (z - cz) * t), WL + 0.15);
+        }
+        const e = Math.max(0, d - half - 0.35);
+        if (e < 4.4) cap = Math.min(cap, y + ROAD_LIFT - 0.05 + (0.21 * e) / (4.5 - e));
+      });
+      return Math.min(sh / sw + ISL_UP, cap);
+    }
+    return -Infinity;
+  };
+  /** A tile's islands found ahead of its ground, a cell a slice (each joins its paving). */
+  function* warmIslands(ti: number, tj: number): Generator<void, void, void> {
+    const n = TILE / ISL_CELL;
+    for (let a = 0; a < n; a++)
+      for (let b = 0; b < n; b++) {
+        const ci = ti * n + a, cj = tj * n + b;
+        if (islCells.has(cellKey(ci, cj))) continue;
+        islandsIn(ci, cj);
+        yield;
+      }
+  }
+  /**
    * The paved outline round tile (ix, iz), and 30 m beyond: closed rings,
    * each with the paving on its left (+ the strip's normal), cut into
    * pieces of about a metre on a fixed lattice (so two tiles cut the same
@@ -7956,8 +8178,15 @@ export async function buildPasirRisCourse(
    * a pit, the road's edge face showing into it.)
    */
   const ISLE_W = 12.5, ISLE_TAPER = 6, ISLE_BANK = 1.5, KERB_OUT = 0.35;
-  /** How far under the kerb the ground beside it may lie for the island's top to be lifted to it (fading out over the next metre). */
-  const ISLE_DEEP = 2.5;
+  /**
+   * How far under the kerb the ground beside it may lie for the island's
+   * top to be lifted to it, fading out over the next ISLE_FADE m: gone by
+   * 1.2 m, where a drop is the walls' business. (Lifted on to 3.5 m deep,
+   * with banks up to 6 m wide, a bank ended where the lifting did with an
+   * open face, a dark notch from above at 1867.4,1818.2. A pit between
+   * raised roads is filled instead: see islandFill.)
+   */
+  const ISLE_DEEP = 0.9, ISLE_FADE = 0.3;
   const ISLE_STEP = 1;
   /** The outline's sides of each level in a tile, on a 4 m grid: [ax, az, bx, bz, lvl]. */
   const outSegs = (w: { rings: OutRing[]; segs?: Map<number, number[][]> }) => {
@@ -8054,11 +8283,12 @@ export async function buildPasirRisCourse(
         const f = farTop(mm, P[v][0] - nx * (d + 0.05), P[v][1] - nz * (d + 0.05));
         const t0 = top(v);
         ap = f === f && Math.abs(f + ROAD_LIFT + 0.03 - t0) >= 0.5;
-        // (On a wide island, between two roads at different heights, a bank
-        // from one kerb's top to the other's, never a level top each side
-        // ending at the middle: the higher one's stood there as a cliff
-        // with no face, at -139.8,-57 (I0) a spike seen from the road.)
-        m = f === f && (!ap || d / 2 >= 0.75) ? (t0 + f + ROAD_LIFT + 0.03) / 2 : t0;
+        // (Between kerbs half a metre or more apart in height, level with
+        // this one's: a bank from one kerb's top to the other's, on a verge
+        // between a road and one well above it, stood up as a wedge where
+        // the lawn ended, a dark notch at 1867.4,1818.2. An island between
+        // raised roads has its ground raised instead: see islandFill.)
+        m = f === f && !ap ? (t0 + f + ROAD_LIFT + 0.03) / 2 : t0;
       }
       mid.push(m);
       apart.push(ap);
@@ -8149,18 +8379,21 @@ export async function buildPasirRisCourse(
       const x1 = P[v][0] + ox * wi, z1 = P[v][1] + oz * wi;
       // (The ground just past the kerb within ISLE_DEEP under its top: past
       // that the kerb stands at a drop, a wall's business.)
-      // (Fading out between ISLE_DEEP and ISLE_DEEP + 1 m, not cut off at
-      // a depth: an island in a pit 1.2 to 1.6 m deep between roads on an
-      // embankment, lifted where the ground lay under 1.2 m below the kerb
-      // and left in the pit beside, stood up out of it as a spike.)
+      // (Fading out between ISLE_DEEP and ISLE_DEEP + ISLE_FADE, not cut
+      // off at a depth: lifted where the ground lay under 1.2 m below the
+      // kerb and left beside where it lay deeper, it stood up as a spike.)
       const g = heightAt(x0, z0);
-      fade = smoothstep(ISLE_DEEP, ISLE_DEEP + 1, t0 - g);
+      fade = smoothstep(ISLE_DEEP, ISLE_DEEP + ISLE_FADE, t0 - g);
       if (!(t0 === t0) || g > t0 || fade >= 1 || wi <= KERB_OUT + 0.02) {
         secs.push(null);
         continue;
       }
       const open = !(half[i] < Infinity) || cut;
-      const y1 = !(half[i] < Infinity) ? t0 : lerp(t0, mid[i], Math.min(2, wi / half[i]));
+      // (On an island closed in by raised roads, on to its ground, raised
+      // to the roads round it (see islandFill), at the kerbs' height over
+      // it: the lawn and the ground one surface, no crease where it ends.)
+      const fill = islandFill(x1, z1);
+      const y1 = fill > -Infinity ? fill + 0.06 : !(half[i] < Infinity) ? t0 : lerp(t0, mid[i], Math.min(2, wi / half[i]));
       // (Level with the kerb's top for its first 15 cm, then on to the
       // middle: across a narrow island between two roads at different
       // heights, sloping from the kerb's very edge, it lay 2-3 cm under the
@@ -8173,10 +8406,7 @@ export async function buildPasirRisCourse(
       const sh = fall ? KERB_OUT + Math.min(0.15, (wi - KERB_OUT) / 2) : (KERB_OUT + wi) / 2;
       const sec = [put(x0, t0, z0), put(P[v][0] + ox * sh, fall ? t0 : (t0 + y1) / 2, P[v][1] + oz * sh), put(x1, y1, z1)];
       if (open) {
-        // (No steeper than 1 in 3: where the island stands a metre over
-        // the ground beyond, a bank 1.5 m wide was a dark face, and the
-        // next section's, open or not, a fold beside it.)
-        const bank = cut ? 0.25 : Math.max(ISLE_BANK, Math.min(6, 3 * (y1 - heightAt(x1, z1))));
+        const bank = cut ? 0.25 : ISLE_BANK;
         const x2 = P[v][0] + ox * (wi + bank), z2 = P[v][1] + oz * (wi + bank);
         sec.push(put(x2, Math.min(y1, heightAt(x2, z2) + 0.02), z2));
       }
@@ -10659,9 +10889,19 @@ export async function buildPasirRisCourse(
   // comes from the tile's far-layer build, kept for a while; a near tile
   // that finds none builds it again off-scene.
   const roadSurf = new Map<string, { pos: Float32Array; idx: Uint32Array }>();
-  const keepSurf = (k: string, a: Acc | undefined) => {
+  // (An island's top as well, where it is lifted to its kerbs: drawn and
+  // not driven on, it hid a fall of up to 1.3 m to the ground under it, at
+  // -134.8,-53.3 beside the expressway.)
+  const keepSurf = (k: string, a: Acc | undefined, lawn?: Acc) => {
     roadSurf.delete(k);
-    roadSurf.set(k, { pos: new Float32Array(a?.pos ?? []), idx: new Uint32Array(a?.idx ?? []) });
+    const ap = a?.pos ?? [], ai = a?.idx ?? [], lp = lawn?.pos ?? [], li = lawn?.idx ?? [];
+    const pos = new Float32Array(ap.length + lp.length);
+    pos.set(ap);
+    pos.set(lp, ap.length);
+    const idx = new Uint32Array(ai.length + li.length);
+    idx.set(ai);
+    for (let q = 0, n = ap.length / 3; q < li.length; q++) idx[ai.length + q] = li[q] + n;
+    roadSurf.set(k, { pos, idx });
     if (roadSurf.size > 300) roadSurf.delete(roadSurf.keys().next().value!);
   };
   const offScene = { add: () => {}, own: <T>(g: T) => g, body: () => null } as unknown as TileKit;
@@ -10687,7 +10927,7 @@ export async function buildPasirRisCourse(
           yield;
         }
     }
-    keepSurf(k, accs.get('road'));
+    keepSurf(k, accs.get('road'), accs.get('lawn'));
     return roadSurf.get(k)!;
   }
   const roadCollider = (surf: { pos: Float32Array; idx: Uint32Array }, kit: TileKit) => {
@@ -10697,6 +10937,14 @@ export async function buildPasirRisCourse(
   const builder = (layer: Layer) =>
     function* (ti: number, tj: number, kit: TileKit) {
       const at = `${layer}:${ti},${tj}`;
+      // (Its islands first, each cell a slice of its own: the ground reads them.)
+      for (const it = warmIslands(ti, tj); ; ) {
+        const t1 = performance.now();
+        const r = it.next();
+        cost('islands', at, t1);
+        if (r.done) break;
+        yield;
+      }
       const t = yield* ensurePatch(ti, tj, layer === 'horizon' ? STEP_FAR : STEP);
       let t0 = performance.now();
       if (t) {
@@ -10731,7 +10979,7 @@ export async function buildPasirRisCourse(
             yield;
           }
       }
-      if (layer === 'far') keepSurf(`${ti},${tj}`, accs.get('road'));
+      if (layer === 'far') keepSurf(`${ti},${tj}`, accs.get('road'), accs.get('lawn'));
       yield* flush(accs, kit);
     };
   const streamer = new TileStreamer(scene, world, RAPIER, { near: builder('near'), far: builder('far'), horizon: builder('horizon') }, WB);
@@ -10913,6 +11161,12 @@ export async function buildPasirRisCourse(
       outlineAt,
       gores,
       dividers,
+      islandsIn,
+      groundAt,
+      islReset: (ci: number, cj: number) => islCells.delete(ci * 100003 + cj),
+      islNearHas: (ci: number, cj: number) => islNearCells().has(ci * 100003 + cj),
+      islandList: () => [...islCells.values()].flat(),
+      ISL_CELL,
       divMs: () => divMs,
       goreCaps,
       sAlong,
