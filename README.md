@@ -9,6 +9,8 @@ Three drives so far, picked from the start menu (or with `?course=pasirris` / `?
 - **Changi** (same drive, no loading screen): past East Coast Park's east end the road carries on as **Changi Coast Road**, with the sea on one side and the airport fence on the other. Planes come in low over the end of the park to land on the runway behind the fence. The coast turns north round the island's eastern tip and runs west into **Changi Beach Park**: a wide beach, palms and casuarinas, shelters and two carparks. It is compressed (about 3 km of coast for the real 10) and laid out by hand, not from map data. The road currently ends at the far end of the beach park; Changi Village is next.
 - **Ubin test track**: the driving prototype, a gravel loop with a climb, rock garden, water crossing, sand wash and off-camber section.
 
+**Saving.** The game keeps your journey on the phone all the time: every 10 seconds while you drive, whenever the phone hides the game, and at camp. **Continue** on the start menu picks up where you stopped. A browser can still lose what it stores (a private tab, clearing website data, iPhone Safari after about a week away), so the game says so plainly on the menu and before each drive unless you play from the home screen. **Back up your journey** gives a save code (copy it, or share it to WhatsApp or Notes, with a link that restores it); **Restore from a save code** on the menu brings it back, on this phone or another. Nothing leaves the phone: no accounts, no server (`src/save.ts`).
+
 The game never fails you: there's no game over, the car self-rights after a roll, ↺ puts it back on its wheels, and if you sit stuck the HUD suggests low range and the diff lock.
 
 ## Run it

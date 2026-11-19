@@ -14,37 +14,6 @@ export interface CampSpot {
   radius: number;
 }
 
-export interface SaveGame {
-  course: string;
-  camp: string;
-  label: string;
-  x: number;
-  z: number;
-  yaw: number;
-  style?: string;
-  savedAt: number;
-}
-
-const SAVE_KEY = 'pocket-overland-save';
-
-export function loadSave(): SaveGame | null {
-  try {
-    const s = JSON.parse(localStorage.getItem(SAVE_KEY) ?? 'null');
-    return s && typeof s.x === 'number' && typeof s.course === 'string' ? s : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeSave(s: SaveGame) {
-  try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(s));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 const tint = (g: THREE.BufferGeometry, hex: number) => {
   const g2 = g.index ? g.toNonIndexed() : g;
   const c = new THREE.Color(hex);
@@ -112,7 +81,7 @@ export class Camps {
   }
 
   /** Pitch beside the car (on its left, door facing the car). */
-  pitch(spot: CampSpot, car: { x: number; z: number; yaw: number }, courseId: string, style: string) {
+  pitch(spot: CampSpot, car: { x: number; z: number; yaw: number }) {
     const lx = -Math.sin(car.yaw); // car's left, in (x, z)
     const lz = -Math.cos(car.yaw);
     const x = car.x + lx * 4.5;
@@ -121,7 +90,6 @@ export class Camps {
     this.group.rotation.y = car.yaw;
     this.group.visible = true;
     this.active = spot;
-    return writeSave({ course: courseId, camp: spot.id, label: spot.label, x: car.x, z: car.z, yaw: car.yaw, style, savedAt: Date.now() });
   }
 
   strike() {

@@ -11,7 +11,8 @@ import { Vehicle } from './vehicle';
 import { Controls } from './controls';
 import { PerfOverlay } from './perf';
 import { Weather } from './weather';
-import { Camps, loadSave } from './camp';
+import { Camps } from './camp';
+import { loadJourney, saveJourney, spotOf, checkStorage, storageWarning, backupPanel, restorePanel, describe, encodeCode, decodeCode, normalise, type Journey, type StorageHealth } from './save';
 import './style.css';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -32,7 +33,8 @@ const COURSES = {
 } as const;
 type CourseId = keyof typeof COURSES;
 
-async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: number; yaw: number; cam: number } | null) {
+async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: number; yaw: number; cam: number; y?: number } | null) {
+  const health = await health$;
   await RAPIER.init();
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -201,15 +203,113 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
     if (!spot) return;
     fadeThen(() => {
       const p = car.mesh.position;
-      const saved = camps.pitch(spot, { x: p.x, z: p.z, yaw: carHeading() }, courseId, style);
+      camps.pitch(spot, { x: p.x, z: p.z, yaw: carHeading() });
+      const saved = autosave(spot.label, spot.id);
       weather.setTime('evening');
       say(saved ? `Evening at ${spot.label}. Journey saved.` : `Evening at ${spot.label}.`, 6);
     });
   });
 
   if (at) {
-    car.placeAt(new THREE.Vector3(at.x, course.heightAt(at.x, at.z), at.z), at.yaw);
+    // (A saved height puts the car back on the bridge deck it was on, not the ground below.)
+    const y = at.y !== undefined && course.surfaceY ? course.surfaceY(at.x, at.z, at.y) : course.heightAt(at.x, at.z);
+    car.placeAt(new THREE.Vector3(at.x, y, at.z), at.yaw);
     camMode = at.cam % camModes.length;
+  }
+
+  // ---- Saving: kept on the phone all the time (see save.ts) ----
+  const blank = (): Journey => ({ course: courseId, x: 0, z: 0, yaw: 0, label: '', odo: 0, savedAt: Date.now(), backupOdo: 0, backupAt: Date.now() });
+  const journey: Journey = loadJourney() ?? blank();
+  let lastSaved = { x: NaN, z: NaN, camp: '' };
+  let lastPos = { x: car.mesh.position.x, z: car.mesh.position.z };
+  // Driving time since the last backup, this visit.
+  let driveSecs = 0;
+  const autosave = (label?: string, camp?: string) => {
+    const p = car.mesh.position;
+    Object.assign(journey, {
+      course: courseId,
+      x: p.x,
+      z: p.z,
+      y: p.y,
+      yaw: carHeading(),
+      label: label ?? camps?.active?.label ?? course.zoneAt(p.x, p.z) ?? course.name,
+      style,
+      camp: camp ?? camps?.active?.id,
+      savedAt: Date.now(),
+    });
+    if (!journey.camp) delete journey.camp;
+    (journey.spots ??= {})[courseId] = spotOf(journey);
+    lastSaved = { x: p.x, z: p.z, camp: journey.camp ?? '' };
+    return saveJourney(journey);
+  };
+  let saveTimer = 10;
+  const saveIfMoved = () => {
+    const p = car.mesh.position;
+    if (Math.hypot(p.x - lastSaved.x, p.z - lastSaved.z) > 2 || (camps?.active?.id ?? '') !== lastSaved.camp || Number.isNaN(lastSaved.x)) autosave();
+  };
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && saveIfMoved());
+  window.addEventListener('pagehide', saveIfMoved);
+
+  // Backups: offered once you stop after a long drive, never mid-drive.
+  const btnBackup = $('btn-backup');
+  let paused = false;
+  const pause = (on: boolean) => {
+    paused = on;
+    controls.reset();
+    if (!on) {
+      last = performance.now();
+      acc = 0;
+    }
+  };
+  const openBackup = () => {
+    autosave();
+    pause(true);
+    btnBackup.hidden = true;
+    backupPanel($('app'), journey, (done) => {
+      if (done) {
+        journey.backupOdo = journey.odo;
+        journey.backupAt = Date.now();
+        driveSecs = 0;
+        autosave();
+      } else snooze();
+      pause(false);
+    });
+  };
+  // How long a drive counts as long: shorter when this tab may lose progress.
+  const longKm = health.installed ? 80 : 20;
+  const longSecs = health.installed ? 7200 : 1800;
+  let snoozeOdo = 0;
+  const snooze = () => (snoozeOdo = journey.odo);
+  const backupDue = () =>
+    journey.odo - snoozeOdo > 2000 && (journey.odo - journey.backupOdo > longKm * 1000 || (driveSecs > longSecs && journey.odo - journey.backupOdo > 2000));
+  tap(btnBackup, openBackup);
+  let stoppedFor = 0;
+
+  // Before the drive: say plainly if this tab may not keep it.
+  const warning = storageWarning(health);
+  // (A risk notice goes after 12 s of driving, or a tap.)
+  let noticeLeft = 0;
+  const notice = $('notice');
+  if (warning) {
+    notice.innerHTML = '';
+    const t = document.createElement('span');
+    t.textContent = warning.short;
+    const b = document.createElement('button');
+    b.className = 'btn';
+    b.textContent = warning.level === 'none' ? 'I understand' : 'OK';
+    notice.append(t, b);
+    notice.classList.toggle('strong', warning.level === 'none');
+    notice.hidden = false;
+    if (warning.level === 'none') pause(true);
+    const hide = () => {
+      notice.hidden = true;
+      if (paused) pause(false);
+    };
+    b.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      hide();
+    });
+    if (warning.level === 'risk') noticeLeft = 12;
   }
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
@@ -345,6 +445,12 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       requestAnimationFrame(frame);
       return;
     }
+    if (paused) {
+      last = now;
+      renderer.render(scene, camera);
+      requestAnimationFrame(frame);
+      return;
+    }
     if (sim.fast > 0) {
       fastFrame(now);
       requestAnimationFrame(frame);
@@ -373,6 +479,10 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
 
     const p = car.mesh.position;
     placeSun(p);
+    // Odometer (a jump, from ↺ or a reload, isn't driving).
+    const moved = Math.hypot(p.x - lastPos.x, p.z - lastPos.z);
+    if (moved < 10) journey.odo += moved;
+    lastPos = { x: p.x, z: p.z };
     course.update?.(now / 1000, dt, camera.position, p);
     weather.update(dt, camera.position);
     camps?.update(now / 1000);
@@ -400,6 +510,22 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
         btnCamp.hidden = !show;
         btnCamp.textContent = camps.active ? 'Break camp' : `Make camp`;
       }
+      // Saving: every 10 s while driving; a backup offer once stopped after a long drive.
+      if (Math.abs(car.speed) > 1) {
+        driveSecs += 0.1;
+        if (noticeLeft > 0 && (noticeLeft -= 0.1) <= 0) notice.hidden = true;
+      }
+      saveTimer -= 0.1;
+      if (saveTimer <= 0) {
+        saveTimer = 10;
+        saveIfMoved();
+      }
+      stoppedFor = Math.abs(car.speed) < 1 ? stoppedFor + 0.1 : 0;
+      if (btnBackup.hidden && stoppedFor > 2 && btnCamp.hidden && backupDue()) btnBackup.hidden = false;
+      else if (!btnBackup.hidden && stoppedFor === 0) {
+        btnBackup.hidden = true;
+        snooze();
+      }
       hudZone.textContent = zone ?? '';
       hudZone.style.opacity = zone ? '1' : '0';
     }
@@ -419,13 +545,14 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   $('loading').remove();
 
   // Handy for testing in the console.
-  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera, weather, camps, sim } });
+  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera, weather, camps, sim, journey, autosave, openBackup, save: { encodeCode, decodeCode, normalise, loadJourney } } });
 }
 
 // ---- Course picker ----
 const params = new URLSearchParams(location.search);
 const go = (id: CourseId) => {
   $('menu').remove();
+  document.body.classList.add('driving');
   $('loading').style.display = 'flex';
   // Let the loading screen paint before the (blocking) world build.
   requestAnimationFrame(() =>
@@ -440,28 +567,104 @@ const go = (id: CourseId) => {
 const chosen = params.get('course');
 const style: ArtStyle = params.get('style') === 'stylized' ? 'stylized' : 'detailed';
 const atParts = (params.get('at') ?? '').split(',').map(Number);
-const at = atParts.length === 4 && atParts.every(Number.isFinite) ? { x: atParts[0], z: atParts[1], yaw: atParts[2], cam: atParts[3] } : null;
+const at =
+  (atParts.length === 4 || atParts.length === 5) && atParts.every(Number.isFinite)
+    ? { x: atParts[0], z: atParts[1], yaw: atParts[2], cam: atParts[3], y: atParts[4] }
+    : null;
+// Checked once, before the menu shows and before a drive starts.
+const health$: Promise<StorageHealth> = checkStorage();
+const continueFrom = (j: Pick<Journey, 'course' | 'x' | 'z' | 'yaw' | 'y' | 'style'>) => {
+  if (!(j.course in COURSES)) return;
+  const q = new URLSearchParams({ course: j.course, style: j.style ?? 'detailed', at: [j.x, j.z, j.yaw, 0, ...(j.y !== undefined ? [j.y] : [])].map((v) => +v.toFixed(2)).join(',') });
+  location.replace(`${location.pathname}?${q}`);
+};
 if (chosen && chosen in COURSES) go(chosen as CourseId);
 else {
   $('loading').style.display = 'none';
-  const save = loadSave();
-  if (save && save.course in COURSES) {
+  const choices = document.querySelector('#menu .choices')!;
+  const journey = loadJourney();
+  if (journey && journey.course in COURSES) {
     const b = document.createElement('button');
-    b.innerHTML = `<b>Continue</b><span>From ${save.label} · saved ${new Date(save.savedAt).toLocaleDateString()}</span>`;
-    b.addEventListener('click', () => {
-      const q = new URLSearchParams({ course: save.course, style: save.style ?? 'detailed', at: [save.x, save.z, save.yaw, 0].map((v) => +v.toFixed(2)).join(',') });
-      location.replace(`${location.pathname}?${q}`);
-    });
-    document.querySelector('#menu .choices')!.prepend(b);
+    b.className = 'continue';
+    b.innerHTML = `<b>Continue</b><span></span>`;
+    b.querySelector('span')!.textContent = describe(journey);
+    b.addEventListener('click', () => continueFrom(journey));
+    choices.prepend(b);
   }
-  document.querySelectorAll<HTMLButtonElement>('#menu [data-course]').forEach((b) =>
+  // Backup and restore, and the plain word on whether this tab keeps progress.
+  const tools = $('menu-tools');
+  const mk = (label: string, fn: () => void) => {
+    const b = document.createElement('button');
+    b.className = 'link';
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    tools.append(b);
+    return b;
+  };
+  const openRestore = (prefill = '') =>
+    restorePanel(
+      $('app'),
+      prefill,
+      (c) => c in COURSES,
+      (j) => {
+        saveJourney(j);
+        continueFrom(j);
+      },
+      () => history.replaceState(null, '', location.pathname),
+    );
+  if (journey) mk('Back up your journey', () => backupPanel($('app'), journey, (done) => {
+    if (!done) return;
+    journey.backupOdo = journey.odo;
+    journey.backupAt = Date.now();
+    saveJourney(journey);
+  }));
+  mk('Restore from a save code', () => openRestore());
+  // A shared restore link: …#restore=PO1-…
+  const fromHash = () => {
+    const hash = decodeURIComponent(location.hash);
+    if (hash.startsWith('#restore=') && !document.querySelector('.panel')) openRestore(hash.slice(9));
+  };
+  fromHash();
+  window.addEventListener('hashchange', fromHash);
+  health$.then((h) => {
+    const w = storageWarning(h);
+    if (!w) return;
+    const box = $('menu-warning');
+    const t = document.createElement('span');
+    t.textContent = w.text;
+    box.append(t);
+    box.classList.toggle('strong', w.level === 'none');
+    box.hidden = false;
+    // Android: the browser's own install, when it offers one.
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      const prompt = e as Event & { prompt(): Promise<void> };
+      const b = document.createElement('button');
+      b.className = 'btn primary';
+      b.textContent = 'Install';
+      b.addEventListener('click', () => prompt.prompt());
+      box.append(b);
+    });
+  });
+  // A drive you've been on before carries on where you left it (each drive
+  // keeps its own place, so looking at another never loses this one).
+  document.querySelectorAll<HTMLButtonElement>('#menu [data-course]').forEach((b) => {
+    const id = b.dataset.course as CourseId;
+    const spot = journey?.spots?.[id];
+    if (spot) {
+      const line = document.createElement('span');
+      line.className = 'carry-on';
+      line.textContent = `Carry on from ${spot.label || 'where you left it'}`;
+      b.append(line);
+    }
     b.addEventListener('click', () => {
-      const id = b.dataset.course as CourseId;
+      if (spot) return continueFrom({ course: id, ...spot });
       history.replaceState(null, '', `?course=${id}`);
       go(id);
-    }),
-  );
+    });
+  });
 }
+
 $('btn-menu').addEventListener('pointerdown', (e) => {
   e.stopPropagation();
   location.href = location.pathname;
