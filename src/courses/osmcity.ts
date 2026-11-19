@@ -6665,7 +6665,9 @@ export async function buildPasirRisCourse(
       // sealed 21 cm down, the line between them crosses the kerb under the
       // road's surface while this stands under 0.21 e / (4.5 - e) over it.
       // From a high island standing straight up off a low road's kerb, the
-      // mesh rose through that road at -198,184. The lawn over it runs from
+      // mesh rose through that road at -198,184. 3 cm more to spare for a
+      // road climbing beside it, lower where the square reaches it than
+      // where this is nearest: 2 cm through at -206,170. The lawn over it runs from
       // the kerb's top on up: see islandTopIn.)
       let cap = Infinity;
       roads.each(x, z, 14, (o, seg, u, d) => {
@@ -6680,7 +6682,7 @@ export async function buildPasirRisCourse(
           y = Math.max(rawHeight(cx + (x - cx) * t, cz + (z - cz) * t), WL + 0.15);
         }
         const e = Math.max(0, d - half - 0.35);
-        if (e < 4.4) cap = Math.min(cap, y + ROAD_LIFT - 0.05 + (0.21 * e) / (4.5 - e));
+        if (e < 4.4) cap = Math.min(cap, y + ROAD_LIFT - 0.08 + (0.21 * e) / (4.5 - e));
       });
       return Math.min(sh / sw + ISL_UP, cap);
     }
