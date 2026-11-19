@@ -13,7 +13,8 @@ import { PerfOverlay } from './perf';
 import { Weather } from './weather';
 import { Camps } from './camp';
 import { loadJourney, saveJourney, spotOf, checkStorage, storageWarning, backupPanel, restorePanel, describe, encodeCode, decodeCode, normalise, type Journey, type StorageHealth } from './save';
-import { Fuel, CRAWL_SPEED, distText } from './fuel';
+import { Fuel, CRAWL_SPEED, distText, onForecourt } from './fuel';
+import { SURFACES } from './courses/types';
 import { Stations } from './station';
 import { Garages, garagePanel, homePicker, garageById, type GarageSpot } from './garage';
 import './style.css';
@@ -89,7 +90,12 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   // Weather (style-neutral): showers come and go; wet ground grips a little less.
   const weather = new Weather({ scene, sun, hemi, sunOffset });
   const rawSurface = course.surfaceAt;
-  course.surfaceAt = (x, z, y) => weather.feel(rawSurface(x, z, y));
+  // A petrol station's forecourt is paved to its kerb, whatever the ground
+  // raster under its edge says.
+  const courts = course.fuel ?? [];
+  const paved = (x: number, z: number, y: number) =>
+    courts.some((s) => Math.abs(x - s.x) < s.r + 1 && Math.abs(z - s.z) < s.r + 1 && onForecourt(s, x, z)) ? SURFACES.asphalt : rawSurface(x, z, y);
+  course.surfaceAt = (x, z, y) => weather.feel(paved(x, z, y));
   let toast: string | null = null;
   let toastTime = 0;
   const say = (text: string, secs = 4) => {

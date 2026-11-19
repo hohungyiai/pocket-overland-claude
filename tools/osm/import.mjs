@@ -459,7 +459,8 @@ export function build(raw, origin) {
       }
       return lo.slice(0, -1).concat(hi.slice(0, -1));
     };
-    // Kerbed roads near a station: the forecourt stops 1 m short of their edge.
+    // Kerbed roads near a station: the forecourt stops 2.5 m short of their
+    // edge, clear of the road's paved verge.
     const kerbed = edges.filter((e) => e.cls !== 'service' && !e.lv);
     const pushOff = (p) => {
       for (let round = 0; round < 3; round++)
@@ -474,7 +475,7 @@ export function build(raw, origin) {
             const cx = ax + dx * u;
             const cz = az + dz * u;
             const d = Math.hypot(p[0] - cx, p[1] - cz);
-            const need = e.w / 2 + 1;
+            const need = e.w / 2 + 2.5;
             if (d >= need || d < 1e-6) continue;
             p[0] = cx + ((p[0] - cx) / d) * need;
             p[1] = cz + ((p[1] - cz) / d) * need;
@@ -496,11 +497,9 @@ export function build(raw, origin) {
       const r = Math.max(...ring.map((p) => Math.hypot(p[0] - x, p[1] - z)));
       const pts = qp(ring);
       fuel.push({ name: f.name || 'Petrol station', x: q(x), z: q(z), r: q(r), pts });
-      // (The ground under it is paved too, a cell beyond its edge: the land
-      // raster is 4 m, and a car on the forecourt is on asphalt.)
-      const wide = [];
-      for (const [x, z] of ring) for (let a = 0; a < 8; a++) wide.push([x + 4 * Math.cos((a * Math.PI) / 4), z + 4 * Math.sin((a * Math.PI) / 4)]);
-      areas.push({ kind: 'parking', name: 'Forecourt', pts: qp(hull(wide)) });
+      // The ground under it is paved (no trees), to its edge and no further,
+      // so its kerb meets the grass cleanly.
+      areas.push({ kind: 'parking', name: 'Forecourt', pts });
     }
   }
 

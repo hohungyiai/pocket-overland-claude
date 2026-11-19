@@ -40,6 +40,8 @@ window.__checkStations = async () => {
     }
     return c;
   };
+  const deg = new Map();
+  for (const e of d.edges) for (const j of [e.a, e.b]) deg.set(j, (deg.get(j) ?? 0) + 1);
   for (const s of stations) {
     const P = s.pts;
     if (!P?.length) {
@@ -137,6 +139,24 @@ window.__checkStations = async () => {
         for (let t = 0; t <= n && !onRoad; t++) if (inRing(ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n, P)) onRoad++;
       }
     if (!onRoad) bad.push({ station: s.name, x: s.x, z: s.z, field: 'no road or lane runs onto the forecourt', over: 1 });
+    // A lane that runs onto it ends on it, or goes on to a road: never a stub
+    // past its edge onto the grass.
+    for (const e of d.edges) {
+      if (e.cls !== 'service' || !e.pts.some((p) => Math.hypot(p[0] - s.x, p[1] - s.z) < s.r + 60)) continue;
+      let onIt = false;
+      for (let k = 0; !onIt && k + 1 < e.pts.length; k++) {
+        const [ax, az] = e.pts[k];
+        const [bx, bz] = e.pts[k + 1];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az)));
+        for (let t = 0; t <= n && !onIt; t++) if (inRing(ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n, P)) onIt = true;
+      }
+      if (!onIt) continue;
+      for (const [j, p] of [[e.a, e.pts[0]], [e.b, e.pts[e.pts.length - 1]]]) {
+        samples++;
+        if (deg.get(j) === 1 && !inRing(p[0], p[1], P))
+          bad.push({ station: s.name, x: +p[0].toFixed(1), z: +p[1].toFixed(1), field: 'a lane onto it runs on past its edge to a dead end', over: 1 });
+      }
+    }
     // Off the forecourt: no pump, and no forecourt over a kerbed road's paving.
     for (let a = 0; a < 360; a += 5)
       for (let r = 2; r < s.r + 20; r += 1.5) {

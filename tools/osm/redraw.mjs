@@ -149,13 +149,32 @@ if (steps.has('lanes')) {
         for (const i of by.used) keep.add(i);
       }
   }
-  // Lanes to a place: a run that reaches a petrol station's forecourt or a
-  // garage's bay keeps the way in, from where it leaves a road to the lane
-  // nearest the place (a dead end, but the place is what it leads to).
-  const places = [
-    ...(M.fuel ?? []).map((f) => ({ x: f.x, z: f.z, r: f.r })),
-    ...Object.entries(BAYS).filter(([k]) => !k.startsWith('/')).map(([, b]) => ({ x: b.x, z: b.z, r: 4 })),
-  ];
+  // Lanes to a place. A garage's bay keeps the lane it lies on, and the way
+  // from there to a road. A petrol station keeps every lane that runs onto
+  // its forecourt, and the way from each to a road; then each such lane
+  // that runs on past the forecourt to a dead end is cut short at the
+  // forecourt (so it ends on it, never as a stub on the grass), and a
+  // dead-end piece that never reaches a forecourt goes.
+  const inRing = (x, z, P) => {
+    let c = false;
+    for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+      const [ax, az] = P[i];
+      const [bx, bz] = P[j];
+      if (az > z !== bz > z && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+    }
+    return c;
+  };
+  const courts = (M.fuel ?? []).filter((f) => f.pts?.length).map((f) => f.pts);
+  const inCourt = (x, z) => courts.some((P) => inRing(x, z, P));
+  const touchesCourt = (e) => {
+    for (let k = 0; k + 1 < e.pts.length; k++) {
+      const [ax, az] = e.pts[k];
+      const [bx, bz] = e.pts[k + 1];
+      const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az)));
+      for (let t = 0; t <= n; t++) if (inCourt(ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n)) return true;
+    }
+    return false;
+  };
   const nearPt = (e, x, z) => {
     let best = Infinity;
     for (let k = 0; k + 1 < e.pts.length; k++) {
@@ -168,39 +187,100 @@ if (steps.has('lanes')) {
     }
     return best;
   };
-  let toPlaces = 0;
-  for (const pl of places) {
-    // The lane that comes nearest the place, inside it (or within 3 m).
-    let lane = -1;
-    let d = pl.r + 3;
-    edges.forEach((e, i) => {
-      if (!isLane(e)) return;
-      const di = Math.min(nearPt(e, pl.x, pl.z), d + 1);
-      if (di < d) [lane, d] = [i, di];
-    });
-    if (lane < 0) continue;
-    toPlaces++;
-    keep.add(lane);
-    if (run[lane] < 0) continue;
+  const wayToRoad = (lane) => {
+    if (run[lane] < 0) return [];
     const allow = new Set(runs[run[lane]]);
-    // The shortest way from that lane's ends to any road.
     let best = null;
     for (const from of [edges[lane].a, edges[lane].b]) {
-      if (roadAt[from].length) {
-        best = { len: 0, used: [] };
-        break;
-      }
+      if (roadAt[from].length) return [];
       for (const to of new Set(runs[run[lane]].flatMap((i) => [edges[i].a, edges[i].b]))) {
         if (!roadAt[to].length) continue;
         const w = way(laneAt, from, to, Infinity, allow);
         if (w && (!best || w.len < best.len)) best = w;
       }
     }
-    for (const i of best?.used ?? []) keep.add(i);
+    return best?.used ?? [];
+  };
+  const forPlace = new Set();
+  let toPlaces = 0;
+  for (const b of Object.entries(BAYS).filter(([k]) => !k.startsWith('/')).map(([, b]) => b)) {
+    let lane = -1;
+    let d = 7;
+    edges.forEach((e, i) => {
+      if (!isLane(e)) return;
+      const di = nearPt(e, b.x, b.z);
+      if (di < d) [lane, d] = [i, di];
+    });
+    if (lane < 0) continue;
+    toPlaces++;
+    keep.add(lane);
+    for (const i of wayToRoad(lane)) keep.add(i);
+  }
+  edges.forEach((e, lane) => {
+    if (!isLane(e) || !touchesCourt(e)) return;
+    toPlaces++;
+    for (const i of [lane, ...wayToRoad(lane)])
+      if (!keep.has(i)) {
+        keep.add(i);
+        forPlace.add(i);
+      }
+  });
+  // Dead ends: cut short at the forecourt, or gone.
+  let trimmed = 0;
+  let pruned = 0;
+  for (let changed = true; changed; ) {
+    changed = false;
+    const deg = new Map();
+    edges.forEach((e, i) => {
+      if (isLane(e) && !keep.has(i)) return;
+      for (const j of [e.a, e.b]) deg.set(j, (deg.get(j) ?? 0) + 1);
+    });
+    for (const i of forPlace) {
+      const e = edges[i];
+      if (e.trimmed) continue;
+      const deadB = deg.get(e.b) === 1 && !roadAt[e.b].length;
+      const deadA = deg.get(e.a) === 1 && !roadAt[e.a].length;
+      if (!deadA && !deadB) continue;
+      if (deadA && deadB) continue;
+      if (!touchesCourt(e)) {
+        keep.delete(i);
+        forPlace.delete(i);
+        pruned++;
+        changed = true;
+        continue;
+      }
+      // Walk from the live end; stop at the last point on a forecourt.
+      const pts = deadA ? [...e.pts].reverse() : e.pts;
+      let cut = null;
+      for (let k = 0; k + 1 < pts.length; k++) {
+        const [ax, az] = pts[k];
+        const [bx, bz] = pts[k + 1];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) * 2));
+        for (let t = 0; t <= n; t++) {
+          const p = [ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n];
+          if (inCourt(p[0], p[1])) cut = { k, p };
+        }
+      }
+      if (!cut) continue;
+      const kept = [...pts.slice(0, cut.k + 1), cut.p];
+      const j = pos.length;
+      pos.push([...cut.p]);
+      if (deadA) {
+        e.pts = kept.reverse();
+        e.a = j;
+      } else {
+        e.pts = kept;
+        e.b = j;
+      }
+      e.len = lenOf(e.pts);
+      e.trimmed = true;
+      trimmed++;
+      changed = true;
+    }
   }
   const before = edges.filter(isLane).length;
   edges = edges.filter((e, i) => !isLane(e) || keep.has(i));
-  report.lanes = { runs: runs.length, lanes: before, kept: keep.size, dropped: before - keep.size, through, toPlaces };
+  report.lanes = { runs: runs.length, lanes: before, kept: keep.size, dropped: before - keep.size, through, toPlaces, trimmed, pruned };
 }
 
 // ---------- corners ----------
@@ -1209,7 +1289,7 @@ const idFor = (j) => {
   }
   return idOf.get(j);
 };
-const outEdges = edges.flatMap(({ len, len0, spans, ...e }) => {
+const outEdges = edges.flatMap(({ len, len0, spans, trimmed, ...e }) => {
   const o = { ...e, a: idFor(e.a), b: idFor(e.b) };
   if (spans) {
     const all = spans.reduce((t, sp) => t + sp[0], 0);

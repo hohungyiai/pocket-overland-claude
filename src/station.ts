@@ -94,6 +94,7 @@ export class Stations {
   private mats = {
     slab: new THREE.MeshStandardMaterial({ color: 0x8f918d, roughness: 0.95, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
     kerb: new THREE.MeshStandardMaterial({ color: 0xb9b5ad, roughness: 0.9 }),
+    strip: new THREE.MeshStandardMaterial({ color: 0xdedad2, roughness: 0.85 }),
     white: new THREE.MeshStandardMaterial({ color: 0xf2f2ef, roughness: 0.7 }),
     post: new THREE.MeshStandardMaterial({ color: 0xd9d9d4, roughness: 0.6 }),
     island: new THREE.MeshStandardMaterial({ color: 0xc9c4ba, roughness: 0.9 }),
@@ -170,7 +171,11 @@ export class Stations {
         memo.set(key, y);
         return y;
       };
-      this.build(s, ground, top, road(s.x, s.z));
+      const onLane = (x: number, z: number) => {
+        const p = probe(x, z);
+        return !!p && !p.ground && Math.abs(p.y - ground(x, z)) < 0.6;
+      };
+      this.build(s, ground, top, road(s.x, s.z), onLane);
     }
   }
 
@@ -180,7 +185,13 @@ export class Stations {
     this.world.createCollider(desc, this.body);
   }
 
-  private build(s: Station, ground: (x: number, z: number) => number, top: (x: number, z: number) => number, road: { x: number; z: number } | null) {
+  private build(
+    s: Station,
+    ground: (x: number, z: number) => number,
+    top: (x: number, z: number) => number,
+    road: { x: number; z: number } | null,
+    onLane: (x: number, z: number) => boolean,
+  ) {
     const P = s.pts!;
     const g = new THREE.Group();
 
@@ -225,22 +236,53 @@ export class Stations {
       this.R.ColliderDesc.trimesh(new Float32Array(pos), new Uint32Array(pos.length / 3).map((_, i) => i)).setFriction(1),
     );
 
-    // ---- Its kerb: the slab's edge, down to the ground ----
-    const kp: number[] = [];
+    // ---- Its kerb: a light raised strip round the edge, its face down to
+    // the ground; none where a lane runs on (that way in stays flush) ----
+    const KH = 0.06; // how proud of the forecourt
+    const KW = 0.3; // how wide
+    let area2 = 0;
+    for (let i = 0; i < P.length; i++) {
+      const [ax, az] = P[i];
+      const [bx, bz] = P[(i + 1) % P.length];
+      area2 += ax * bz - bx * az;
+    }
+    const kp: number[] = []; // the face, down to the ground
+    const tp: number[] = []; // the strip's top and its inner face
+    const quad = (out: number[], a: number[], b: number[], c: number[], d: number[]) => out.push(...a, ...b, ...c, ...a, ...c, ...d);
     for (let i = 0; i < P.length; i++) {
       const a = P[i];
       const b = P[(i + 1) % P.length];
-      const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 1.5));
+      const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (L < 1e-6) continue;
+      const sg = area2 > 0 ? 1 : -1;
+      const nx = (-(b[1] - a[1]) / L) * sg, nz = ((b[0] - a[0]) / L) * sg; // inward
+      const n = Math.max(1, Math.ceil(L / 1.5));
       for (let k = 0; k < n; k++) {
         const t0 = k / n;
         const t1 = (k + 1) / n;
         const x0 = a[0] + (b[0] - a[0]) * t0, z0 = a[1] + (b[1] - a[1]) * t0;
         const x1 = a[0] + (b[0] - a[0]) * t1, z1 = a[1] + (b[1] - a[1]) * t1;
+        const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+        const lane = onLane(mx, mz) || onLane(mx - nx * 1.2, mz - nz * 1.2) || onLane(x0, z0) || onLane(x1, z1);
         const y0 = top(x0, z0), y1 = top(x1, z1);
+        const h = lane ? 0 : KH;
         const f0 = Math.min(ground(x0, z0) - 0.15, y0 - 0.35), f1 = Math.min(ground(x1, z1) - 0.15, y1 - 0.35);
-        kp.push(x0, y0, z0, x1, f1, z1, x1, y1, z1, x0, y0, z0, x0, f0, z0, x1, f1, z1);
+        quad(kp, [x0, y0 + h, z0], [x0, f0, z0], [x1, f1, z1], [x1, y1 + h, z1]);
+        if (lane) continue;
+        const ix0 = x0 + nx * KW, iz0 = z0 + nz * KW, ix1 = x1 + nx * KW, iz1 = z1 + nz * KW;
+        const iy0 = top(ix0, iz0), iy1 = top(ix1, iz1);
+        quad(tp, [x0, y0 + KH, z0], [x1, y1 + KH, z1], [ix1, iy1 + KH, iz1], [ix0, iy0 + KH, iz0]);
+        quad(tp, [ix0, iy0 + KH, iz0], [ix1, iy1 + KH, iz1], [ix1, iy1 - 0.02, iz1], [ix0, iy0 - 0.02, iz0]);
       }
     }
+    const stripGeo = new THREE.BufferGeometry();
+    stripGeo.setAttribute('position', new THREE.Float32BufferAttribute(tp, 3));
+    stripGeo.computeVertexNormals();
+    const stripMat = this.mats.strip.clone();
+    stripMat.side = THREE.DoubleSide;
+    const strip = new THREE.Mesh(stripGeo, stripMat);
+    strip.receiveShadow = true;
+    g.add(strip);
     const kerbGeo = new THREE.BufferGeometry();
     kerbGeo.setAttribute('position', new THREE.Float32BufferAttribute(kp, 3));
     kerbGeo.computeVertexNormals();
