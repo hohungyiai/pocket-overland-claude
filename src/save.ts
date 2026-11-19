@@ -7,6 +7,18 @@
 // about a week), so the game says so plainly before a drive whenever that
 // can happen, and offers a backup after long drives.
 
+/** Where the car was left on one drive. */
+export interface Spot {
+  x: number;
+  z: number;
+  y?: number;
+  yaw: number;
+  label: string;
+  camp?: string;
+  style?: string;
+  savedAt: number;
+}
+
 export interface Journey {
   /** Which drive (course id) and where the car is. */
   course: string;
@@ -27,6 +39,9 @@ export interface Journey {
   /** Home garage id and the garages reached (PR 3). */
   home?: string;
   garages?: string[];
+  /** Where the car was left on each drive, so trying another drive never
+   * loses your place on this one (the fields above are the latest). */
+  spots?: Record<string, Spot>;
   /** When saved (ms since 1970). */
   savedAt: number;
   /** Distance and time at the last backup (save code made). */
@@ -60,8 +75,28 @@ export function normalise(s: unknown): Journey | null {
   if (typeof o.fuel === 'number') j.fuel = Math.min(1, Math.max(0, o.fuel));
   if (typeof o.home === 'string') j.home = o.home;
   if (Array.isArray(o.garages)) j.garages = o.garages.filter((g): g is string => typeof g === 'string');
+  j.spots = {};
+  if (o.spots && typeof o.spots === 'object')
+    for (const [k, v] of Object.entries(o.spots as Record<string, Record<string, unknown>>)) {
+      if (!v || typeof v.x !== 'number' || typeof v.z !== 'number') continue;
+      const sp: Spot = { x: v.x, z: v.z, yaw: num(v.yaw), label: typeof v.label === 'string' ? v.label : '', savedAt: num(v.savedAt) };
+      if (typeof v.y === 'number') sp.y = v.y;
+      if (typeof v.camp === 'string') sp.camp = v.camp;
+      if (typeof v.style === 'string') sp.style = v.style;
+      j.spots[k] = sp;
+    }
+  // (The latest drive's spot is always among them, from older saves too.)
+  j.spots[j.course] ??= spotOf(j);
   return j;
 }
+
+export const spotOf = (j: Journey): Spot => {
+  const s: Spot = { x: j.x, z: j.z, yaw: j.yaw, label: j.label, savedAt: j.savedAt };
+  if (j.y !== undefined) s.y = j.y;
+  if (j.camp) s.camp = j.camp;
+  if (j.style) s.style = j.style;
+  return s;
+};
 
 export function loadJourney(): Journey | null {
   try {
@@ -124,11 +159,12 @@ export async function checkStorage(): Promise<StorageHealth> {
 }
 
 /** The plain warning for this tab, or null when progress is as safe as a browser allows. */
-export function storageWarning(h: StorageHealth): { level: 'none' | 'risk'; text: string } | null {
+export function storageWarning(h: StorageHealth): { level: 'none' | 'risk'; text: string; short: string } | null {
   if (!h.works)
     return {
       level: 'none',
       text: "This tab can't keep your progress. When you close it, your drive is gone. Back up with a save code, or open the game in a normal tab.",
+      short: "This tab can't keep your progress: when you close it, your drive is gone. Back up with a save code (menu ☰).",
     };
   if (h.installed && h.persisted) return null;
   if (h.installed) return null; // home-screen games keep their storage
@@ -137,6 +173,9 @@ export function storageWarning(h: StorageHealth): { level: 'none' | 'risk'; text
     text: h.ios
       ? 'Your journey is kept in this browser only: a private tab, clearing website data or a week away can wipe it. To keep it safe, tap Share, then “Add to Home Screen”, or back up with a save code.'
       : 'Your journey is kept in this browser only: a private tab or clearing site data can wipe it. To keep it safe, install the game (browser menu, “Add to Home screen”), or back up with a save code.',
+    short: h.ios
+      ? 'Your journey is kept in this browser only and can be wiped. Add to Home Screen, or back up with a save code.'
+      : 'Your journey is kept in this browser only and can be wiped. Install the game, or back up with a save code.',
   };
 }
 
@@ -230,7 +269,12 @@ export function restoreLink(code: string) {
 }
 
 export const describe = (j: Journey) =>
-  `${j.label || 'On the road'} · ${(j.odo / 1000).toFixed(j.odo < 10000 ? 1 : 0)} km driven · saved ${new Date(j.savedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`;
+  [
+    j.label || 'On the road',
+    // (Nothing about distance before any is driven, e.g. a save from before the odometer.)
+    ...(j.odo >= 50 ? [`${(j.odo / 1000).toFixed(j.odo < 10000 ? 1 : 0)} km driven`] : []),
+    `saved ${new Date(j.savedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`,
+  ].join(' · ');
 
 // ---------- Backup panel ----------
 // One panel for "Back up your journey" (copy, share, link) and for
@@ -289,7 +333,7 @@ export function backupPanel(parent: HTMLElement, j: Journey, onDone: (backedUp: 
   return el;
 }
 
-export function restorePanel(parent: HTMLElement, prefill: string, onRestore: (j: Journey) => void, onClose: () => void) {
+export function restorePanel(parent: HTMLElement, prefill: string, known: (course: string) => boolean, onRestore: (j: Journey) => void, onClose: () => void) {
   const el = document.createElement('div');
   el.className = 'panel';
   el.innerHTML = `
@@ -309,8 +353,16 @@ export function restorePanel(parent: HTMLElement, prefill: string, onRestore: (j
   let j: Journey | null = null;
   const read = () => {
     j = ta.value.trim() ? decodeCode(ta.value) : null;
+    const drive = !j || known(j.course);
+    found.textContent = !drive
+      ? 'That code is for a drive this version of the game doesn’t have.'
+      : j
+        ? describe(j)
+        : ta.value.trim()
+          ? "That code isn't complete or has a typo. Paste the whole code."
+          : '';
+    if (!drive) j = null;
     go.disabled = !j;
-    found.textContent = j ? describe(j) : ta.value.trim() ? "That code isn't complete or has a typo. Paste the whole code." : '';
   };
   ta.value = prefill;
   ta.addEventListener('input', read);

@@ -1,7 +1,7 @@
 // In-page check: saving (src/save.ts). A save turns into a save code and
 // back unchanged; a code with any one character changed, or cut short, is
 // refused; the older camp-only save still loads; and the game's own
-// autosave puts back the car where it is.
+// autosave puts back the car where it is, keeping your place on other drives.
 window.__checkSaveCodes = () => {
   const s = window.game.save;
   const bad = [];
@@ -44,12 +44,19 @@ window.__checkSaveCodes = () => {
 window.__checkAutosave = () => {
   const g = window.game;
   const p = g.car.mesh.position;
+  // Your place on another drive (a camp on Ubin, say) must survive a save here.
+  (g.journey.spots ??= {}).ubintrail = { x: 1, z: 2, yaw: 0, label: 'Endut Senin camp', camp: 'endut', savedAt: 1 };
   const ok = g.autosave();
   const j = g.save.loadJourney();
   const off = j ? Math.hypot(j.x - p.x, j.z - p.z) : 999;
   const bad = [];
   if (!ok) bad.push({ field: 'could not write', over: 999 });
   if (off > 0.5) bad.push({ field: 'saved spot', x: j?.x, z: j?.z, over: +off.toFixed(2) });
-  if (j && j.course !== new URLSearchParams(location.search).get('course')) bad.push({ field: 'course', got: j.course, over: 1 });
+  const course = new URLSearchParams(location.search).get('course');
+  if (j && j.course !== course) bad.push({ field: 'course', got: j.course, over: 1 });
+  if (j && j.course !== 'ubintrail' && j.spots?.ubintrail?.camp !== 'endut') bad.push({ field: 'the place on another drive was lost', over: 1 });
+  if (j && Math.hypot((j.spots?.[course]?.x ?? 1e9) - p.x, (j.spots?.[course]?.z ?? 1e9) - p.z) > 0.5) bad.push({ field: 'this drive\'s own place', over: 1 });
+  delete g.journey.spots.ubintrail;
+  g.autosave();
   return { samples: 1, bad: bad.length, worst: bad, unit: 'm' };
 };

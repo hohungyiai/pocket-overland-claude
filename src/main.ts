@@ -12,7 +12,7 @@ import { Controls } from './controls';
 import { PerfOverlay } from './perf';
 import { Weather } from './weather';
 import { Camps } from './camp';
-import { loadJourney, saveJourney, checkStorage, storageWarning, backupPanel, restorePanel, describe, encodeCode, decodeCode, normalise, type Journey, type StorageHealth } from './save';
+import { loadJourney, saveJourney, spotOf, checkStorage, storageWarning, backupPanel, restorePanel, describe, encodeCode, decodeCode, normalise, type Journey, type StorageHealth } from './save';
 import './style.css';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -238,6 +238,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       savedAt: Date.now(),
     });
     if (!journey.camp) delete journey.camp;
+    (journey.spots ??= {})[courseId] = spotOf(journey);
     lastSaved = { x: p.x, z: p.z, camp: journey.camp ?? '' };
     return saveJourney(journey);
   };
@@ -292,7 +293,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   if (warning) {
     notice.innerHTML = '';
     const t = document.createElement('span');
-    t.textContent = warning.text;
+    t.textContent = warning.short;
     const b = document.createElement('button');
     b.className = 'btn';
     b.textContent = warning.level === 'none' ? 'I understand' : 'OK';
@@ -572,7 +573,8 @@ const at =
     : null;
 // Checked once, before the menu shows and before a drive starts.
 const health$: Promise<StorageHealth> = checkStorage();
-const continueFrom = (j: Journey) => {
+const continueFrom = (j: Pick<Journey, 'course' | 'x' | 'z' | 'yaw' | 'y' | 'style'>) => {
+  if (!(j.course in COURSES)) return;
   const q = new URLSearchParams({ course: j.course, style: j.style ?? 'detailed', at: [j.x, j.z, j.yaw, 0, ...(j.y !== undefined ? [j.y] : [])].map((v) => +v.toFixed(2)).join(',') });
   location.replace(`${location.pathname}?${q}`);
 };
@@ -603,6 +605,7 @@ else {
     restorePanel(
       $('app'),
       prefill,
+      (c) => c in COURSES,
       (j) => {
         saveJourney(j);
         continueFrom(j);
@@ -643,13 +646,23 @@ else {
       box.append(b);
     });
   });
-  document.querySelectorAll<HTMLButtonElement>('#menu [data-course]').forEach((b) =>
+  // A drive you've been on before carries on where you left it (each drive
+  // keeps its own place, so looking at another never loses this one).
+  document.querySelectorAll<HTMLButtonElement>('#menu [data-course]').forEach((b) => {
+    const id = b.dataset.course as CourseId;
+    const spot = journey?.spots?.[id];
+    if (spot) {
+      const line = document.createElement('span');
+      line.className = 'carry-on';
+      line.textContent = `Carry on from ${spot.label || 'where you left it'}`;
+      b.append(line);
+    }
     b.addEventListener('click', () => {
-      const id = b.dataset.course as CourseId;
+      if (spot) return continueFrom({ course: id, ...spot });
       history.replaceState(null, '', `?course=${id}`);
       go(id);
-    }),
-  );
+    });
+  });
 }
 
 $('btn-menu').addEventListener('pointerdown', (e) => {
