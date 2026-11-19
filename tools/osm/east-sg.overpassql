@@ -15,6 +15,7 @@
   nwr["railway"="station"];
   nwr["public_transport"="station"];
   nwr["amenity"="parking"];
+  nwr["amenity"="fuel"];
   relation["type"="multipolygon"]["landuse"];
   relation["type"="multipolygon"]["leisure"];
   relation["type"="multipolygon"]["natural"];

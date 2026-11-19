@@ -43,6 +43,7 @@ const QUERY = (s, w, n, e) => `[out:json][timeout:120];
   way["natural"~"water|wood|wetland|beach|scrub|grassland|coastline"](${s},${w},${n},${e});
   way["waterway"~"canal|river|drain|stream"](${s},${w},${n},${e});
   way["amenity"~"parking"](${s},${w},${n},${e});
+  nwr["amenity"="fuel"](${s},${w},${n},${e});
   relation["natural"="water"](${s},${w},${n},${e});
   relation["landuse"](${s},${w},${n},${e});
   relation["leisure"="park"](${s},${w},${n},${e});
@@ -402,6 +403,25 @@ export function build(raw, origin) {
       return [q(x), q(z)];
     });
 
+  // --- Petrol stations (amenity=fuel, as an outline or a point): where the
+  // car refuels. Named by brand, the way people know them. ---
+  const fuel = [];
+  for (const el of raw.elements) {
+    if (el.tags?.amenity !== 'fuel') continue;
+    let pts = null;
+    if (el.type === 'way') pts = wayPts(el);
+    else if (el.type === 'node') {
+      nodes.set(el.id, [el.lat, el.lon]);
+      pts = [proj(el.id)];
+    }
+    if (!pts?.length) continue;
+    const x = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+    const z = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+    const r = Math.max(10, ...pts.map((p) => Math.hypot(p[0] - x, p[1] - z)));
+    if (fuel.some((f) => Math.hypot(f.x - x, f.z - z) < 30)) continue; // a station drawn twice (roof and site)
+    fuel.push({ name: el.tags.brand || el.tags.name || el.tags.operator || 'Petrol station', x: q(x), z: q(z), r: q(Math.min(r, 40)) });
+  }
+
   // --- Coastline: joined into long lines (land on the left in OSM) ---
   const coast = stitch(ways.filter((wy) => wy.tags?.natural === 'coastline').map((wy) => wy.nodes), true).map((ids) =>
     qp(simplify(ids.map(proj).filter(Boolean), 1)),
@@ -431,6 +451,7 @@ export function build(raw, origin) {
     attribution: 'Map data © OpenStreetMap contributors (ODbL)',
     origin: [lat0, lon0],
     bbox: raw.bbox,
+    fuel,
     junctions: jOut,
     edges,
     paths,

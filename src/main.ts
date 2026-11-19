@@ -13,6 +13,8 @@ import { PerfOverlay } from './perf';
 import { Weather } from './weather';
 import { Camps } from './camp';
 import { loadJourney, saveJourney, spotOf, checkStorage, storageWarning, backupPanel, restorePanel, describe, encodeCode, decodeCode, normalise, type Journey, type StorageHealth } from './save';
+import { Fuel, CRAWL_SPEED, distText } from './fuel';
+import { Garages, garagePanel, homePicker, garageById, type GarageSpot } from './garage';
 import './style.css';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -96,6 +98,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   weather.onChange = (text) => say(text);
   const camps = course.camps?.length ? new Camps(scene, course.camps, course.heightAt) : null;
 
+  let fromGarage = false;
   const fwdMap = new THREE.Vector3();
   const carHeading = () => Math.atan2(-fwdMap.set(1, 0, 0).applyQuaternion(car.mesh.quaternion).z, fwdMap.x);
   // The drive pauses while the full map is open, so nothing moves while you look.
@@ -121,6 +124,8 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   );
   const openMap = () => {
     controls.reset();
+    if (!fromGarage) fullMap.range = null;
+    fromGarage = false;
     fullMap.open(car.mesh.position.x, car.mesh.position.z, carHeading());
   };
   const minimap = new Minimap($('app'), course.map, openMap);
@@ -221,7 +226,72 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   const blank = (): Journey => ({ course: courseId, x: 0, z: 0, yaw: 0, label: '', odo: 0, savedAt: Date.now(), backupOdo: 0, backupAt: Date.now() });
   const journey: Journey = loadJourney() ?? blank();
   let lastSaved = { x: NaN, z: NaN, camp: '' };
-  let lastPos = { x: car.mesh.position.x, z: car.mesh.position.z };
+  let lastPos = { x: car.mesh.position.x, y: car.mesh.position.y, z: car.mesh.position.z };
+  // Fuel (fuel.ts): used only on maps with petrol stations.
+  const fuel = new Fuel(course.fuel ?? [], journey.fuel ?? 1);
+  const hudFuel = $('hud-fuel');
+  hudFuel.hidden = !fuel.used;
+  const btnFuel = $('btn-fuel');
+  let fuelStage = fuel.level < 0.05 ? 2 : fuel.level < 0.25 ? 1 : 0;
+  tap(btnFuel, () => {
+    if (fuel.at(car.mesh.position.x, car.mesh.position.z)) fuel.filling = true;
+  });
+  // Dust and mud build up off the tarmac; the garage washes them off.
+  car.setDust(journey.dust ?? 0);
+
+  // ---- Garages (garage.ts): drive into the bay, tap Enter garage ----
+  const garages = new Garages(scene, courseId, (x, z) => {
+    const g = course.heightAt(x, z);
+    return course.surfaceY?.(x, z, g + 0.5) ?? g;
+  });
+  for (const g of garages.here) course.map.pois.push({ x: g.x, z: g.z, label: `${g.name} Garage`, kind: 'garage' });
+  const btnGarage = $('btn-garage');
+  const enterGarage = (g: GarageSpot) => {
+    pause(true);
+    journey.garages = [...new Set([...(journey.garages ?? []), g.id])];
+    if (!journey.home) journey.home = g.id;
+    autosave(`${g.name} Garage`);
+    btnGarage.hidden = true;
+    const panel = garagePanel($('app'), g, { fuel: fuel.used ? fuel.level : null, dust: car.dust, home: journey.home === g.id }, (a) => {
+      if (a === 'refuel') {
+        fuel.level = 1;
+        fuelStage = 0;
+        panel.update({ fuel: 1 });
+      } else if (a === 'wash') {
+        car.setDust(0);
+        panel.update({ dust: 0 });
+      } else if (a === 'home') {
+        journey.home = g.id;
+        panel.update({ home: true });
+      } else if (a === 'backup') {
+        backupPanel($('app'), journey, (done) => {
+          if (done) {
+            journey.backupOdo = journey.odo;
+            journey.backupAt = Date.now();
+            driveSecs = 0;
+          }
+          autosave(`${g.name} Garage`);
+        });
+        return;
+      } else if (a === 'plan') {
+        panel.el.remove();
+        pause(false);
+        fromGarage = true;
+        fullMap.range = fuel.used ? { metres: fuel.rangeKm * 1000, text: `Fuel ${Math.round(fuel.level * 100)}% · about ${Math.round(fuel.rangeKm)} km` } : null;
+        openMap();
+        return;
+      } else if (a === 'leave') {
+        pause(false);
+        say(`Out on the road from ${g.name}.`, 4);
+      }
+      autosave(`${g.name} Garage`);
+    });
+  };
+  tap(btnGarage, () => {
+    const p = car.mesh.position;
+    const g = garages.at(p.x, p.z);
+    if (g) enterGarage(g);
+  });
   // Driving time since the last backup, this visit.
   let driveSecs = 0;
   const autosave = (label?: string, camp?: string) => {
@@ -233,6 +303,8 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       y: p.y,
       yaw: carHeading(),
       label: label ?? camps?.active?.label ?? course.zoneAt(p.x, p.z) ?? course.name,
+      fuel: fuel.level,
+      dust: car.dust,
       style,
       camp: camp ?? camps?.active?.id,
       savedAt: Date.now(),
@@ -481,8 +553,21 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
     placeSun(p);
     // Odometer (a jump, from ↺ or a reload, isn't driving).
     const moved = Math.hypot(p.x - lastPos.x, p.z - lastPos.z);
-    if (moved < 10) journey.odo += moved;
-    lastPos = { x: p.x, z: p.z };
+    if (moved < 10) {
+      journey.odo += moved;
+      fuel.burn(moved, p.y - lastPos.y, car.surface, car.lowRange);
+      // (About 3 km of gravel, or 600 m of sand or mud, to cake it.)
+      const grime = car.surface.drag >= 20 ? 1 / 600 : car.surface.drag >= 1.5 ? 1 / 3000 : 0;
+      if (grime && car.wheelsOnGround) car.setDust(car.dust + moved * grime);
+    }
+    lastPos = { x: p.x, y: p.y, z: p.z };
+    car.crawl = fuel.empty ? CRAWL_SPEED : 0;
+    if (fuel.filling && fuel.pump(dt)) {
+      fuel.filling = false;
+      say(`Tank full at ${fuel.at(p.x, p.z)?.name ?? 'the station'}.`, 5);
+      fuelStage = 0;
+      autosave();
+    }
     course.update?.(now / 1000, dt, camera.position, p);
     weather.update(dt, camera.position);
     camps?.update(now / 1000);
@@ -501,7 +586,42 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       const tip = coach?.tip ?? (stuckTime > 3 ? (car.lowRange && car.diffLock ? 'Tip: back up and take a run at it, or tap ↺' : 'Tip: try LOW range and DIFF lock') : null);
       toastTime -= 0.1;
       if (toastTime <= 0) toast = null;
-      const zone = tip ?? toast ?? coach?.zone ?? course.zoneAt(p.x, p.z);
+      // Fuel: a calm word when low, the way to the nearest station, a crawl when empty.
+      let fuelLine: string | null = null;
+      if (fuel.used) {
+        const near = fuel.nearest(p.x, p.z);
+        const where = near ? `${near.station.name}, ${distText(near.dist)}` : '';
+        const stage = fuel.level <= 0 ? 3 : fuel.level < 0.05 ? 2 : fuel.level < 0.25 ? 1 : 0;
+        if (stage > fuelStage) {
+          if (stage === 1) say(`Fuel getting low. Nearest: ${where}`, 8);
+          else toast = null; // (the reserve and crawl lines below take over)
+        }
+        fuelStage = Math.max(fuelStage, stage);
+        if (stage === 2) fuelLine = `Fuel on reserve · ${where}`;
+        if (stage === 3) fuelLine = `Out of fuel: crawling on to ${where}`;
+        minimap.target = stage > 0 && near ? near.station : null;
+        const range = fuel.rangeKm;
+        hudFuel.querySelector('b')!.style.width = `${Math.round(fuel.level * 100)}%`;
+        hudFuel.querySelector('span')!.textContent = fuel.filling ? `Filling ${Math.round(fuel.level * 100)}%` : stage === 3 ? 'Empty' : `${range < 10 ? range.toFixed(1) : Math.round(range)} km`;
+        hudFuel.classList.toggle('low', stage > 0);
+        hudFuel.classList.toggle('empty', stage === 3);
+        // Fill up: stopped on a station's forecourt.
+        const station = fuel.at(p.x, p.z);
+        if (!station) fuel.filling = false;
+        btnFuel.hidden = !station || fuel.filling || fuel.level > 0.98 || Math.abs(car.speed) > 0.8;
+        btnFuel.textContent = `Fill up at ${station?.name ?? ''}`;
+      }
+      // Garage: the bay drapes on the road once that's built (a ray down, past the car).
+      garages.settle((x, z) => {
+        if (course.solidAt && !course.solidAt(x, z)) return null;
+        const hit = world.castRay(new RAPIER.Ray({ x, y: course.heightAt(x, z) + 6, z }, { x: 0, y: -1, z: 0 }), 12, true, undefined, undefined, undefined, car.body);
+        return hit ? course.heightAt(x, z) + 6 - hit.timeOfImpact : null;
+      });
+      // Garage: Enter garage when stopped in its bay.
+      const bay = garages.at(p.x, p.z);
+      btnGarage.hidden = !bay || Math.abs(car.speed) > 0.8 || paused;
+      if (bay) btnGarage.textContent = `Enter ${bay.name} Garage`;
+      const zone = tip ?? toast ?? fuelLine ?? coach?.zone ?? course.zoneAt(p.x, p.z);
       // Camp button: shown when stopped inside a camp, or while camped.
       if (camps) {
         const spot = camps.at(p.x, p.z);
@@ -521,7 +641,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
         saveIfMoved();
       }
       stoppedFor = Math.abs(car.speed) < 1 ? stoppedFor + 0.1 : 0;
-      if (btnBackup.hidden && stoppedFor > 2 && btnCamp.hidden && backupDue()) btnBackup.hidden = false;
+      if (btnBackup.hidden && stoppedFor > 2 && btnCamp.hidden && btnFuel.hidden && btnGarage.hidden && backupDue()) btnBackup.hidden = false;
       else if (!btnBackup.hidden && stoppedFor === 0) {
         btnBackup.hidden = true;
         snooze();
@@ -545,7 +665,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   $('loading').remove();
 
   // Handy for testing in the console.
-  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera, weather, camps, sim, journey, autosave, openBackup, save: { encodeCode, decodeCode, normalise, loadJourney } } });
+  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera, weather, camps, sim, journey, autosave, openBackup, fuel, garages, enterGarage, save: { encodeCode, decodeCode, normalise, loadJourney } } });
 }
 
 // ---- Course picker ----
@@ -619,6 +739,26 @@ else {
     saveJourney(journey);
   }));
   mk('Restore from a save code', () => openRestore());
+  // Home garage: a new journey starts there; choosing one drives you to it.
+  const startAt = (g: GarageSpot) => {
+    const j: Journey = journey ?? { course: g.courses[0], x: g.x, z: g.z, yaw: g.yaw, label: '', odo: 0, savedAt: Date.now(), backupOdo: 0, backupAt: Date.now() };
+    Object.assign(j, { course: g.courses[0], x: g.x, z: g.z, yaw: g.yaw, label: `${g.name} Garage`, home: g.id, garages: [...new Set([...(j.garages ?? []), g.id])], savedAt: Date.now() });
+    delete j.y;
+    delete j.camp;
+    saveJourney(j);
+    continueFrom(j);
+  };
+  const pickHome = () => homePicker($('app'), journey?.home, startAt, () => {});
+  if (!journey) {
+    const b = document.createElement('button');
+    b.className = 'continue';
+    b.innerHTML = `<b>Start your journey</b><span>From your home garage in Singapore</span>`;
+    b.addEventListener('click', pickHome);
+    choices.prepend(b);
+  } else {
+    const home = garageById(journey.home);
+    mk(home ? `Home: ${home.name}` : 'Choose a home garage', pickHome);
+  }
   // A shared restore link: …#restore=PO1-…
   const fromHash = () => {
     const hash = decodeURIComponent(location.hash);

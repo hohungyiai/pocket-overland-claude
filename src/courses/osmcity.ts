@@ -8,6 +8,7 @@ import { TILE, TileStreamer, type Layer, type TileKit } from '../world/stream';
 import { SegIndex, inRing, resample, ringArea } from '../world/segindex';
 import { convexHull, easeSide, inRingXZ, shapeJunctions } from '../world/junctions';
 import { LIMITS } from '../limits';
+import type { Station } from '../fuel';
 import { Clipper, FillRule, Path64, Paths64, Point64 } from 'clipper2-js';
 import '../world/clipfix';
 
@@ -41,6 +42,8 @@ interface OsmMap {
   buildings: { k: string; l?: number; h?: number; name?: string; pts: XZ[] }[];
   /** Where OSM has a junction's traffic lights (a pedestrian crossing's alone left out). */
   signals?: XZ[];
+  /** Petrol stations (amenity=fuel). */
+  fuel?: Station[];
 }
 
 const SEED = 1729;
@@ -11181,6 +11184,9 @@ export async function buildPasirRisCourse(
       pois.push({ x, z, label: 'P' });
     }
   for (const c of camps) pois.push({ x: c.x, z: c.z, label: c.label });
+  // Petrol stations (fuel.ts): where the car fills up.
+  const fuel = (M.fuel ?? []).filter((f) => f.x > WB.minX && f.x < WB.maxX && f.z > WB.minZ && f.z < WB.maxZ);
+  for (const f of fuel) pois.push({ x: f.x, z: f.z, label: f.name, kind: 'fuel' });
   const map: MapData = { bounds: { ...WB }, background: '#d6d8cc', areas: mapAreas, lines: mapLines, pois, pxPerM: 0.5, attribution: M.attribution };
 
   // Test hook: ?debug exposes the road plan to the map checks (tools/check).
@@ -11267,6 +11273,7 @@ export async function buildPasirRisCourse(
     name: opts.name ?? 'Pasir Ris & Tampines',
     styles: true,
     camps,
+    fuel,
     start: new THREE.Vector3(startX, heightAt(startX, startZ) + 1.4, startZ),
     startYaw,
     heightAt,

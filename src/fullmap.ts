@@ -1,3 +1,4 @@
+import { drawGarage, drawPump } from './mapicons';
 import type { MapData } from './courses/types';
 import { drawMapShapes, paintMap, pxPerM } from './minimap';
 
@@ -16,6 +17,8 @@ export class FullMap {
   private cx = 0; // world point at the screen centre
   private cz = 0;
   private scale = 1; // css px per metre
+  /** How far the tank goes from the car, shown when set (fuel.ts). */
+  range: { metres: number; text: string } | null = null;
   private minScale = 0.1;
   private maxScale = 4;
   private car = { x: 0, z: 0, heading: 0 };
@@ -231,6 +234,24 @@ export class FullMap {
     ctx.font = `600 ${Math.round(12 * dpr)}px system-ui, sans-serif`;
     for (const p of this.map.pois) {
       const [sx, sy] = this.toScreen(p.x, p.z);
+      if (p.kind === 'fuel') {
+        drawPump(ctx, sx, sy, 8 * dpr);
+        ctx.lineWidth = 3 * dpr;
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+        ctx.fillStyle = '#1f4d33';
+        ctx.strokeText(p.label, sx, sy + 20 * dpr);
+        ctx.fillText(p.label, sx, sy + 20 * dpr);
+        continue;
+      }
+      if (p.kind === 'garage') {
+        drawGarage(ctx, sx, sy, 9 * dpr);
+        ctx.lineWidth = 3 * dpr;
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.fillStyle = '#7a4318';
+        ctx.strokeText(p.label, sx, sy + 23 * dpr);
+        ctx.fillText(p.label, sx, sy + 23 * dpr);
+        continue;
+      }
       if (p.label === 'P') {
         const b = 7 * dpr;
         ctx.fillStyle = '#2f6db5';
@@ -267,6 +288,32 @@ export class FullMap {
       ctx.beginPath();
       ctx.arc(px, py - r * 2.2, r * 0.38, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // How far the tank goes (fuel.ts): a dashed ring round the car, and the
+    // distance in words in the corner (the ring is off the map when it's far).
+    if (this.range) {
+      const [cx, cy] = this.toScreen(this.car.x, this.car.z);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(46,125,79,0.8)';
+      ctx.lineWidth = 2.5 * dpr;
+      ctx.setLineDash([8 * dpr, 6 * dpr]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, this.range.metres * this.scale * dpr, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      ctx.font = `700 ${Math.round(13 * dpr)}px system-ui, sans-serif`;
+      ctx.textAlign = 'left';
+      const t = this.range.text;
+      const w = ctx.measureText(t).width;
+      const y0 = this.canvas.height - 44 * dpr;
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.beginPath();
+      ctx.roundRect(10 * dpr, y0, w + 20 * dpr, 26 * dpr, 8 * dpr);
+      ctx.fill();
+      ctx.fillStyle = '#1f4d33';
+      ctx.fillText(t, 20 * dpr, y0 + 18 * dpr);
+      ctx.textAlign = 'center';
     }
 
     // The car: an arrow pointing the way it faces, with a soft halo.

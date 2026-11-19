@@ -1200,6 +1200,7 @@ const out = {
   waterways: M.waterways.filter(touches),
   rail: M.rail.filter(touches),
   stations: M.stations.filter(touches),
+  ...(M.fuel ? { fuel: M.fuel.filter(touches) } : {}),
   buildings: M.buildings.filter(touches),
   ...(M.signals ? { signals: M.signals.filter(near) } : {}),
 };
