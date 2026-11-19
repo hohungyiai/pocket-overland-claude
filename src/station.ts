@@ -92,7 +92,7 @@ export class Stations {
   private built = new Set<Station>();
   private waiting = new Set<Station>();
   private mats = {
-    slab: new THREE.MeshStandardMaterial({ color: 0x8f918d, roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
+    slab: new THREE.MeshStandardMaterial({ color: 0x8f918d, roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -16 }),
     kerb: new THREE.MeshStandardMaterial({ color: 0xb9b5ad, roughness: 0.9 }),
     strip: new THREE.MeshStandardMaterial({ color: 0xdedad2, roughness: 0.85 }),
     white: new THREE.MeshStandardMaterial({ color: 0xf2f2ef, roughness: 0.7 }),
