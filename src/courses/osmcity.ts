@@ -8420,17 +8420,23 @@ export async function buildPasirRisCourse(
     // (Points of different sections at one spot, one height, the highest:
     // round a point, a section's inner end landing on a kerb's top across
     // the way 11 cm under it stood a face upright between them, a dark
-    // sliver at 1800.3,2092.1.)
+    // sliver at 1800.3,2092.1. Only sections from kerbs apart: those fanned
+    // from one spot inside a tight bend are faced to each other already, and
+    // lifted to its kerb's top a lawn falling 10 cm in a hand's width there
+    // stood 2 cm under the kerb at 875,2061.5.)
     const at = new Map<number, number[]>();
+    const of = new Map<number, number>();
     const key = (i: number, j: number) => i * 1000003 + j;
-    for (const sec of secs)
-      for (const q of sec ?? []) {
+    const farKerb = (a: number, b: number) => Math.hypot(lawn.pos[3 * a] - lawn.pos[3 * b], lawn.pos[3 * a + 2] - lawn.pos[3 * b + 2]) > 0.3;
+    for (let si = 0; si < secs.length; si++)
+      for (const q of secs[si] ?? []) {
+        of.set(q, si);
         const i = Math.round(lawn.pos[3 * q] / 0.05), j = Math.round(lawn.pos[3 * q + 2] / 0.05);
         let hit: number[] | undefined;
         for (let di = -1; di <= 1 && !hit; di++)
           for (let dj = -1; dj <= 1 && !hit; dj++) {
             for (const r of at.get(key(i + di, j + dj)) ?? [])
-              if (Math.hypot(lawn.pos[3 * r] - lawn.pos[3 * q], lawn.pos[3 * r + 2] - lawn.pos[3 * q + 2]) < 0.03) {
+              if (farKerb(secs[of.get(r)!]![0], secs[si]![0]) && Math.hypot(lawn.pos[3 * r] - lawn.pos[3 * q], lawn.pos[3 * r + 2] - lawn.pos[3 * q + 2]) < 0.03) {
                 const y = Math.max(lawn.pos[3 * r + 1], lawn.pos[3 * q + 1]);
                 lawn.pos[3 * r + 1] = lawn.pos[3 * q + 1] = y;
                 hit = [r];
