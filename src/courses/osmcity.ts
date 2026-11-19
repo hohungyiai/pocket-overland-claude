@@ -8296,6 +8296,27 @@ export async function buildPasirRisCourse(
         // the lawn ended, a dark notch at 1867.4,1818.2. An island between
         // raised roads has its ground raised instead: see islandFill.)
         m = f === f && !ap ? (t0 + f + ROAD_LIFT + 0.03) / 2 : t0;
+        // (The user's rule B3, 19 Nov: roads side by side at different
+        // heights, a grass bank between them where there is room. Level with
+        // the higher kerb out to the middle, the higher side's lawn ended in
+        // mid-air there, over the lower one's or over the ground up to 2 m
+        // down, at -392.4,-101.9 and -1600.3,3557.3. So the two sides meet
+        // in the middle at one height, the ground's as drawn there but
+        // between the two kerbs' tops: the higher side a bank down to it.
+        // Where the far side has no lawn (its kerb over a drop, or in a
+        // cutting), this side's falls to the ground by the middle.)
+        if (d >= 1.5) {
+          const ff = f + ROAD_LIFT + 0.03;
+          const gm = groundY(P[v][0] - nx * (d / 2), P[v][1] - nz * (d / 2)) + 0.06;
+          const fg = groundY(P[v][0] - nx * (d - KERB_OUT), P[v][1] - nz * (d - KERB_OUT));
+          const farOn = f === f && fg <= ff && fg >= ff - ISLE_DEEP;
+          // (Both sides from the same sum, not from whether they stand half a
+          // metre apart: 0.49 m as one side measured it and 0.51 m as the
+          // other did, one met the middle at the mean and the other at the
+          // lower kerb, a step of 0.25 m at 1614.9,954.9.)
+          if (farOn) m = Math.min(Math.max(gm, Math.min(t0, ff)), Math.max(t0, ff));
+          else if (f === f) m = Math.min(m, gm);
+        }
       }
       mid.push(m);
       apart.push(ap);
@@ -8447,6 +8468,34 @@ export async function buildPasirRisCourse(
         if (l) l.push(q);
         else at.set(key(i, j), [q]);
       }
+    // (The user's rule S5, 19 Nov: grass sits on the ground, or is a bank;
+    // it never floats. Where a run of sections ends, the lawn's side stood
+    // in mid-air over the ground, a dark slit under it seen along the kerb:
+    // a face down to the ground as drawn there, outward from the run.)
+    const cap = (sec: number[], ox: number, oz: number) => {
+      const p = lawn.pos;
+      for (let c = 0; c + 1 < sec.length; c++) {
+        const a = sec[c], b = sec[c + 1];
+        const ax = p[3 * a], ay = p[3 * a + 1], az = p[3 * a + 2], bx = p[3 * b], by = p[3 * b + 1], bz = p[3 * b + 2];
+        const ga = Math.min(ay, groundY(ax, az) - 0.05), gb = Math.min(by, groundY(bx, bz) - 0.05);
+        if (ay - ga < 0.12 && by - gb < 0.12) continue;
+        const q0 = put(ax, ay, az), q1 = put(bx, by, bz), q2 = put(bx, gb, bz), q3 = put(ax, ga, az);
+        if ((bz - az) * ox - (bx - ax) * oz >= 0) lawn.idx.push(q0, q1, q2, q0, q2, q3);
+        else lawn.idx.push(q0, q2, q1, q0, q3, q2);
+      }
+    };
+    for (let i = 0; i < n; i++) {
+      const s = secs[i];
+      if (!s) continue;
+      const v = v0 + i;
+      for (const j of [i - 1, i + 1]) {
+        if (j >= 0 && j < n && secs[j]) continue;
+        // (Outward: away from the run's next section along the kerb.)
+        const w = j < i ? v + 1 : v - 1, u = j < i ? v - 1 : v + 1;
+        const [ox, oz] = w >= 0 && w < P.length ? [P[v][0] - P[w][0], P[v][1] - P[w][1]] : u >= 0 && u < P.length ? [P[u][0] - P[v][0], P[u][1] - P[v][1]] : [0, 0];
+        if (Math.hypot(ox, oz) > 1e-6) cap(s, ox, oz);
+      }
+    }
     for (let i = 0; i + 1 < n; i++) {
       const a = secs[i], b = secs[i + 1];
       if (!a || !b) continue;

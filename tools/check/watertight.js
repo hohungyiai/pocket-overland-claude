@@ -172,8 +172,10 @@ window.__checkWatertight = (all = false) => {
       const g = W.groundAt(qx, qz);
       const lower = hs.filter((h) => h < y - STEP);
       const top = lower.length ? Math.max(...lower) : -Infinity;
-      // (What lies below: another surface, or the ground.)
-      const below = Math.max(g, top), step = top >= g ? STEP : STEP_GROUND;
+      // (What lies below: another surface, or the ground. A lawn lying on
+      // the ground, within 10 cm of it, is the ground's own top: a kerb's
+      // end over it is the kerb's end over the ground, as anywhere else.)
+      const below = Math.max(g, top), step = top >= g + 0.1 ? STEP : STEP_GROUND;
       if (y - below <= step) continue;
       n++;
       // (Covered: upright faces within 5 cm, together reaching down from
