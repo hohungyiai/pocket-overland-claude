@@ -5529,7 +5529,7 @@ export async function buildPasirRisCourse(
           const sec = { lo: cut.lo, hi: cut.hi, join: opt.join };
           for (const sgn of [-1, 1]) {
             const off = (kk: number) => sgn * (halfAt(kk) + WALL_OUT);
-            const dr = new Float32Array(hi - lo + 1);
+            const dr = new Float32Array(hi - lo + 1), dg = new Float32Array(hi - lo + 1);
             // (The way the road runs at each point looks along the whole
             // run in this tile, not just the part drawn in this slice.)
             const rlo = Math.max(r0, cut.lo);
@@ -5541,6 +5541,13 @@ export async function buildPasirRisCourse(
               // (The ground just past the wall, or a metre further out if lower there: the fall a car would go over.)
               const g = (o: number) => heightAt(P[kk][0] + ((b[1] - a[1]) / tl) * o, P[kk][1] - ((b[0] - a[0]) / tl) * o);
               dr[kk - lo] = dy[kk] + 0.09 - Math.min(g(off(kk) + sgn * 0.6), g(off(kk) + sgn * 1.6));
+              // (And to the ground as drawn, its 4 m lattice's, where that
+              // lies lower: the plan's ground is held up beside a raised
+              // road, and the wall stopped 2 m over the grass at
+              // 1148.1,1927.3, the road's underside showing under it. The
+              // user's rule S3, 19 Nov: a wall from kerb to ground.)
+              const gd = (o: number) => groundY(P[kk][0] + ((b[1] - a[1]) / tl) * o, P[kk][1] - ((b[0] - a[0]) / tl) * o);
+              dg[kk - lo] = dy[kk] + 0.09 - Math.min(gd(off(kk) + sgn * 0.05), gd(off(kk) + sgn * 0.6));
             }
             const y = (kk: number) => dy[kk] + 0.09;
             // (Nor where another road's surface lies just past it: the wall
@@ -5584,7 +5591,7 @@ export async function buildPasirRisCourse(
               });
             };
             const openBeside = openBesideOf(P, off, y, sgn);
-            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk), true) && !inJoint(...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)) && !wallOnPaving(kk), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), oneLine ? openBeside : undefined, sec);
+            band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo], dg[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk), true) && !inJoint(...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)) && !wallOnPaving(kk), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), oneLine ? openBeside : undefined, sec);
             band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)) && !wallOnPaving(kk), ext(sgn), undefined, oneLine ? openBeside : undefined, sec);
           }
         }
