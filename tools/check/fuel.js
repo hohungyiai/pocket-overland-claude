@@ -57,6 +57,10 @@ window.__checkStations = async () => {
     }
     return best;
   };
+  const byJoint = new Map();
+  d.edges.forEach((e, i) => {
+    for (const j of [e.a, e.b]) byJoint.set(j, [...(byJoint.get(j) ?? []), i]);
+  });
   const deg = new Map();
   for (const e of d.edges) for (const j of [e.a, e.b]) deg.set(j, (deg.get(j) ?? 0) + 1);
   for (const s of stations) {
@@ -103,6 +107,7 @@ window.__checkStations = async () => {
       return Math.abs(u) < c.L / 2 + 0.5 && Math.abs(v) < 1.5;
     };
     let onRoad = 0;
+    const covered = [];
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (const [x, z] of P) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z); }
     for (let x = minX + 1; x < maxX; x += 3)
@@ -151,6 +156,10 @@ window.__checkStations = async () => {
         d.roads.each(x, z, 12, (i, seg, u, dd) => {
           if (dd < d.halfNear(i, seg, u)) onRoad++;
         });
+        // No footpath or cycle path runs under it (one through the
+        // station's own site aside: see below).
+        const p = d.pathIdx.nearest(x, z, 2);
+        if (p && p.d < 1.2) covered.push([x, z]);
       }
     // (Or a lane's middle runs inside it, along its edge.)
     for (const e of d.edges)
@@ -162,6 +171,42 @@ window.__checkStations = async () => {
         for (let t = 0; t <= n && !onRoad; t++) if (inRing(ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n, P)) onRoad++;
       }
     if (!onRoad) bad.push({ station: s.name, sx: Math.round(s.x), x: s.x, z: s.z, field: 'no road or lane runs onto the forecourt', over: 1 });
+    // A lane: some lane runs onto it from outside, and on by lanes to a road.
+    let laneIn = false;
+    for (let i = 0; !laneIn && i < d.edges.length; i++) {
+      const e = d.edges[i];
+      if (e.cls !== 'service' || !e.pts.some((p) => Math.hypot(p[0] - s.x, p[1] - s.z) < s.r + 30)) continue;
+      let ins = false;
+      let outs = false;
+      for (let k = 0; k + 1 < e.pts.length; k++) {
+        const [ax, az] = e.pts[k];
+        const [bx, bz] = e.pts[k + 1];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az)));
+        for (let t = 0; t <= n; t++) {
+          if (inRing(ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n, P)) ins = true;
+          else outs = true;
+        }
+      }
+      if (!ins || !outs) continue;
+      // (On by lanes to a road, within 40 pieces.)
+      const seen = new Set([e.a, e.b]);
+      let front = [e.a, e.b];
+      for (let step = 0; step < 40 && front.length && !laneIn; step++) {
+        const next = [];
+        for (const j of front)
+          for (const o of byJoint.get(j) ?? []) {
+            const oe = d.edges[o];
+            if (oe.cls !== 'service') {
+              laneIn = true;
+              break;
+            }
+            for (const k of [oe.a, oe.b]) if (!seen.has(k)) (seen.add(k), next.push(k));
+          }
+        front = next;
+      }
+    }
+    if (!laneIn) bad.push({ station: s.name, sx: Math.round(s.x), x: s.x, z: s.z, field: 'no lane from a road onto the forecourt', over: 1 });
+    for (const [x, z] of covered) bad.push({ station: s.name, sx: Math.round(s.x), x: +x.toFixed(1), z: +z.toFixed(1), field: 'a footpath or cycle path runs under the forecourt', over: 1 });
     // A lane that comes to it crosses onto it and ends on it (or goes on to a
     // road): never a stub past its edge, nor a run along the outside of it.
     for (const e of d.edges) {

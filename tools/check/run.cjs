@@ -151,7 +151,7 @@ const CHECKS = [
       if (!ok) failed = true;
       const tail = known > 0 ? `(known: ${known}, may not grow)` : `(limit ${limit})`;
       console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}: ${r.bad} of ${r.samples} samples off, worst ${worst} ${r.unit ?? 'm'} ${tail}${r.note ? ` [${r.note}]` : ''}`);
-      if (!ok || known > 0) for (const w of r.worst.slice(0, ok ? 3 : 12)) console.log('      ', JSON.stringify(w));
+      if (!ok || known > 0) for (const w of r.worst.slice(0, process.env.ALL ? Infinity : ok ? 3 : 12)) console.log('      ', JSON.stringify(w));
     }
     await b.close();
   } finally {
