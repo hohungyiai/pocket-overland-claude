@@ -124,9 +124,15 @@ window.__checkStations = async () => {
             return hit ? y0 + 12 - hit.timeOfImpact : -Infinity;
           };
           const top = topAt(x, z);
-          const off = top - (y0 + 0.2);
-          // (Against the map's ground: the built ground can sit a little off it, but a hole drops the full 20 cm and more.)
-          if (off < -0.25 || off > 0.6) bad.push({ station: s.name, sx: Math.round(s.x), x: +x.toFixed(1), z: +z.toFixed(1), field: off > 0 ? 'something stands on the forecourt' : 'no solid forecourt', over: +Math.min(9, Math.abs(off)).toFixed(2) });
+          // (Against the ground as built, under it: the map's own height can
+          // stand a little off that, here and there.)
+          let gy = y0;
+          g.world.intersectionsWithRay(new g.RAPIER.Ray({ x, y: y0 + 12, z }, { x: 0, y: -1, z: 0 }), 20, true, (hit) => {
+            if (hit.collider.shape.type === g.RAPIER.ShapeType.HeightField) gy = y0 + 12 - hit.timeOfImpact;
+            return true;
+          });
+          const off = top - (gy + 0.2);
+          if (off < -0.12 || off > 0.6) bad.push({ station: s.name, sx: Math.round(s.x), x: +x.toFixed(1), z: +z.toFixed(1), field: off > 0 ? 'something stands on the forecourt' : 'no solid forecourt', over: +Math.min(9, Math.abs(off)).toFixed(2) });
           else
             for (const [dx, dz] of [[0.1, 0], [-0.1, 0], [0, 0.1], [0, -0.1]]) {
               if (underIsland(x + dx, z + dz) || onShop(x + dx, z + dz) || !inRing(x + dx, z + dz, P)) continue;
@@ -172,17 +178,6 @@ window.__checkStations = async () => {
         }
       }
       if (!onIt) continue;
-      // (A station's lane: one that goes onto it, or stops by it. A lane
-      // that only passes by, to somewhere else, is not the station's.)
-      let enters = false;
-      for (let k = 0; !enters && k + 1 < e.pts.length; k++) {
-        const [ax, az] = e.pts[k];
-        const [bx, bz] = e.pts[k + 1];
-        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az)));
-        for (let t = 0; t <= n && !enters; t++) enters = inRing(ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n, P);
-      }
-      const stops = [[e.a, e.pts[0]], [e.b, e.pts[e.pts.length - 1]]].some(([j, p]) => deg.get(j) === 1 && gap(p[0], p[1], P) < 15);
-      if (!enters && !stops) continue;
       // ...and never runs along the outside of its edge: it crosses it.
       let along = 0;
       for (let k = 0; k + 1 < e.pts.length; k++) {
@@ -194,13 +189,30 @@ window.__checkStations = async () => {
           const x = ax + ((bx - ax) * t) / n;
           const z = az + ((bz - az) * t) / n;
           samples++;
-          // (Alongside: close outside its edge, and running with it, not across.)
-          const near = !inRing(x, z, P) && gap(x, z, P) <= e.w / 2 + 4;
-          const cos = Math.abs(gapDir[0] * (bx - ax) + gapDir[1] * (bz - az)) / ((Math.hypot(...gapDir) || 1) * (L || 1));
+          // (Alongside: running with its edge, not across it, with the lane's
+          // side over the edge or less than 1.5 m of grass from it. Any lane:
+          // a station's own, or one passing by.)
+          const g = gap(x, z, P);
+          const gd = [...gapDir];
+          let mouth = false; // (where it meets a public road: its mouth, not a run beside the forecourt)
+          d.roads.each(x, z, 20, (i, seg, u, dd) => {
+            if (d.edges[i].cls !== 'service' && dd < d.halfNear(i, seg, u) + e.w / 2 + 2) mouth = true;
+          });
+          // (On it, the forecourt is drawn over the lane; only a side of the
+          // lane hanging out past its kerb shows.)
+          const nx = -(bz - az) / (L || 1);
+          const nz = (bx - ax) / (L || 1);
+          const hangs = [1, -1].some((k) => {
+            const sx = x + nx * k * (e.w / 2);
+            const sz = z + nz * k * (e.w / 2);
+            return !inRing(sx, sz, P) || gap(sx, sz, P) < 0.5;
+          });
+          const near = !mouth && (inRing(x, z, P) ? g < e.w / 2 + 1 && hangs : g <= e.w / 2 + 1.5);
+          const cos = Math.abs(gd[0] * (bx - ax) + gd[1] * (bz - az)) / ((Math.hypot(...gd) || 1) * (L || 1));
           if (near && cos > 0.87) {
             along += L / n;
             if (along > 6) {
-              bad.push({ station: s.name, sx: Math.round(s.x), x: +x.toFixed(1), z: +z.toFixed(1), field: 'a lane runs along the outside of its edge', over: +along.toFixed(1) });
+              bad.push({ station: s.name, sx: Math.round(s.x), x: +x.toFixed(1), z: +z.toFixed(1), field: 'a lane runs along its edge, partly or wholly off it', over: +along.toFixed(1) });
               along = -Infinity;
             }
           } else if (along !== -Infinity) along = 0;

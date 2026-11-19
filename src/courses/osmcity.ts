@@ -10281,6 +10281,24 @@ export async function buildPasirRisCourse(
     const p = pathIdx.nearest(x, z, 4);
     return !(p && p.d < PHALF[p.line] + 0.8);
   };
+  const courts = (M.fuel ?? []).filter((f) => f.pts?.length);
+  const onCourt = (x: number, z: number, pad: number) =>
+    courts.some((f) => {
+      if (Math.abs(x - f.x) > f.r + pad || Math.abs(z - f.z) > f.r + pad) return false;
+      const P = f.pts!;
+      let c = false;
+      let best = Infinity;
+      for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+        const [ax, az] = P[i];
+        const [bx, bz] = P[j];
+        if (az > z !== bz > z && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+        const dx = bx - ax;
+        const dz = bz - az;
+        const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+        best = Math.min(best, Math.hypot(ax + dx * u - x, az + dz * u - z));
+      }
+      return c || best < pad;
+    });
   type Plant = { kind: string; x: number; z: number; s: number };
   const nearOnly = new Set<{ mesh: THREE.InstancedMesh; x: number; z: number }>();
   /** Trees drawn with their far version beyond FAR_TREE m of the camera. */
@@ -10358,6 +10376,8 @@ export async function buildPasirRisCourse(
         plants.push({ kind: 'grass', x, z, s: 0.7 + rd() * 0.8 });
       }
     }
+    // Nothing grows on a petrol station's forecourt, or through its kerb.
+    for (let i = plants.length - 1; i >= 0; i--) if (onCourt(plants[i].x, plants[i].z, 2.5)) plants.splice(i, 1);
     yield;
     const byKind = new Map<string, Plant[]>();
     for (const p of plants) {

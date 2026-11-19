@@ -92,7 +92,7 @@ export class Stations {
   private built = new Set<Station>();
   private waiting = new Set<Station>();
   private mats = {
-    slab: new THREE.MeshStandardMaterial({ color: 0x8f918d, roughness: 0.95, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
+    slab: new THREE.MeshStandardMaterial({ color: 0x8f918d, roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
     kerb: new THREE.MeshStandardMaterial({ color: 0xb9b5ad, roughness: 0.9 }),
     strip: new THREE.MeshStandardMaterial({ color: 0xdedad2, roughness: 0.85 }),
     white: new THREE.MeshStandardMaterial({ color: 0xf2f2ef, roughness: 0.7 }),
@@ -137,8 +137,8 @@ export class Stations {
       this.built.add(s);
       // The forecourt lies on the ground as built (not as the map first gave
       // it), as high over it as a lane is, and meets each lane flush: where a
-      // lane runs it is at the lane's height (1 cm under, so the lane draws on
-      // top), rising to it from 1.2 m out.
+      // lane runs it is at the lane's height (2 cm over: the forecourt is one paved
+      // surface, lanes on it included), rising to it from 1.2 m out.
       const memo = new Map<string, number>();
       const top = (x: number, z: number) => {
         const key = `${x.toFixed(2)},${z.toFixed(2)}`;
@@ -147,11 +147,11 @@ export class Stations {
         const h = ground(x, z);
         // Over the ground's highest point near by (so it never pokes through
         // between the forecourt's corners), and up to any lane near by.
-        // (Where a lane runs, just under it: the lane is the way in.)
+        // (Where a lane runs, just over it: the lane is the way in.)
         const here = probe(x, z);
-        if (here && !here.ground && Math.abs(here.y - h) < 0.6) {
-          memo.set(key, here.y - 0.01);
-          return here.y - 0.01;
+        if (here && !here.ground && here.y > h + 0.08 && here.y < h + 0.6) {
+          memo.set(key, here.y + 0.02);
+          return here.y + 0.02;
         }
         let y = -Infinity;
         let lane = -Infinity;
@@ -159,10 +159,10 @@ export class Stations {
         for (const [dx, dz] of [[0, 0], [0.8, 0], [-0.8, 0], [0, 0.8], [0, -0.8], [1.4, 0], [-1.4, 0], [0, 1.4], [0, -1.4]]) {
           const p = dx === 0 && dz === 0 ? here : probe(x + dx, z + dz);
           if (!p || Math.abs(p.y - h) > 0.6) continue;
-          if (p.ground) {
+          if (p.ground || p.y <= h + 0.08) {
             y = Math.max(y, p.y + TOP);
             if (Math.abs(dx) + Math.abs(dz) < 1) low = Math.max(low, p.y);
-          } else lane = Math.max(lane, p.y - 0.01);
+          } else lane = Math.max(lane, p.y + 0.02);
         }
         if (y === -Infinity) y = h + TOP;
         // Beside a lane: level with it (so there's no lip where they meet),
@@ -173,7 +173,8 @@ export class Stations {
       };
       const onLane = (x: number, z: number) => {
         const p = probe(x, z);
-        return !!p && !p.ground && Math.abs(p.y - ground(x, z)) < 0.6;
+        const h = ground(x, z);
+        return !!p && !p.ground && p.y > h + 0.08 && p.y < h + 0.6;
       };
       this.build(s, ground, top, road(s.x, s.z), onLane);
     }

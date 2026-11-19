@@ -288,9 +288,30 @@ if (steps.has('lanes')) {
     // Then straight onto the forecourt, ending 3 m in from its edge.
     const line = [...best.pts.slice(0, best.k + 1), best.p];
     let [x, z] = best.p;
-    const dl = Math.hypot(cx - x, cz - z) || 1;
-    const ux = (cx - x) / dl;
-    const uz = (cz - z) / dl;
+    // (Square on to its nearest edge, so it crosses that edge, not runs along it.)
+    let ux = 0;
+    let uz = 0;
+    {
+      let bd = Infinity;
+      for (let i = 0; i < P.length; i++) {
+        const [ax, az] = P[i];
+        const [bx, bz] = P[(i + 1) % P.length];
+        const dx = bx - ax;
+        const dz = bz - az;
+        const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+        const dd = Math.hypot(ax + dx * u - x, az + dz * u - z);
+        if (dd < bd) {
+          bd = dd;
+          const L = Math.hypot(dx, dz) || 1;
+          [ux, uz] = [-dz / L, dx / L];
+        }
+      }
+      if (!inRing(x + ux * 4, z + uz * 4, P) && inRing(x - ux * 4, z - uz * 4, P)) [ux, uz] = [-ux, -uz];
+      if (!inRing(x + ux * 4, z + uz * 4, P)) {
+        const dl = Math.hypot(cx - x, cz - z) || 1;
+        [ux, uz] = [(cx - x) / dl, (cz - z) / dl];
+      }
+    }
     for (let step = 0; step < 40; step++) {
       x += ux;
       z += uz;

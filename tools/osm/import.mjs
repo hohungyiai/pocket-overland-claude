@@ -501,6 +501,19 @@ export function build(raw, origin) {
       }
       return c ? 0 : best;
     };
+    const nearKerbed = (x, z, more) =>
+      kerbed.some((r) => {
+        for (let k = 0; k + 1 < r.pts.length; k++) {
+          const [ax, az] = r.pts[k];
+          const [bx, bz] = r.pts[k + 1];
+          if (Math.min(ax, bx) - x > 60 || x - Math.max(ax, bx) > 60 || Math.min(az, bz) - z > 60 || z - Math.max(az, bz) > 60) continue;
+          const dx = bx - ax;
+          const dz = bz - az;
+          const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+          if (Math.hypot(ax + dx * u - x, az + dz * u - z) < r.w / 2 + more) return true;
+        }
+        return false;
+      });
     for (const f of feats) {
       const h0 = hull(f.pts);
       const R0 = Math.max(...h0.map((p) => Math.hypot(p[0] - f.x, p[1] - f.z)));
@@ -513,7 +526,16 @@ export function build(raw, origin) {
           for (let t = 0; t <= n; t++) {
             const x = ax + ((bx - ax) * t) / n;
             const z = az + ((bz - az) * t) / n;
-            if (Math.hypot(x - f.x, z - f.z) < R0 + 12 && gapTo(x, z, h0) <= e.w / 2 + 4) f.pts.push([x, z]);
+            if (Math.hypot(x - f.x, z - f.z) >= R0 + 12 || gapTo(x, z, h0) > e.w / 2 + 6) continue;
+            // (Not where it meets a road: that mouth stays the lane's.)
+            if (nearKerbed(x, z, e.w / 2 + 3)) continue;
+            // (Its whole width: both its sides, so no part of it is left on
+            // the grass beside the forecourt.)
+            const L = Math.hypot(bx - ax, bz - az) || 1;
+            const nx = -(bz - az) / L;
+            const nz = (bx - ax) / L;
+            const half = e.w / 2 + 0.6;
+            f.pts.push([x, z], [x + nx * half, z + nz * half], [x - nx * half, z - nz * half]);
           }
         }
       }
@@ -523,7 +545,16 @@ export function build(raw, origin) {
       const h = hull(f.pts);
       const round = [];
       for (const [x, z] of h) for (let a = 0; a < 8; a++) round.push([x + 3 * Math.cos((a * Math.PI) / 4), z + 3 * Math.sin((a * Math.PI) / 4)]);
-      let ring = hull(round).map(pushOff);
+      // (Every 1.5 m along its edge, not only its corners, kept off the roads.)
+      const h1 = hull(round);
+      const dense = [];
+      for (let i = 0; i < h1.length; i++) {
+        const [ax, az] = h1[i];
+        const [bx, bz] = h1[(i + 1) % h1.length];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 1.5));
+        for (let t = 0; t < n; t++) dense.push([ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n]);
+      }
+      let ring = dense.map(pushOff);
       ring = simplifyRing([...ring, ring[0]], 0.4).slice(0, -1);
       if (ringArea(ring) < 0) ring.reverse();
       if (Math.abs(ringArea(ring)) < 120) continue; // squeezed out by the roads beside it
@@ -534,7 +565,24 @@ export function build(raw, origin) {
       fuel.push({ name: f.name || 'Petrol station', x: q(x), z: q(z), r: q(r), pts });
       // The ground under it is paved (no trees), to its edge and no further,
       // so its kerb meets the grass cleanly.
-      areas.push({ kind: 'parking', name: 'Forecourt', pts });
+      // (The ground's own paving is drawn in 4 m cells: kept 3 m inside the
+      // forecourt so no cell's corner shows as teeth past its kerb.)
+      const inner = ring.map((p, i) => {
+        const a = ring[(i + ring.length - 1) % ring.length];
+        const b = ring[(i + 1) % ring.length];
+        const n1 = [-(p[1] - a[1]), p[0] - a[0]];
+        const n2 = [-(b[1] - p[1]), b[0] - p[0]];
+        const l1 = Math.hypot(...n1) || 1;
+        const l2 = Math.hypot(...n2) || 1;
+        let nx = n1[0] / l1 + n2[0] / l2;
+        let nz = n1[1] / l1 + n2[1] / l2;
+        const ln = Math.hypot(nx, nz) || 1;
+        nx /= ln;
+        nz /= ln;
+        const cos = Math.max(0.5, (nx * n1[0]) / l1 + (nz * n1[1]) / l1);
+        return [p[0] + (nx * 3) / cos, p[1] + (nz * 3) / cos];
+      });
+      if (ringArea(inner) > 20) areas.push({ kind: 'parking', name: 'Forecourt', pts: qp(inner) });
     }
     // A lane that stops short beside a forecourt goes on onto it, straight,
     // and ends on it: a way in, not a stub on the grass.
@@ -562,9 +610,27 @@ export function build(raw, origin) {
           const beside = (pt) => gapTo(pt[0], pt[1], P) > 0 && gapTo(pt[0], pt[1], P) <= e.w / 2 + 4;
           while (own.length > 2 && beside(own[own.length - 1]) && beside(own[own.length - 2])) own.pop();
           p = own[own.length - 1];
-          const dl = Math.hypot(f.x - p[0], f.z - p[1]) || 1;
-          const ux = (f.x - p[0]) / dl;
-          const uz = (f.z - p[1]) / dl;
+          // (Square on to the forecourt's nearest edge, so it crosses it.)
+          let ux = 0;
+          let uz = 0;
+          {
+            let bd = Infinity;
+            for (let i = 0; i < P.length; i++) {
+              const [ax, az] = P[i];
+              const [bx, bz] = P[(i + 1) % P.length];
+              const dx = bx - ax;
+              const dz = bz - az;
+              const u = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - az) * dz) / (dx * dx + dz * dz || 1)));
+              const dd = Math.hypot(ax + dx * u - p[0], az + dz * u - p[1]);
+              if (dd < bd) {
+                bd = dd;
+                const L = Math.hypot(dx, dz) || 1;
+                [ux, uz] = [-dz / L, dx / L];
+              }
+            }
+            // (Towards it: the side the forecourt's middle is on.)
+            if (ux * (f.x - p[0]) + uz * (f.z - p[1]) < 0) [ux, uz] = [-ux, -uz];
+          }
           const more = [];
           let ok = false;
           for (let step = 1; step <= 25; step++) {
