@@ -108,7 +108,7 @@ const CHECKS = [
   // (The user's rule, 18 Nov: a bridge's parapets begin where the ground drops.)
   ['A parapet stands only where the ground beside it falls away: none on an island or verge level with the road', 'outline.js', '__checkParapetDrop', 0],
   // (A count that may only go down: 23 when it was written, most where two roads at different heights fold into one nose. The user's call, 2026-11-17: fixed in the next round with the floating lines.)
-  ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, 23],
+  ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, 21],
 ];
 
 (async () => {
