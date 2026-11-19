@@ -9125,9 +9125,35 @@ export async function buildPasirRisCourse(
         // (Run 2 cm into each side, so no hairline shows where they meet.)
         const L = Math.hypot(B[0] - A[0], B[1] - A[1]), ux = (B[0] - A[0]) / L, uz = (B[1] - A[1]) / L;
         const ax = A[0] - ux * 0.02, az = A[1] - uz * 0.02, bx = B[0] + ux * 0.02, bz = B[1] + uz * 0.02;
-        quad(ax, az, A[2], A[3], bx, bz, B[2], B[3], 0);
-        out.push({ x0: ax, z0: az, x1: bx, z1: bz, y0: A[3] - PARAPET_H, y1: B[3] - PARAPET_H, ph0: PARAPET_H, ph1: PARAPET_H });
-        addSheet(ax, az, bx, bz, Math.max(A[2], B[2]), top);
+        // (Along the kerb between them, not straight across it: round a
+        // curve, a side drawn as one chord stood 11 cm out past the kerb at
+        // 92.8,2763.8. Each point between is put on the kerb's outer edge
+        // nearest it, at its level, a centimetre out.)
+        const pts: number[][] = [[ax, az, 0]];
+        const n = Math.max(1, Math.ceil(L / 0.25));
+        for (let q = 1; q < n; q++) {
+          const t = q / n, x = A[0] + (B[0] - A[0]) * t, z = A[1] + (B[1] - A[1]) * t, y = A[3] + (B[3] - A[3]) * t - PARAPET_H;
+          let bd = 0.3, px = x, pz = z;
+          for (const e of E) {
+            if (Math.min(e[2], e[5]) > y + 0.6 || Math.max(e[2], e[5]) < y - 0.6) continue;
+            const dx = e[3] - e[0], dz = e[4] - e[1], l2 = dx * dx + dz * dz;
+            if (!(l2 > 1e-8)) continue;
+            const u = Math.max(0, Math.min(1, ((x - e[0]) * dx + (z - e[1]) * dz) / l2));
+            const qx = e[0] + dx * u, qz = e[1] + dz * u, dd = Math.hypot(qx - x, qz - z);
+            if (dd < bd) (bd = dd), (px = qx + e[6] * 0.01), (pz = qz + e[7] * 0.01);
+          }
+          pts.push([px, pz, t]);
+        }
+        pts.push([bx, bz, 1]);
+        let s = 0;
+        for (let q = 0; q + 1 < pts.length; q++) {
+          const [px, pz, ta] = pts[q], [qx, qz, tb] = pts[q + 1];
+          const lo0 = A[2] + (B[2] - A[2]) * ta, hi0 = A[3] + (B[3] - A[3]) * ta, lo1 = A[2] + (B[2] - A[2]) * tb, hi1 = A[3] + (B[3] - A[3]) * tb;
+          quad(px, pz, lo0, hi0, qx, qz, lo1, hi1, s);
+          s += Math.hypot(qx - px, qz - pz);
+          out.push({ x0: px, z0: pz, x1: qx, z1: qz, y0: hi0 - PARAPET_H, y1: hi1 - PARAPET_H, ph0: PARAPET_H, ph1: PARAPET_H });
+          addSheet(px, pz, qx, qz, Math.max(lo0, lo1), Math.min(hi0, hi1));
+        }
       }
     }
     const quad = (ax: number, az: number, a0: number, a1: number, bx: number, bz: number, b0: number, b1: number, s: number) => {
