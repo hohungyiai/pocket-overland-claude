@@ -14,12 +14,13 @@
 //   surface that carries on past it).
 
 /** Every upright sheet, bucketed on a 4 m grid: crosses(x0, z0, x1, z1, y) is there one whose top stands at least 0.6 m over y, across that segment? */
-window.__sheetIndex = () => {
-  if (window.__shIdx) return window.__shIdx;
+window.__sheetIndex = (short = false) => {
+  if (short ? window.__shIdxAll : window.__shIdx) return short ? window.__shIdxAll : window.__shIdx;
   const F = window.__finishIndex();
   const C = 4;
   const grid = new Map();
-  F.sheets.forEach((s, i) => {
+  const all = short ? [...F.sheets, ...F.shortSheets] : F.sheets;
+  all.forEach((s, i) => {
     const x0 = Math.min(s.x0, s.x1), x1 = Math.max(s.x0, s.x1), z0 = Math.min(s.z0, s.z1), z1 = Math.max(s.z0, s.z1);
     for (let a = Math.floor(x0 / C); a <= Math.floor(x1 / C); a++)
       for (let b = Math.floor(z0 / C); b <= Math.floor(z1 / C); b++) {
@@ -42,27 +43,43 @@ window.__sheetIndex = () => {
   };
   const crosses = (x0, z0, x1, z1, y) => {
     for (const i of near(x0, z0, x1, z1)) {
-      const s = F.sheets[i];
+      const s = all[i];
       if (s.hi < y + 0.6 || s.lo > y + 0.3) continue;
-      if (cross(x0, z0, x1, z1, s.x0, s.z0, s.x1, s.z1)) return true;
+      // (Each sheet taken 2 mm longer at either end: where two meet at a
+      // corner their ends may lie a hair apart, and a line through the
+      // corner itself found that pinhole: -3487.4,-1797.2, 0.02 mm.)
+      const L = Math.hypot(s.x1 - s.x0, s.z1 - s.z0) || 1, ex = ((s.x1 - s.x0) / L) * 0.002, ez = ((s.z1 - s.z0) / L) * 0.002;
+      if (cross(x0, z0, x1, z1, s.x0 - ex, s.z0 - ez, s.x1 + ex, s.z1 + ez)) return true;
     }
     return false;
   };
-  return (window.__shIdx = { crosses, near });
+  const idx = { crosses, near };
+  if (short) window.__shIdxAll = idx;
+  else window.__shIdx = idx;
+  return idx;
 };
 
 window.__checkOpenEdges = (all = false) => {
   const d = globalThis.__osm;
   const F = window.__finishIndex();
-  const S = window.__sheetIndex();
+  // (Every panel, however short: round a tight curve a parapet is drawn
+  // in pieces under 0.3 m, and the line across it found the gaps between
+  // the longer ones at -3262.6,-1777.9.)
+  const S = window.__sheetIndex(true);
   const DROP = 1.2; // a fall the car must not go over (a kerb's worth is nothing)
   const pts = [];
   let n = 0;
   // (Something drivable carries on past the edge: another road, a junction, a wedge.)
   const goesOn = (x, z, y) => F.asphaltAt(x, z, y, 0.6) === F.asphaltAt(x, z, y, 0.6);
   const test = (x, z, nx, nz, y, inner) => {
-    // (From just inside the edge to a metre past it.)
-    const ox = x + nx * 1.0, oz = z + nz * 1.0;
+    // (From just inside the edge to a metre past it, or past the drawn
+    // road and kerb where they reach further out than the road's own
+    // width: where a split's outline flares, the kerb and the parapet on it
+    // stand 1.1 m out from the line's edge, at -3500.4,2716.5.)
+    let o = 1.0;
+    const top = (e) => F.flatAt(x + nx * e, z + nz * e).some((f) => (f.kind === 'road' || f.kind === 'kerb') && Math.abs(f.h - y) < 0.35);
+    for (let e = 0.5; e <= 3 && top(e); e += 0.1) o = Math.max(o, e + 0.6);
+    const ox = x + nx * o, oz = z + nz * o;
     if (goesOn(ox, oz, y) || goesOn(x + nx * 2, z + nz * 2, y)) return;
     if (y - d.heightAt(ox, oz) < DROP) return;
     n++;

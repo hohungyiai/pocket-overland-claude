@@ -10,7 +10,7 @@
 //   asphaltAt(x, z, y)  height of the asphalt nearest y there, NaN if none within tol
 //   sheets              every upright sheet of deck (parapet, wall, beam) as a
 //                       ground segment with its bottom and top heights (and c:
-//                       its triangle's three corners)
+//                       its triangle's three corners); shortSheets, those under 0.3 m long
 window.__finishIndex = () => {
   if (window.__finIdx) return window.__finIdx;
   const d = globalThis.__osm;
@@ -19,6 +19,7 @@ window.__finishIndex = () => {
   const tris = [];
   const kinds = [];
   const sheets = [];
+  const shortSheets = [];
   for (const k of d.farTiles()) {
     const accs = d.tileAccs(k);
     KINDS.forEach((kind, ki) => {
@@ -47,9 +48,11 @@ window.__finishIndex = () => {
           const l = Math.hypot(pos[n] - pos[p], pos[n + 2] - pos[p + 2]);
           if (l > best) (best = l), (s = [pos[p], pos[p + 2], pos[n], pos[n + 2]]);
         }
-        if (best < 0.3) continue;
+        if (best < 0.01) continue;
         const ys = v.map((p) => pos[p + 1]);
-        sheets.push({ x0: s[0], z0: s[1], x1: s[2], z1: s[3], lo: Math.min(...ys), hi: Math.max(...ys), c: v.map((p) => [pos[p], pos[p + 1], pos[p + 2]]) });
+        // (Shorter than 0.3 m, kept apart: most checks count whole walls,
+        // but a parapet round a tight curve is drawn in pieces that short.)
+        (best < 0.3 ? shortSheets : sheets).push({ x0: s[0], z0: s[1], x1: s[2], z1: s[3], lo: Math.min(...ys), hi: Math.max(...ys), c: v.map((p) => [pos[p], pos[p + 1], pos[p + 2]]) });
       }
     }
   }
@@ -201,7 +204,7 @@ window.__finishIndex = () => {
     }
     return -1;
   };
-  return (window.__finIdx = { flatAt, asphaltAt, asphaltSpan, lineAt, roadAt, sheets, walk, places });
+  return (window.__finIdx = { flatAt, asphaltAt, asphaltSpan, lineAt, roadAt, sheets, shortSheets, walk, places });
 };
 
 // The outside edge of every road, followed along its whole length. At each
