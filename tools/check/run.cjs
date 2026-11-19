@@ -7,7 +7,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
-const DEPS = { 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js', 'edges.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'], 'outline.js': ['finish.js'] };
+const DEPS = { 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js', 'edges.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'], 'outline.js': ['finish.js'], 'watertight.js': ['finish.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
@@ -108,6 +108,12 @@ const CHECKS = [
   // (The user's rule, 18 Nov: a bridge's parapets begin where the ground drops.)
   ['A parapet stands only where the ground beside it falls away: none on an island or verge level with the road', 'outline.js', '__checkParapetDrop', 0],
   // (A count that may only go down: 23 when it was written, most where two roads at different heights fold into one nose. The user's call, 2026-11-17: fixed in the next round with the floating lines.)
+  // (The user's slip-road rules S3-S5, 19 Nov, read off the finished
+  // meshes: no edge of a road, kerb or island's lawn over a fall without a
+  // face down to what lies below, and no ground standing over a kerb or a
+  // wall's top. Zero, not a count that may go down.)
+  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0],
+  ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0],
   ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, 21],
 ];
 

@@ -8776,7 +8776,7 @@ export async function buildPasirRisCourse(
   /** How far the ground must fall past a raised road's edge for a missing side to be drawn there (m): less, and its side would be a kerb's height, nothing showing under it. */
   const GAP_DROP = 1;
   const gapWalls = new Map<string, { x0: number; z0: number; x1: number; z1: number; y0: number; y1: number; ph0: number; ph1: number }[]>();
-  function* wallGaps(k: string, deck: Acc, kit: TileKit): Generator<void, void, void> {
+  function* wallGaps(k: string, deck: Acc, kerb: Acc, kit: TileKit): Generator<void, void, void> {
     const E = kerbOuter.get(k) ?? [];
     let slice = performance.now();
     const pause = () => performance.now() - slice > 4;
@@ -8866,6 +8866,14 @@ export async function buildPasirRisCourse(
     };
     const out: { x0: number; z0: number; x1: number; z1: number; y0: number; y1: number; ph0: number; ph1: number }[] = [];
     const acc = { pos, uv, idx };
+    // (A side drawn here, known from then on to what follows.)
+    const addSheet = (ax: number, az: number, bx: number, bz: number, lo: number, hi: number) => {
+      const n = sheets.length;
+      sheets.push([ax, az, bx, bz, lo, hi, on[0], on[1]]);
+      for (let gx = Math.floor(Math.min(ax, bx) / G); gx <= Math.floor(Math.max(ax, bx) / G); gx++)
+        for (let gz = Math.floor(Math.min(az, bz) / G); gz <= Math.floor(Math.max(az, bz) / G); gz++)
+          (grid.get(gx * 65536 + gz) ?? grid.set(gx * 65536 + gz, []).get(gx * 65536 + gz)!).push(n);
+    };
     /**
      * A wall broken by a slot: two sides that run on in one line, end
      * facing end, a hand's width to a couple of metres apart, with the
@@ -8964,12 +8972,7 @@ export async function buildPasirRisCourse(
         const ax = A[0] - ux * 0.02, az = A[1] - uz * 0.02, bx = B[0] + ux * 0.02, bz = B[1] + uz * 0.02;
         quad(ax, az, A[2], A[3], bx, bz, B[2], B[3], 0);
         out.push({ x0: ax, z0: az, x1: bx, z1: bz, y0: A[3] - PARAPET_H, y1: B[3] - PARAPET_H, ph0: PARAPET_H, ph1: PARAPET_H });
-        // (Known from here on to what follows the kerb.)
-        const n = sheets.length;
-        sheets.push([ax, az, bx, bz, Math.max(A[2], B[2]), top, A[6], A[7]]);
-        for (let gx = Math.floor(Math.min(ax, bx) / G); gx <= Math.floor(Math.max(ax, bx) / G); gx++)
-          for (let gz = Math.floor(Math.min(az, bz) / G); gz <= Math.floor(Math.max(az, bz) / G); gz++)
-            (grid.get(gx * 65536 + gz) ?? grid.set(gx * 65536 + gz, []).get(gx * 65536 + gz)!).push(n);
+        addSheet(ax, az, bx, bz, Math.max(A[2], B[2]), top);
       }
     }
     const quad = (ax: number, az: number, a0: number, a1: number, bx: number, bz: number, b0: number, b1: number, s: number) => {
@@ -9017,12 +9020,34 @@ export async function buildPasirRisCourse(
       if (at < 1 - 0.02 / L) gaps.push([at, 1]);
       return gaps;
     };
+    // (The raised roads and decks in reach of this tile, by 8 m square: a
+    // kerb nowhere near one wants no side of a raised road's, and asking
+    // every kerb on the map the full question cost a fifth of all building.)
+    const RG = 8;
+    const rgrid = new Map<number, number[][]>();
+    {
+      const [ti, tj] = k.split(',').map(Number);
+      roads.each((ti + 0.5) * TILE, (tj + 0.5) * TILE, TILE * 0.75 + 25, (i, seg) => {
+        if (!hasProfile[i] || JX.internal[i]) return;
+        const a = EP[i][seg], b = EP[i][seg + 1], r = halfNear(i, seg, 0.5) + 2.5;
+        for (let gx = Math.floor((Math.min(a[0], b[0]) - r) / RG); gx <= Math.floor((Math.max(a[0], b[0]) + r) / RG); gx++)
+          for (let gz = Math.floor((Math.min(a[1], b[1]) - r) / RG); gz <= Math.floor((Math.max(a[1], b[1]) + r) / RG); gz++)
+            (rgrid.get(gx * 65536 + gz) ?? rgrid.set(gx * 65536 + gz, []).get(gx * 65536 + gz)!).push([a[0], a[1], b[0], b[1], r]);
+      });
+    }
+    const nearRaised = (x: number, z: number, extra: number) =>
+      (rgrid.get(Math.floor(x / RG) * 65536 + Math.floor(z / RG)) ?? []).some(([ax, az, bx, bz, r]) => {
+        const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / L2));
+        return Math.hypot(ax + dx * t - x, az + dz * t - z) < r + extra;
+      });
     for (const e of E) {
       const [x0, z0, y0, x1, z1, y1, nx, nz] = e;
       (on[0] = nx), (on[1] = nz);
       const L = Math.hypot(x1 - x0, z1 - z0);
       // (Short ones too: round the point of a V where two decks part, the kerb is in pieces of 3 cm.)
       if (!(L > 0.005) || !(y0 === y0 && y1 === y1)) continue;
+      if (!nearRaised((x0 + x1) / 2, (z0 + z1) / 2, L / 2)) continue;
       const P = (t: number) => [x0 + (x1 - x0) * t + nx * 0.01, z0 + (z1 - z0) * t + nz * 0.01, y0 + (y1 - y0) * t - 0.03];
       // (Where no parapet stands, and where nothing stands below the road either.)
       const tall = gapsOf(x0, z0, x1, z1, y0 - 0.03, y1 - 0.03, 0.6, 0.3);
@@ -9078,11 +9103,61 @@ export async function buildPasirRisCourse(
             }
             quad(ax, az, ya, ya + PARAPET_H, bx, bz, yb, yb + PARAPET_H, s);
             out.push({ x0: ax, z0: az, x1: bx, z1: bz, y0: ya, y1: yb, ph0: PARAPET_H, ph1: PARAPET_H });
+            addSheet(ax, az, bx, bz, Math.min(ya, yb) - (low ? 0.6 : 0), Math.max(ya, yb) + PARAPET_H);
           } else {
             if (low) quad(ax, az, ya - da - 0.3, ya + wallTop(da), bx, bz, yb - db - 0.3, yb + wallTop(db), s);
             quad(ax, az, ya, ya + parapetTop(da), bx, bz, yb, yb + parapetTop(db), s);
             out.push({ x0: ax, z0: az, x1: bx, z1: bz, y0: ya, y1: yb, ph0: parapetTop(da), ph1: parapetTop(db) });
+            addSheet(ax, az, bx, bz, Math.min(ya - (low ? da + 0.3 : 0), yb - (low ? db + 0.3 : 0)), Math.max(ya + parapetTop(da), yb + parapetTop(db)));
           }
+        }
+      }
+      if (pause()) {
+        yield;
+        slice = performance.now();
+      }
+    }
+    // (The user's rule S3, 19 Nov: wherever a road stands over the ground
+    // beside it, a face from its kerb down to the ground. Each road is drawn
+    // 0.2 to 0.25 m over the ground sealed under it, its kerb 0.15 m over
+    // that, and nothing closed the kerb's outer side: from the verge, or
+    // from a road lower beside it, the ground showed on under the kerb. So
+    // wherever nothing stands under a kerb's outer edge, its side is drawn
+    // down to the ground as drawn, the 4 m lattice's, a little into it.)
+    const lat = new Map<number, number>();
+    const hv = (i: number, j: number) => {
+      const q = i * 100003 + j;
+      let h = lat.get(q);
+      if (h === undefined) lat.set(q, (h = heightAt(WB.minX + i * STEP, WB.minZ + j * STEP)));
+      return h;
+    };
+    const shown = (x: number, z: number) => {
+      const u = (x - WB.minX) / STEP, v = (z - WB.minZ) / STEP;
+      const i = Math.floor(u), j = Math.floor(v), fx = u - i, fz = v - j;
+      const a = hv(i, j), b = hv(i, j + 1), c = hv(i + 1, j);
+      if (fx + fz <= 1) return a + fx * (c - a) + fz * (b - a);
+      const e = hv(i + 1, j + 1);
+      return e + (1 - fx) * (b - e) + (1 - fz) * (c - e);
+    };
+    for (const e of E) {
+      const [x0, z0, y0, x1, z1, y1, nx, nz] = e;
+      const L = Math.hypot(x1 - x0, z1 - z0);
+      if (!(L > 0.005) || !(y0 === y0 && y1 === y1)) continue;
+      const P = (t: number) => [x0 + (x1 - x0) * t + nx * 0.002, z0 + (z1 - z0) * t + nz * 0.002, y0 + (y1 - y0) * t];
+      for (const [ga, gb] of gapsOf(x0, z0, x1, z1, y0, y1, -0.1, -0.12)) {
+        const m = Math.max(1, Math.ceil(((gb - ga) * L) / 0.5));
+        for (let q = 0; q < m; q++) {
+          const [ax, az, ya] = P(ga + ((gb - ga) * q) / m), [bx, bz, yb] = P(ga + ((gb - ga) * (q + 1)) / m);
+          const fa = shown(ax + nx * 0.05, az + nz * 0.05) - 0.05, fb = shown(bx + nx * 0.05, bz + nz * 0.05) - 0.05;
+          if (ya - fa < 0.1 && yb - fb < 0.1) continue;
+          // (Not where an island's lawn carries on from the kerb's top.)
+          const mx = (ax + bx) / 2 + nx * 0.1, mz = (az + bz) / 2 + nz * 0.1;
+          if (islandFill(mx, mz, true) >= (ya + yb) / 2 - 0.05) continue;
+          const v = kerb.pos.length / 3, sd = Math.hypot(ax - x0, az - z0);
+          kerb.pos.push(ax, Math.min(fa, ya), az, ax, ya, az, bx, Math.min(fb, yb), bz, bx, yb, bz);
+          kerb.uv.push(sd, 0, sd, 0.2, sd + Math.hypot(bx - ax, bz - az), 0, sd + Math.hypot(bx - ax, bz - az), 0.2);
+          if ((az - bz) * nx + (bx - ax) * nz > 0) kerb.idx.push(v, v + 2, v + 1, v + 1, v + 2, v + 3);
+          else kerb.idx.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
         }
       }
       if (pause()) {
@@ -9850,7 +9925,7 @@ export async function buildPasirRisCourse(
       );
       onTile('far', k, 'paving cut', (_kit, acc) => cutPaving(k, acc('road')));
       onTile('far', k, 'walls to kerb', (_kit, acc) => wallsToKerb(k, acc('deck')));
-      onTile('far', k, 'wall gaps', (kit, acc) => wallGaps(k, acc('deck'), kit));
+      onTile('far', k, 'wall gaps', (kit, acc) => wallGaps(k, acc('deck'), acc('kerb'), kit));
     }
   }
   /** (For the checks: the outline's sides within r of (x, z), and what each gets at its nearest point.) */
