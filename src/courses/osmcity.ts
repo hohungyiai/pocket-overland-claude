@@ -9179,7 +9179,7 @@ export async function buildPasirRisCourse(
     // down to `foot` from it. Measured, not sampled: sampled every half
     // metre, a 30 cm slot in a parapet at -3262.1,-1777.9 lay between two
     // samples, each within reach of a panel.)
-    const gapsOf = (x0: number, z0: number, x1: number, z1: number, yr0: number, yr1: number, up: number, foot: number) => {
+    const gapsOf = (x0: number, z0: number, x1: number, z1: number, yr0: number, yr1: number, up: number, foot: number, near = 0.15) => {
       const L = Math.hypot(x1 - x0, z1 - z0), ux = (x1 - x0) / L, uz = (z1 - z0) / L;
       const seen = new Set<number>();
       const iv: number[][] = [];
@@ -9189,7 +9189,7 @@ export async function buildPasirRisCourse(
             if (seen.has(i)) continue;
             seen.add(i);
             const [sx0, sz0, sx1, sz1, lo, hi] = sheets[i];
-            if (Math.abs((sx0 - x0) * -uz + (sz0 - z0) * ux) > 0.15 || Math.abs((sx1 - x0) * -uz + (sz1 - z0) * ux) > 0.15) continue;
+            if (Math.abs((sx0 - x0) * -uz + (sz0 - z0) * ux) > near || Math.abs((sx1 - x0) * -uz + (sz1 - z0) * ux) > near) continue;
             const t0 = ((sx0 - x0) * ux + (sz0 - z0) * uz) / L, t1 = ((sx1 - x0) * ux + (sz1 - z0) * uz) / L;
             const ta = Math.min(t0, t1), tb = Math.max(t0, t1);
             if (tb < 0 || ta > 1) continue;
@@ -9350,7 +9350,10 @@ export async function buildPasirRisCourse(
       const L = Math.hypot(x1 - x0, z1 - z0);
       if (!(L > 0.005) || !(y0 === y0 && y1 === y1)) continue;
       const P = (t: number) => [x0 + (x1 - x0) * t + nx * 0.002, z0 + (z1 - z0) * t + nz * 0.002, y0 + (y1 - y0) * t];
-      for (const [ga, gb] of gapsOf(x0, z0, x1, z1, y0, y1, -0.1, -0.12)) {
+      // (Only a side standing within 6 cm of the kerb's edge closes it: round
+      // a tight corner in centimetre pieces, a wall 0.1 m off was taken for
+      // the kerb's own side and the corner left open, I2 at -2772.4,2246.3.)
+      for (const [ga, gb] of gapsOf(x0, z0, x1, z1, y0, y1, -0.1, -0.12, 0.06)) {
         const m = Math.max(1, Math.ceil(((gb - ga) * L) / 0.5));
         for (let q = 0; q < m; q++) {
           const [ax, az, ya] = P(ga + ((gb - ga) * q) / m), [bx, bz, yb] = P(ga + ((gb - ga) * (q + 1)) / m);
