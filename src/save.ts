@@ -34,9 +34,11 @@ export interface Journey {
   camp?: string;
   /** Metres driven in all. */
   odo: number;
-  /** Fuel left, 0..1 (PR 2). */
+  /** Fuel left, 0..1. */
   fuel?: number;
-  /** Home garage id and the garages reached (PR 3). */
+  /** Dust and mud on the car, 0..1. */
+  dust?: number;
+  /** Home garage id and the garages reached. */
   home?: string;
   garages?: string[];
   /** Where the car was left on each drive, so trying another drive never
@@ -73,6 +75,7 @@ export function normalise(s: unknown): Journey | null {
   if (typeof o.style === 'string') j.style = o.style;
   if (typeof o.camp === 'string') j.camp = o.camp;
   if (typeof o.fuel === 'number') j.fuel = Math.min(1, Math.max(0, o.fuel));
+  if (typeof o.dust === 'number') j.dust = Math.min(1, Math.max(0, o.dust));
   if (typeof o.home === 'string') j.home = o.home;
   if (Array.isArray(o.garages)) j.garages = o.garages.filter((g): g is string => typeof g === 'string');
   j.spots = {};
@@ -226,6 +229,7 @@ export function encodeCode(j: Journey): string {
     j.garages ?? [],
     Math.round(j.savedAt / 1000),
     j.y === undefined ? null : r1(j.y),
+    Math.round((j.dust ?? 0) * 100) / 100,
   ];
   const body = toB64(JSON.stringify(arr));
   return `${PREFIX}-${body}.${check(body)}`;
@@ -252,6 +256,7 @@ export function decodeCode(code: string): Journey | null {
       garages: a[10],
       savedAt: a[11] * 1000,
       y: a[12] ?? undefined,
+      dust: a[13] ?? 0,
     });
     if (j) {
       // A restored code counts as backed up where it was made.

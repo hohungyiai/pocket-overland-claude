@@ -1,4 +1,5 @@
 import type { MapData } from './courses/types';
+import { drawGarage, drawPump } from './mapicons';
 
 // A small round minimap, heading-up: the map turns as you turn, the car
 // arrow always points up. The whole course is painted once into an
@@ -13,6 +14,8 @@ export class Minimap {
   private ctx: CanvasRenderingContext2D;
   private base: HTMLCanvasElement;
   private zoom = 0.42; // screen px per metre
+  /** A place to point the way to (off the edge: an arrow on the rim). */
+  target: { x: number; z: number } | null = null;
   private size = 0;
   private dpr = Math.min(window.devicePixelRatio || 1, 2);
 
@@ -75,6 +78,14 @@ export class Minimap {
       const sx = r + dx * cos - dz * sin;
       const sy = r + dx * sin + dz * cos;
       if (Math.hypot(sx - r, sy - r) > r - 8 * this.dpr) continue;
+      if (p.kind === 'fuel') {
+        drawPump(ctx, sx, sy, 5.5 * this.dpr, this.target?.x === p.x && this.target?.z === p.z);
+        continue;
+      }
+      if (p.kind === 'garage') {
+        drawGarage(ctx, sx, sy, 6 * this.dpr);
+        continue;
+      }
       if (p.label === 'P') {
         // Carparks: a small blue "P" badge instead of a text label.
         const b = 5.5 * this.dpr;
@@ -94,6 +105,36 @@ export class Minimap {
       ctx.fillText(p.label, sx, sy - 5 * this.dpr);
     }
     ctx.restore();
+
+    // Where you're headed (the nearest petrol station when fuel runs low),
+    // when it's off the edge: an arrow on the rim pointing to it.
+    if (this.target) {
+      const dx = (this.target.x - x) * k;
+      const dz = (this.target.z - z) * k;
+      const sx = dx * cos - dz * sin;
+      const sy = dx * sin + dz * cos;
+      const d = Math.hypot(sx, sy);
+      if (d > r - 10 * this.dpr) {
+        const ux = sx / d;
+        const uy = sy / d;
+        const rr = r - 9 * this.dpr;
+        const a = 6 * this.dpr;
+        ctx.save();
+        ctx.translate(r + ux * rr, r + uy * rr);
+        ctx.rotate(Math.atan2(uy, ux));
+        ctx.fillStyle = '#2e7d4f';
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5 * this.dpr;
+        ctx.beginPath();
+        ctx.moveTo(a, 0);
+        ctx.lineTo(-a * 0.8, a * 0.8);
+        ctx.lineTo(-a * 0.8, -a * 0.8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
 
     // Car arrow and ring.
     ctx.fillStyle = '#c8772f';
