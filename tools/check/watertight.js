@@ -209,7 +209,11 @@ window.__checkGroundOverTops = (all = false) => {
   // (Along each outer edge of a kerb, a road or a wall's top, the ground
   // just past it stands no higher than the edge: else it pokes up through
   // the wall's foot or over the kerb.)
-  for (const [x0, y0, z0, x1, y1, z1, ox, oz] of W.open) {
+  for (const [x0, y0, z0, x1, y1, z1, ox, oz, kind] of W.open) {
+    // (A kerb's or a road's edge: the user's rule S5 is the kerb's and
+    // the wall's. An island's lawn running into the ground rising beside it
+    // is grass meeting grass, a bank, as the rule allows.)
+    if (kind !== 'road' && kind !== 'kerb') continue;
     const L = Math.hypot(x1 - x0, z1 - z0);
     if (L < 0.01) continue;
     let nx = (z1 - z0) / L, nz = -(x1 - x0) / L;

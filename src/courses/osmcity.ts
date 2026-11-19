@@ -5045,7 +5045,7 @@ export async function buildPasirRisCourse(
               if (wd > PARAPET_FROM) band(deck, W, cw, 0, 1, 0, yk, 0, parapetTop(wd), () => true);
             }
           }
-          const base = road.pos.length / 3;
+          const base = road.pos.length / 3, ib = road.idx.length;
           // (A hair under the roads either side, which cover its edges; and 3
           // cm in under each, so straight from row to row it still meets a
           // road's edge that bends between them: on Simei Street 1 a crack
@@ -5093,6 +5093,23 @@ export async function buildPasirRisCourse(
               if (up) road.idx.push(f0 + u, f0 + v, f0 + w);
               else road.idx.push(f0 + u, f0 + w, f0 + v);
             }
+          }
+          // (Between two decks, an underside to the wedge and its nose, at
+          // the foot of the edge beam round them, as a joint on a deck has.
+          // The user's rule S4, 19 Nov: no slit or sky at any road's edge.
+          // With none, from the road below, the beam round the nose was a
+          // ring with nothing in it, the paving's dark underside showing up
+          // through it at 1144.9,1934 and 1821.8,1624.3.)
+          const dk = gores[id].deck;
+          if (dk > 0) {
+            const deck = acc('deck');
+            const db = deck.pos.length / 3;
+            const top = road.pos.length / 3;
+            for (let v = base; v < top; v++) {
+              deck.pos.push(road.pos[v * 3], road.pos[v * 3 + 1] + 0.003 - dk, road.pos[v * 3 + 2]);
+              deck.uv.push(road.uv[v * 2], road.uv[v * 2 + 1]);
+            }
+            for (let i = ib; i < road.idx.length; i += 3) deck.idx.push(db + road.idx[i] - base, db + road.idx[i + 2] - base, db + road.idx[i + 1] - base);
           }
         }
       });
@@ -8107,7 +8124,9 @@ export async function buildPasirRisCourse(
     });
     return { pts, tris };
   };
-  const holeFill = (road: Acc, ring: XZ[], lvl: number, inTile: (x: number, z: number) => boolean, holes: XZ[][] = []) => {
+  // (A raised road's deck, from its top to its edge beam's foot.)
+  const DECK_DEPTH = 1.2;
+  const holeFill = (road: Acc, ring: XZ[], lvl: number, inTile: (x: number, z: number) => boolean, holes: XZ[][] = [], deck?: Acc) => {
     if (ring.length < 3) return;
     let cx = 0, cz = 0;
     for (const p of ring) (cx += p[0]), (cz += p[1]);
@@ -8119,6 +8138,26 @@ export async function buildPasirRisCourse(
       road.uv.push(x / 6, z / 6);
     }
     for (const [a, b, c] of tris) faceUp(road, base + a, base + b, base + c);
+    // (Up off the ground as a deck is, an underside at its edge beam's
+    // foot, as the roads' strips beside it have. The user's rule S4, 19
+    // Nov: no slit or underside showing at a road's edge. Round a nose
+    // between two decks the fill paving its bulge had none, and from the
+    // road below the beam round it was a ring with the fill's dark
+    // underside showing up inside it, at 1144.9,1934.)
+    if (!deck) return;
+    const up = pts.map(([x, y, z]) => y - groundY(x, z) > DECK_DEPTH + 0.05);
+    const ub = deck.pos.length / 3;
+    for (const [x, y, z] of pts) {
+      deck.pos.push(x, y + 0.025 - ROAD_LIFT + 0.09 - DECK_DEPTH, z);
+      deck.uv.push(x / 6, z / 6);
+    }
+    const D = deck.pos;
+    for (const [a, b, c] of tris) {
+      if (!(up[a] || up[b] || up[c])) continue;
+      const [u, v, w] = [ub + a, ub + b, ub + c];
+      const upw = (D[v * 3 + 2] - D[u * 3 + 2]) * (D[w * 3] - D[u * 3]) - (D[v * 3] - D[u * 3]) * (D[w * 3 + 2] - D[u * 3 + 2]) >= 0;
+      deck.idx.push(u, upw ? w : v, upw ? v : w);
+    }
   };
   /**
    * The fills of the tile whose lines are being laid (see yOn), their
@@ -8405,7 +8444,11 @@ export async function buildPasirRisCourse(
       const x1 = P[v][0] + ox * wi, z1 = P[v][1] + oz * wi;
       // (The ground just past the kerb within ISLE_DEEP under its top: past
       // that the kerb stands at a drop, a wall's business.)
-      const g = heightAt(x0, z0);
+      // (The ground as drawn, the 4 m lattice's: held up beside a raised
+      // road, the ground the builder asks of heightAt stood 4 m over the
+      // ground drawn there, and a lawn went up to the road's kerb from it,
+      // a spike 4 m tall at 1068.5,1931.)
+      const g = groundY(x0, z0);
       if (!(t0 === t0) || g > t0 || g < t0 - ISLE_DEEP || wi <= KERB_OUT + 0.02) {
         secs.push(null);
         continue;
@@ -8434,7 +8477,17 @@ export async function buildPasirRisCourse(
       if (open) {
         const bank = cut ? 0.25 : ISLE_BANK;
         const x2 = P[v][0] + ox * (wi + bank), z2 = P[v][1] + oz * (wi + bank);
-        sec.push(put(x2, Math.min(y1, heightAt(x2, z2) + 0.02), z2));
+        sec.push(put(x2, Math.min(y1, groundY(x2, z2) + 0.02), z2));
+      } else if (fill === -Infinity && !(half[i] < 0.75 && apart[i])) {
+        // (Not across a narrow strip to a wall at the far kerb: see W.)
+        // (The user's rule S5, 19 Nov: grass never floats. Its far edge, in
+        // the island's middle, meets the other side's lawn, or did: cut short
+        // by a section crossing it, or a hand's width off the other side's,
+        // it ended in mid-air, a crack down to the ground 0.2 to 0.5 m below,
+        // at 3031.4,-988.2 and 1477.2,415.2. So it turns down there to the
+        // ground as drawn, under the other side's lawn where that meets it.)
+        const x2 = P[v][0] + ox * (wi + 0.02), z2 = P[v][1] + oz * (wi + 0.02);
+        sec.push(put(x2, Math.min(y1, groundY(x2, z2) - 0.05), z2));
       }
       secs.push(sec);
     }
@@ -8913,6 +8966,20 @@ export async function buildPasirRisCourse(
       });
       return hit;
     };
+    // (How far in from a deck's edge at (x, z) its own underside begins, a
+    // little past it: a deck road's strip, drawn with one, or a junction's
+    // on a deck. 0 where none lies within 8 m.)
+    const underIn = (x: number, z: number, y: number) => {
+      const has = (px: number, pz: number) => {
+        let hit = false;
+        roads.each(px, pz, 16, (i, seg, u, d) => {
+          if (!hit && isDeck[i] && !JX.internal[i] && lvlOf(i, seg) >= 0 && d < halfNear(i, seg, u) + WALL_OUT - 0.05) hit = Math.abs(deckAtHit(i, seg, u) + ROAD_LIFT - y) < 0.5;
+        });
+        return hit || inJoint(px, pz, y);
+      };
+      for (let t = 0.1; t <= 8; t += 0.25) if (has(x - on[0] * t, z - on[1] * t)) return t + 0.3;
+      return 0;
+    };
     const out: { x0: number; z0: number; x1: number; z1: number; y0: number; y1: number; ph0: number; ph1: number }[] = [];
     const acc = { pos, uv, idx };
     // (A side drawn here, known from then on to what follows.)
@@ -9148,7 +9215,21 @@ export async function buildPasirRisCourse(
                 if (foot === foot) break;
               }
               const depth = foot === foot ? Math.max(0.6, ya - foot) : 1.2;
-              quad(ax, az, ya - depth, ya, bx, bz, yb - depth, yb, s);
+              // (And under it, in from the beam to the deck's own underside:
+              // the user's rule S4, 19 Nov. Round a nose between two decks,
+              // the paving out past each road's strip had no underside, and
+              // from the road below the beam round it was a ring with the
+              // paving's dark underside showing up through it, at
+              // 1821.8,1624.3. Where no deck lies in from it at all, a
+              // raised road's wall instead, down to the ground.)
+              const w = underIn((ax + bx) / 2, (az + bz) / 2, (ya + yb) / 2);
+              if (w > 0) {
+                quad(ax, az, ya - depth, ya, bx, bz, yb - depth, yb, s);
+                const q = acc.pos.length / 3;
+                acc.pos.push(ax, ya - depth, az, bx, yb - depth, bz, bx - nx * w, yb - depth, bz - nz * w, ax - nx * w, ya - depth, az - nz * w);
+                acc.uv.push(0, 0, 1, 0, 1, w / 6, 0, w / 6);
+                acc.idx.push(q, q + 1, q + 2, q, q + 2, q + 3);
+              } else quad(ax, az, ya - da - 0.3, ya, bx, bz, yb - db - 0.3, yb, s);
             }
             quad(ax, az, ya, ya + PARAPET_H, bx, bz, yb, yb + PARAPET_H, s);
             out.push({ x0: ax, z0: az, x1: bx, z1: bz, y0: ya, y1: yb, ph0: PARAPET_H, ph1: PARAPET_H });
@@ -9443,7 +9524,7 @@ export async function buildPasirRisCourse(
         for (const { pts: R, corner, edge, at, hole, lvl, fill, holes } of traced ?? outlineRings(ix, iz)) {
           yield;
           if (fill) {
-            holeFill(acc('road'), corner, lvl, inTile, holes);
+            holeFill(acc('road'), corner, lvl, inTile, holes, acc('deck'));
             continue;
           }
           const n = R.length;
@@ -9538,7 +9619,7 @@ export async function buildPasirRisCourse(
           // union missed, inside a junction. Nothing is drawn round it.)
           if (hole && !marks.some((m) => m?.kerb)) {
             marks.forEach((m, q) => m && m.line && (marks[q] = { ...m, line: false, why: m.why + ' bare hole' }));
-            holeFill(acc('road'), w.rings[ri].corner, lvl, inTile);
+            holeFill(acc('road'), w.rings[ri].corner, lvl, inTile, [], acc('deck'));
             // (Paved over, and left as its pieces pave it: see cutPaving.)
             (bareHoles.get(k) ?? bareHoles.set(k, []).get(k)!).push(w.rings[ri].corner);
           }
