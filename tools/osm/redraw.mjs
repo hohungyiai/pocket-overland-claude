@@ -150,11 +150,7 @@ if (steps.has('lanes')) {
       }
   }
   // Lanes to a place. A garage's bay keeps the lane it lies on, and the way
-  // from there to a road. A petrol station keeps every lane that runs onto
-  // its forecourt, and the way from each to a road; then each such lane
-  // that runs on past the forecourt to a dead end is cut short at the
-  // forecourt (so it ends on it, never as a stub on the grass), and a
-  // dead-end piece that never reaches a forecourt goes.
+  // from there to a road. (Petrol stations: below.)
   const inRing = (x, z, P) => {
     let c = false;
     for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
@@ -165,16 +161,6 @@ if (steps.has('lanes')) {
     return c;
   };
   const courts = (M.fuel ?? []).filter((f) => f.pts?.length).map((f) => f.pts);
-  const inCourt = (x, z) => courts.some((P) => inRing(x, z, P));
-  const touchesCourt = (e) => {
-    for (let k = 0; k + 1 < e.pts.length; k++) {
-      const [ax, az] = e.pts[k];
-      const [bx, bz] = e.pts[k + 1];
-      const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az)));
-      for (let t = 0; t <= n; t++) if (inCourt(ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n)) return true;
-    }
-    return false;
-  };
   const nearPt = (e, x, z) => {
     let best = Infinity;
     for (let k = 0; k + 1 < e.pts.length; k++) {
@@ -201,7 +187,6 @@ if (steps.has('lanes')) {
     }
     return best?.used ?? [];
   };
-  const forPlace = new Set();
   let toPlaces = 0;
   for (const b of Object.entries(BAYS).filter(([k]) => !k.startsWith('/')).map(([, b]) => b)) {
     let lane = -1;
@@ -216,71 +201,120 @@ if (steps.has('lanes')) {
     keep.add(lane);
     for (const i of wayToRoad(lane)) keep.add(i);
   }
-  edges.forEach((e, lane) => {
-    if (!isLane(e) || !touchesCourt(e)) return;
-    toPlaces++;
-    for (const i of [lane, ...wayToRoad(lane)])
-      if (!keep.has(i)) {
-        keep.add(i);
-        forPlace.add(i);
+  // A petrol station gets ONE lane in: the shortest way by lanes from a road
+  // to where a lane first comes to its forecourt, then straight on onto it,
+  // ending on it. Nothing of the lane beyond that point is kept, so no lane
+  // runs along the outside of a forecourt or on past it onto the grass.
+  const ringGap = (x, z, P) => {
+    let best = Infinity;
+    for (let i = 0; i < P.length; i++) {
+      const [ax, az] = P[i];
+      const [bx, bz] = P[(i + 1) % P.length];
+      const dx = bx - ax;
+      const dz = bz - az;
+      const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+      best = Math.min(best, Math.hypot(ax + dx * u - x, az + dz * u - z));
+    }
+    return best;
+  };
+  const entries = [];
+  for (const P of courts) {
+    const cx = P.reduce((t, p) => t + p[0], 0) / P.length;
+    const cz = P.reduce((t, p) => t + p[1], 0) / P.length;
+    const R = Math.max(...P.map((p) => Math.hypot(p[0] - cx, p[1] - cz)));
+    // Shortest ways from any road joint, by lanes.
+    const dist = new Map();
+    const via = new Map();
+    const open = [];
+    pos.forEach((_, j) => {
+      if (j < N && roadAt[j].length && laneAt[j].length) {
+        dist.set(j, 0);
+        open.push([0, j]);
       }
-  });
-  // Dead ends: cut short at the forecourt, or gone.
-  let trimmed = 0;
-  let pruned = 0;
-  for (let changed = true; changed; ) {
-    changed = false;
-    const deg = new Map();
-    edges.forEach((e, i) => {
-      if (isLane(e) && !keep.has(i)) return;
-      for (const j of [e.a, e.b]) deg.set(j, (deg.get(j) ?? 0) + 1);
     });
-    for (const i of forPlace) {
-      const e = edges[i];
-      if (e.trimmed) continue;
-      const deadB = deg.get(e.b) === 1 && !roadAt[e.b].length;
-      const deadA = deg.get(e.a) === 1 && !roadAt[e.a].length;
-      if (!deadA && !deadB) continue;
-      if (deadA && deadB) continue;
-      if (!touchesCourt(e)) {
-        keep.delete(i);
-        forPlace.delete(i);
-        pruned++;
-        changed = true;
-        continue;
+    while (open.length) {
+      let m = 0;
+      for (let k = 1; k < open.length; k++) if (open[k][0] < open[m][0]) m = k;
+      const [d, j] = open[m];
+      open[m] = open[open.length - 1];
+      open.pop();
+      if (d > (dist.get(j) ?? Infinity) || d > 400) continue;
+      for (const i of laneAt[j] ?? []) {
+        const to = edges[i].a === j ? edges[i].b : edges[i].a;
+        const nd = d + edges[i].len;
+        if (nd >= (dist.get(to) ?? Infinity)) continue;
+        dist.set(to, nd);
+        via.set(to, i);
+        open.push([nd, to]);
       }
-      // Walk from the live end; stop at the last point on a forecourt.
-      const pts = deadA ? [...e.pts].reverse() : e.pts;
-      let cut = null;
-      for (let k = 0; k + 1 < pts.length; k++) {
-        const [ax, az] = pts[k];
-        const [bx, bz] = pts[k + 1];
-        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) * 2));
-        for (let t = 0; t <= n; t++) {
-          const p = [ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n];
-          if (inCourt(p[0], p[1])) cut = { k, p };
+    }
+    let best = null;
+    edges.forEach((e, i) => {
+      if (!isLane(e) || !e.pts.some((p) => Math.hypot(p[0] - cx, p[1] - cz) < R + 40)) return;
+      for (const fromA of [true, false]) {
+        const start = fromA ? e.a : e.b;
+        if (!dist.has(start)) continue;
+        const pts = fromA ? e.pts : [...e.pts].reverse();
+        let along = 0;
+        for (let k = 0; k + 1 < pts.length; k++) {
+          const [ax, az] = pts[k];
+          const [bx, bz] = pts[k + 1];
+          const L = Math.hypot(bx - ax, bz - az);
+          const n = Math.max(1, Math.ceil(L * 2));
+          let hit = null;
+          for (let t = 0; t <= n; t++) {
+            const x = ax + ((bx - ax) * t) / n;
+            const z = az + ((bz - az) * t) / n;
+            if (inRing(x, z, P) || ringGap(x, z, P) <= e.w / 2 + 0.6) {
+              hit = { k, p: [x, z], cost: dist.get(start) + along + (L * t) / n };
+              break;
+            }
+          }
+          if (hit) {
+            if (!best || hit.cost < best.cost) best = { ...hit, i, fromA, start, pts };
+            break;
+          }
+          along += L;
         }
       }
-      if (!cut) continue;
-      const kept = [...pts.slice(0, cut.k + 1), cut.p];
-      const j = pos.length;
-      pos.push([...cut.p]);
-      if (deadA) {
-        e.pts = kept.reverse();
-        e.a = j;
-      } else {
-        e.pts = kept;
-        e.b = j;
-      }
-      e.len = lenOf(e.pts);
-      e.trimmed = true;
-      trimmed++;
-      changed = true;
+    });
+    if (!best) continue;
+    // The way there from the road.
+    for (let j = best.start; via.has(j); ) {
+      const i = via.get(j);
+      keep.add(i);
+      j = edges[i].a === j ? edges[i].b : edges[i].a;
     }
+    // Then straight onto the forecourt, ending 3 m in from its edge.
+    const line = [...best.pts.slice(0, best.k + 1), best.p];
+    let [x, z] = best.p;
+    const dl = Math.hypot(cx - x, cz - z) || 1;
+    const ux = (cx - x) / dl;
+    const uz = (cz - z) / dl;
+    for (let step = 0; step < 40; step++) {
+      x += ux;
+      z += uz;
+      if (Math.hypot(x - best.p[0], z - best.p[1]) >= 1.5) line.push([x, z]);
+      if (inRing(x, z, P) && ringGap(x, z, P) >= 3) break;
+    }
+    const e = edges[best.i];
+    const j = pos.length;
+    pos.push([x, z]);
+    const entry = { ...e, pts: line, a: best.start, b: j, len: lenOf(line) };
+    if (keep.has(best.i)) {
+      // (A lane already kept for another reason: the way in is its own piece.)
+      edges.push(entry);
+      keep.add(edges.length - 1);
+    } else {
+      Object.assign(e, entry);
+      keep.add(best.i);
+    }
+    toPlaces++;
+    entries.push([+best.p[0].toFixed(1), +best.p[1].toFixed(1)]);
   }
   const before = edges.filter(isLane).length;
   edges = edges.filter((e, i) => !isLane(e) || keep.has(i));
-  report.lanes = { runs: runs.length, lanes: before, kept: keep.size, dropped: before - keep.size, through, toPlaces, trimmed, pruned };
+  report.lanes = { runs: runs.length, lanes: before, kept: keep.size, dropped: before - keep.size, through, toPlaces, entries };
 }
 
 // ---------- corners ----------

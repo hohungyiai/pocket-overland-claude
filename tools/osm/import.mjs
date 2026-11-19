@@ -483,6 +483,41 @@ export function build(raw, origin) {
         }
       return p;
     };
+    // The station's own driveways: a service lane hugging its outline is its
+    // forecourt's paving (OSM draws the site smaller than the paved area), so
+    // the forecourt takes it in and no lane runs along outside its edge.
+    const lanes = edges.filter((e) => e.cls === 'service' && !e.lv);
+    const gapTo = (x, z, P) => {
+      let c = false;
+      let best = Infinity;
+      for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+        const [ax, az] = P[i];
+        const [bx, bz] = P[j];
+        if (az > z !== bz > z && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+        const dx = bx - ax;
+        const dz = bz - az;
+        const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+        best = Math.min(best, Math.hypot(ax + dx * u - x, az + dz * u - z));
+      }
+      return c ? 0 : best;
+    };
+    for (const f of feats) {
+      const h0 = hull(f.pts);
+      const R0 = Math.max(...h0.map((p) => Math.hypot(p[0] - f.x, p[1] - f.z)));
+      for (const e of lanes) {
+        if (!e.pts.some((p) => Math.hypot(p[0] - f.x, p[1] - f.z) < R0 + 40)) continue;
+        for (let k = 0; k + 1 < e.pts.length; k++) {
+          const [ax, az] = e.pts[k];
+          const [bx, bz] = e.pts[k + 1];
+          const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az)));
+          for (let t = 0; t <= n; t++) {
+            const x = ax + ((bx - ax) * t) / n;
+            const z = az + ((bz - az) * t) / n;
+            if (Math.hypot(x - f.x, z - f.z) < R0 + 12 && gapTo(x, z, h0) <= e.w / 2 + 4) f.pts.push([x, z]);
+          }
+        }
+      }
+    }
     for (const f of feats) {
       // Rounded out 3 m: the hull of the outline with a ring round each corner.
       const h = hull(f.pts);
@@ -500,6 +535,67 @@ export function build(raw, origin) {
       // The ground under it is paved (no trees), to its edge and no further,
       // so its kerb meets the grass cleanly.
       areas.push({ kind: 'parking', name: 'Forecourt', pts });
+    }
+    // A lane that stops short beside a forecourt goes on onto it, straight,
+    // and ends on it: a way in, not a stub on the grass.
+    const deg = new Map();
+    for (const e of edges) for (const j of [e.a, e.b]) deg.set(j, (deg.get(j) ?? 0) + 1);
+    const onKerbed = (x, z) =>
+      kerbed.some((e) => e.pts.some((p, k) => {
+        if (k + 1 >= e.pts.length) return false;
+        const [bx, bz] = e.pts[k + 1];
+        const dx = bx - p[0];
+        const dz = bz - p[1];
+        const u = Math.max(0, Math.min(1, ((x - p[0]) * dx + (z - p[1]) * dz) / (dx * dx + dz * dz || 1)));
+        return Math.hypot(p[0] + dx * u - x, p[1] + dz * u - z) < e.w / 2 + 0.5;
+      }));
+    for (const f of fuel) {
+      const P = f.pts;
+      for (const e of lanes) {
+        for (const atA of [true, false]) {
+          const j = atA ? e.a : e.b;
+          if (deg.get(j) !== 1) continue;
+          let p = atA ? e.pts[0] : e.pts[e.pts.length - 1];
+          if (Math.hypot(p[0] - f.x, p[1] - f.z) > f.r + 20 || gapTo(p[0], p[1], P) === 0 || gapTo(p[0], p[1], P) > 15) continue;
+          // (First back off any of it that runs along beside the forecourt.)
+          const own = atA ? [...e.pts].reverse() : [...e.pts];
+          const beside = (pt) => gapTo(pt[0], pt[1], P) > 0 && gapTo(pt[0], pt[1], P) <= e.w / 2 + 4;
+          while (own.length > 2 && beside(own[own.length - 1]) && beside(own[own.length - 2])) own.pop();
+          p = own[own.length - 1];
+          const dl = Math.hypot(f.x - p[0], f.z - p[1]) || 1;
+          const ux = (f.x - p[0]) / dl;
+          const uz = (f.z - p[1]) / dl;
+          const more = [];
+          let ok = false;
+          for (let step = 1; step <= 25; step++) {
+            const x = p[0] + ux * step;
+            const z = p[1] + uz * step;
+            if (onKerbed(x, z)) break;
+            if (step % 2 === 0 || gapTo(x, z, P) === 0) more.push([q(x), q(z)]);
+            if (gapTo(x, z, P) === 0) {
+              // (3 m in from its edge.)
+              let edge = Infinity;
+              for (let i = 0; i < P.length; i++) {
+                const [ax, az] = P[i];
+                const [bx, bz] = P[(i + 1) % P.length];
+                const dx = bx - ax;
+                const dz = bz - az;
+                const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+                edge = Math.min(edge, Math.hypot(ax + dx * u - x, az + dz * u - z));
+              }
+              if (edge >= 3) {
+                ok = true;
+                break;
+              }
+            }
+          }
+          if (!ok || !more.length) continue;
+          const end = more[more.length - 1];
+          own.push(...more);
+          e.pts = atA ? own.reverse() : own;
+          jOut[j] = [...end];
+        }
+      }
     }
   }
 
