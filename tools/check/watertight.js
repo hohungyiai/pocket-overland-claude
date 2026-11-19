@@ -43,7 +43,7 @@ window.__watertightIndex = () => {
     for (const [kind, r] of Object.entries(accs)) {
       if (!r || !r.idx) continue;
       const top = TOPS.includes(kind);
-      if (!top && kind !== 'deck') continue;
+      if (!top && kind !== 'deck' && kind !== 'kerbSide') continue;
       const { pos, idx } = r;
       for (let q = 0; q < idx.length; q += 3) {
         const a = idx[q] * 3, b = idx[q + 1] * 3, c = idx[q + 2] * 3;

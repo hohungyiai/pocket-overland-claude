@@ -3682,6 +3682,9 @@ export async function buildPasirRisCourse(
   const MAT = {
     road: flatMat(0x4a4c50, -3, asphaltTex),
     kerb: flatMat(0xb9b5aa, -2),
+    // (A kerb's side down to the ground, the user's rule S3: kept apart from
+    // the kerb's top, which the checks read as the kerb, and lit upright.)
+    kerbSide: flatMat(0xb9b5aa, -2),
     white: flatMat(0xf2efe4, -5),
     yellow: flatMat(0xe0b52a, -5),
     box: flatMat(0xe0b52a, -5),
@@ -3713,7 +3716,7 @@ export async function buildPasirRisCourse(
         continue;
       }
       if (key !== 'wall' && key !== 'roof') {
-        accMesh(acc, MAT[key], kit, key === 'deck' || key === 'rail');
+        accMesh(acc, MAT[key], kit, key === 'deck' || key === 'rail' || key === 'kerbSide');
         cost(`mesh: ${key}`, '', t0);
         continue;
       }
@@ -9113,7 +9116,7 @@ export async function buildPasirRisCourse(
         let dr = Infinity;
         for (const t of [0.25, 0.5, 0.75]) {
           const x = A[0] + (B[0] - A[0]) * t, z = A[1] + (B[1] - A[1]) * t;
-          dr = Math.min(dr, top - PARAPET_H - Math.min(heightAt(x + A[6] * 0.6, z + A[7] * 0.6), heightAt(x + A[6] * 1.6, z + A[7] * 1.6)));
+          dr = Math.min(dr, top - PARAPET_H - Math.min(groundY(x + A[6] * 0.6, z + A[7] * 0.6), groundY(x + A[6] * 1.6, z + A[7] * 1.6)));
         }
         if (!(dr > GAP_DROP)) continue;
         used.add(a), used.add(best);
@@ -9210,7 +9213,7 @@ export async function buildPasirRisCourse(
       for (let q = 0, m = Math.max(1, Math.ceil(L / 0.5)); q < m; q++) {
         const [ax, az, ya] = P(q / m), [bx, bz, yb] = P((q + 1) / m);
         const mx = (ax + bx) / 2, mz = (az + bz) / 2, my = (ya + yb) / 2;
-        if (my - heightAt(mx - nx * 0.6, mz - nz * 0.6) < JOINT_DECK_FROM || hasUnder(mx - nx * 0.1, mz - nz * 0.1, my)) continue;
+        if (my - groundY(mx - nx * 0.6, mz - nz * 0.6) < JOINT_DECK_FROM || hasUnder(mx - nx * 0.1, mz - nz * 0.1, my)) continue;
         const foot = sheetAt(mx, mz, my - 0.05);
         if (!(foot === foot) || my - foot < 0.3 || my - foot > 2) continue;
         const w = underIn(mx, mz, my);
@@ -9230,7 +9233,7 @@ export async function buildPasirRisCourse(
       // the next tile drawing its own side along it?)
       const wants = (t: number) => {
         const [x, z, yr] = P(t);
-        const dr = yr - Math.min(heightAt(x + nx * 0.6, z + nz * 0.6), heightAt(x + nx * 1.6, z + nz * 1.6));
+        const dr = yr - Math.min(groundY(x + nx * 0.6, z + nz * 0.6), groundY(x + nx * 1.6, z + nz * 1.6));
         if (!(dr > GAP_DROP) || !raisedBy(x, z, yr)) return NaN;
         const goesOn = (o: number) => {
           const ox = x + nx * o, oz = z + nz * o;
@@ -9242,7 +9245,7 @@ export async function buildPasirRisCourse(
         if (goesOn(0.6) || goesOn(1.0) || inJoint(ix, iz, yr) || inPaving(ix, iz, yr) || owned(x, z, yr, nx, nz)) return NaN;
         return dr;
       };
-      const under = (x: number, z: number, y: number) => y - heightAt(x - nx * 0.6, z - nz * 0.6);
+      const under = (x: number, z: number, y: number) => y - groundY(x - nx * 0.6, z - nz * 0.6);
       for (const [ga, gb] of tall) {
         const m = Math.max(1, Math.ceil(((gb - ga) * L) / 0.5));
         for (let q = 0; q < m; q++) {
@@ -9252,8 +9255,8 @@ export async function buildPasirRisCourse(
           // (Carried 3 cm into the side it meets at either end of the gap, so no hairline shows between them.)
           const ta = q === 0 && ga > 0 ? pa - 0.03 / L : pa, tb = q === m - 1 && gb < 1 ? pb + 0.03 / L : pb;
           const [ax, az, ya] = P(ta), [bx, bz, yb] = P(tb);
-          const da = Math.max(0, ya - Math.min(heightAt(ax + nx * 0.6, az + nz * 0.6), heightAt(ax + nx * 1.6, az + nz * 1.6)));
-          const db = Math.max(0, yb - Math.min(heightAt(bx + nx * 0.6, bz + nz * 0.6), heightAt(bx + nx * 1.6, bz + nz * 1.6)));
+          const da = Math.max(0, ya - Math.min(groundY(ax + nx * 0.6, az + nz * 0.6), groundY(ax + nx * 1.6, az + nz * 1.6)));
+          const db = Math.max(0, yb - Math.min(groundY(bx + nx * 0.6, bz + nz * 0.6), groundY(bx + nx * 1.6, bz + nz * 1.6)));
           const s = Math.hypot(ax - x0, az - z0);
           // (Below the road too, only where nothing stands there yet: a beam or wall drawn twice over fights itself.)
           const low = isBare((pa + pb) / 2);
@@ -9309,21 +9312,6 @@ export async function buildPasirRisCourse(
     // from a road lower beside it, the ground showed on under the kerb. So
     // wherever nothing stands under a kerb's outer edge, its side is drawn
     // down to the ground as drawn, the 4 m lattice's, a little into it.)
-    const lat = new Map<number, number>();
-    const hv = (i: number, j: number) => {
-      const q = i * 100003 + j;
-      let h = lat.get(q);
-      if (h === undefined) lat.set(q, (h = heightAt(WB.minX + i * STEP, WB.minZ + j * STEP)));
-      return h;
-    };
-    const shown = (x: number, z: number) => {
-      const u = (x - WB.minX) / STEP, v = (z - WB.minZ) / STEP;
-      const i = Math.floor(u), j = Math.floor(v), fx = u - i, fz = v - j;
-      const a = hv(i, j), b = hv(i, j + 1), c = hv(i + 1, j);
-      if (fx + fz <= 1) return a + fx * (c - a) + fz * (b - a);
-      const e = hv(i + 1, j + 1);
-      return e + (1 - fx) * (b - e) + (1 - fz) * (c - e);
-    };
     for (const e of E) {
       const [x0, z0, y0, x1, z1, y1, nx, nz] = e;
       const L = Math.hypot(x1 - x0, z1 - z0);
@@ -9333,7 +9321,7 @@ export async function buildPasirRisCourse(
         const m = Math.max(1, Math.ceil(((gb - ga) * L) / 0.5));
         for (let q = 0; q < m; q++) {
           const [ax, az, ya] = P(ga + ((gb - ga) * q) / m), [bx, bz, yb] = P(ga + ((gb - ga) * (q + 1)) / m);
-          const fa = shown(ax + nx * 0.05, az + nz * 0.05) - 0.05, fb = shown(bx + nx * 0.05, bz + nz * 0.05) - 0.05;
+          const fa = groundY(ax + nx * 0.05, az + nz * 0.05) - 0.05, fb = groundY(bx + nx * 0.05, bz + nz * 0.05) - 0.05;
           if (ya - fa < 0.1 && yb - fb < 0.1) continue;
           // (Under an island's lawn carrying on from the kerb's top too: it
           // is hidden there. Left out wherever an island's ground was raised
@@ -10131,7 +10119,7 @@ export async function buildPasirRisCourse(
       );
       onTile('far', k, 'paving cut', (_kit, acc) => cutPaving(k, acc('road')));
       onTile('far', k, 'walls to kerb', (_kit, acc) => wallsToKerb(k, acc('deck')));
-      onTile('far', k, 'wall gaps', (kit, acc) => wallGaps(k, acc('deck'), acc('kerb'), kit));
+      onTile('far', k, 'wall gaps', (kit, acc) => wallGaps(k, acc('deck'), acc('kerbSide'), kit));
     }
   }
   /** (For the checks: the outline's sides within r of (x, z), and what each gets at its nearest point.) */
