@@ -72,6 +72,8 @@ export class Vehicle {
   }
   private readonly tmpQ = new THREE.Quaternion();
   private readonly tmpV = new THREE.Vector3();
+  private readonly grips = [0, 0, 0, 0];
+  private readonly off = [false, false, false, false];
 
   constructor(
     world: RAPIER_NS.World,
@@ -301,7 +303,14 @@ export class Vehicle {
     let onGround = 0;
     let worst: Surface | null = null;
     const axleLift = [0, 0];
+    // Off the road (surfaces marked offroad): what each wheel can put down
+    // (grip times the load on it), and the soft ground's pull.
+    const grips = this.grips;
+    const off = this.off;
+    let sink = 0;
     for (let i = 0; i < 4; i++) {
+      off[i] = false;
+      grips[i] = 0;
       if (c.wheelIsInContact(i)) {
         onGround++;
         const cp = c.wheelContactPoint(i);
@@ -310,6 +319,12 @@ export class Vehicle {
           c.setWheelFrictionSlip(i, s.grip);
           if (!worst || s.drag > worst.drag) worst = s;
           c.setWheelBrake(i, brake + s.drag);
+          if (s.offroad) {
+            off[i] = true;
+            const load = Math.max(0, c.wheelSuspensionForce(i) ?? 0);
+            grips[i] = s.grip * load;
+            sink += (s.sink ?? 0) * load;
+          }
         }
       } else {
         axleLift[i < 2 ? 0 : 1]++;
@@ -323,9 +338,25 @@ export class Vehicle {
       const open = !this.diffLock && axleLift[axle] > 0;
       const inAir = !c.wheelIsInContact(i);
       let f = drive;
-      if (open) f *= 0.2;
+      if (off[2 * axle] || off[2 * axle + 1]) {
+        // Off the road. Open: both wheels get what the weaker one can grip
+        // (a lifted wheel grips nothing). Locked: each wheel its own.
+        if (!this.diffLock) f = Math.sign(drive) * Math.min(Math.abs(drive), grips[2 * axle], grips[2 * axle + 1]);
+        else if (inAir) f = 0;
+      } else if (open) f *= 0.2;
       else if (this.diffLock && inAir && axleLift[axle] < 2) f = 0; // locked: grounded wheel gets it
       c.setWheelEngineForce(i, f);
+    }
+    // Soft ground: the tyres sink in and it pulls against the way the car
+    // is rolling (never so hard that it starts it rolling back).
+    if (sink > 0) {
+      const lv = this.body.linvel();
+      const sp = Math.hypot(lv.x, lv.z);
+      if (sp > 0.01) {
+        const m = this.body.mass();
+        const dv = Math.min(sp, (sink / m) * dt);
+        this.body.applyImpulse({ x: (-lv.x / sp) * dv * m, y: 0, z: (-lv.z / sp) * dv * m }, true);
+      }
     }
 
     c.updateVehicle(dt);

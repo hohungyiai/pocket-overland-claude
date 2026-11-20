@@ -19,7 +19,9 @@ const record = process.argv.includes('--record');
 const RUNS = [
   ['pasirris', null],
   ['trial', null],
-  ['ubintrail', null],
+  // (Ubin: only the first 4 s, while the car is still on the lane; after
+  // that it is on grass, which is off the road and drives differently.)
+  ['ubintrail', null, 4],
 ];
 // The script: [seconds, throttle, steer, low range, diff lock]
 const SCRIPT = [
@@ -42,12 +44,12 @@ const TOL = { pos: 0.05, speed: 0.05, yaw: 0.01 };
   const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const out = {};
   try {
-    for (const [course, at] of RUNS) {
+    for (const [course, at, upTo] of RUNS) {
       const page = await browser.newPage({ viewport: { width: 480, height: 270 } });
       page.on('pageerror', (e) => console.log('pageerror', e.message));
       await page.goto(`http://localhost:${PORT}/?course=${course}&debug`);
       await page.waitForFunction(() => window.game, null, { timeout: 240000 });
-      out[course] = await page.evaluate(
+      const track = await page.evaluate(
         async ({ at, script }) => {
           const g = window.game;
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -90,6 +92,7 @@ const TOL = { pos: 0.05, speed: 0.05, yaw: 0.01 };
         },
         { at, script: SCRIPT },
       );
+      out[course] = upTo ? track.slice(0, upTo * 4) : track;
       await page.close();
     }
   } finally {

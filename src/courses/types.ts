@@ -6,6 +6,15 @@ export interface Surface {
   grip: number;
   /** Rolling resistance, applied as a light per-wheel brake. */
   drag: number;
+  /**
+   * Off the road (trails only; no road surface sets it). Here the car's
+   * differential works as a real one does: with it open, both wheels on an
+   * axle get only what the weaker one can grip, so a light or lifted wheel
+   * takes the axle's drive away. Locking the diff gives each wheel its own.
+   */
+  offroad?: boolean;
+  /** Soft ground the tyres sink into: rolling resistance as a share of the wheel's load. */
+  sink?: number;
 }
 
 export const SURFACES = {

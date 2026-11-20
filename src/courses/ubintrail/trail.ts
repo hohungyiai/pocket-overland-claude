@@ -74,9 +74,9 @@ const TUNE = {
   duneFace: 12,
   ...((globalThis as { __ubinTune?: object }).__ubinTune ?? {}),
 };
-const SOFT_SAND: Surface = { name: 'Soft sand', grip: TUNE.sandGrip, drag: TUNE.sandDrag };
-const LOOSE: Surface = { name: 'Loose gravel', grip: TUNE.looseGrip, drag: TUNE.looseDrag };
-const RUTS: Surface = { name: 'Washout', grip: 0.78, drag: 1.5 };
+const SOFT_SAND: Surface = { name: 'Soft sand', grip: TUNE.sandGrip, drag: TUNE.sandDrag, offroad: true, sink: 0.1 };
+const LOOSE: Surface = { name: 'Loose gravel', grip: TUNE.looseGrip, drag: TUNE.looseDrag, offroad: true };
+const RUTS: Surface = { name: 'Washout', grip: 0.78, drag: 1.5, offroad: true };
 
 /** Find the route on the lanes and tracks (paths only if nothing else joins). */
 function findRoute(map: UbinMap): XZ[] {

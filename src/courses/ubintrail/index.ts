@@ -22,8 +22,13 @@ const SEED = 1965;
 const NEAR_STEP = 2; // metres between ground points (1 m on obstacle tiles)
 
 const LANE: Surface = { name: 'Lane', grip: 0.98, drag: 0.8 };
-const TRACK: Surface = { name: 'Dirt track', grip: 0.82, drag: 1.8 };
-const FOREST: Surface = { name: 'Forest floor', grip: 0.72, drag: 3.5 };
+const TRACK: Surface = { name: 'Dirt track', grip: 0.82, drag: 1.8, offroad: true };
+const FOREST: Surface = { name: 'Forest floor', grip: 0.72, drag: 3.5, offroad: true };
+// (Ubin's own copies of the shared beach, wetland and grass: off the road,
+// so the diff and soft ground work as they do on the trails.)
+const BEACH: Surface = { ...SURFACES.sand, offroad: true, sink: 0.08 };
+const MUD: Surface = { ...SURFACES.mud, offroad: true, sink: 0.12 };
+const GRASS: Surface = { ...SURFACES.grass, offroad: true };
 
 interface Tree {
   x: number;
@@ -64,9 +69,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       return kind === 'lane' ? LANE : TRACK;
     }
     const m = ground.maskAt(x, z);
-    if (m & MASK.beach) return SURFACES.sand;
-    if (m & MASK.wetland) return SURFACES.mud;
-    return valueNoise(x / 20, z / 20, SEED + 3) > 0.55 ? FOREST : SURFACES.grass;
+    if (m & MASK.beach) return BEACH;
+    if (m & MASK.wetland) return MUD;
+    return valueNoise(x / 20, z / 20, SEED + 3) > 0.55 ? FOREST : GRASS;
   }
 
   // ---------- Colours ----------
