@@ -74,3 +74,36 @@ export const PUAKA: TrailDef = {
   clean: 'Clean run over Puaka Hill: every obstacle on the hard line. The whole island is below you.',
   finish: 'The top of Puaka Hill. The whole island is below you.',
 };
+
+/**
+ * Super hard: out to Chek Jawa. From the end of the lane on Jalan Durian,
+ * the old track east along the south shore: a ford, tidal sand, an
+ * off-camber stretch above the water and deep mud at the mangrove edge,
+ * each one long, then through the coastal forest to the Chek Jawa shore.
+ * No signs and no gate. A longer way exists, inland by Jalan Sam Heng and
+ * the old track past Petai and Balai quarries, for whoever finds it.
+ */
+export const CHEK_JAWA: TrailDef = {
+  id: 'chekjawa',
+  name: 'Pulau Ubin: Chek Jawa',
+  grade: 'hard',
+  paths: true,
+  waypoints: [
+    [2586, -123], // the end of the lane on Jalan Durian
+    [3209, 171], // the south shore
+    [3688, -14], // Punai Hut
+    [4106, 90], // the Chek Jawa shore, by the floating pontoon
+  ],
+  obstacles: [
+    { kind: 'ford', label: 'Ford', at: [2930, -110], len: 40, needs: { low: true }, p: { depth: 0.9, bank: 2.4, out: 8 } },
+    { kind: 'sand', label: 'Tidal sand', at: [3120, -40], len: 140, needs: { speed: true }, p: { tidal: 1, duneH: 2.6, duneFace: 10, dip: 0.35 } },
+    { kind: 'camber', label: 'Off-camber shore', at: [3230, 172], len: 150, needs: {}, p: { deg: 17, dir: 1 } },
+    { kind: 'mud', label: 'Mangrove mud', at: [3500, 90], len: 190, needs: { low: true, diff: true } },
+  ],
+  wayRound: 'hidden',
+  detour: { waypoints: [[2586, -123], [2122, -210], [2636, -502], [3258, -240], [3688, -14]], skips: [0, 1, 2, 3] },
+  end: { label: 'Chek Jawa', sign: ['Chek Jawa', 'Wetlands'] },
+  startSign: ['Chek Jawa', 'Old track → 2 km'],
+  clean: 'Chek Jawa, the hard way: every obstacle on the hard line. The tide is out and the flats are yours.',
+  finish: 'Chek Jawa. The tide is out and the flats are yours.',
+};

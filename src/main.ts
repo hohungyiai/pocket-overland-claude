@@ -4,7 +4,7 @@ import { buildUbinCourse } from './courses/ubin';
 import { buildEastCoastCourse } from './courses/eastcoast';
 import { buildPasirRisCourse } from './courses/osmcity';
 import { buildUbinTrailCourse } from './courses/ubintrail';
-import { PUAKA } from './courses/ubintrail/trails';
+import { CHEK_JAWA, PUAKA } from './courses/ubintrail/trails';
 import { skyTexture, type ArtStyle } from './courses/detail';
 import { Minimap } from './minimap';
 import { FullMap } from './fullmap';
@@ -35,6 +35,7 @@ const COURSES = {
   // The first off-road trail: Pulau Ubin, round Ketam Quarry.
   ubintrail: buildUbinTrailCourse,
   ubinpuaka: (...a: Parameters<typeof buildUbinTrailCourse>) => buildUbinTrailCourse(a[0], a[1], a[2], a[3], PUAKA),
+  ubinchekjawa: (...a: Parameters<typeof buildUbinTrailCourse>) => buildUbinTrailCourse(a[0], a[1], a[2], a[3], CHEK_JAWA),
   ubin: buildUbinCourse,
 } as const;
 type CourseId = keyof typeof COURSES;

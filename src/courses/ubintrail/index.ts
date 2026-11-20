@@ -112,7 +112,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       else out.lerp(C.lane, edge);
     }
     const o = trail.surface(x, z);
-    if (o) out.lerp(o.name === 'Soft sand' ? C.sand : o.name === 'Loose gravel' ? C.rock : C.dirt, 0.7);
+    if (o) out.lerp(/sand/i.test(o.name) ? C.sand : /rock|ledge|gravel/i.test(o.name) ? C.rock : /mud|ford/i.test(o.name) ? C.mud : C.dirt, 0.7);
     return out;
   }
 
@@ -653,6 +653,31 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const ponds = new THREE.Mesh(geo, waterMat(0x2f5f52, 0.88, 1));
     ponds.receiveShadow = true;
     scene.add(ponds);
+  }
+
+  // Fords: brown water across the track, level with the ground either side.
+  for (const o of trail.obstacles) {
+    if (o.kind !== 'ford') continue;
+    const len = o.s1 - o.s0;
+    const a = o.line.at(0);
+    const lvl = heightAt(a.x, a.z) - 0.3;
+    const P: number[] = [];
+    const I: number[] = [];
+    for (let s = 2; s <= len - 2; s += 1) {
+      const p = o.line.at(s);
+      for (const side of [-7, 7]) P.push(p.x - p.tz * side, lvl, p.z + p.tx * side);
+      const k = P.length / 3 - 2;
+      if (k >= 2) I.push(k - 2, k - 1, k, k - 1, k + 1, k);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+    geo.setIndex(I);
+    geo.computeVertexNormals();
+    if (geo.attributes.normal.getY(0) < 0) geo.setIndex(I.map((_, i) => I[i - (i % 3) + [0, 2, 1][i % 3]]));
+    geo.computeVertexNormals();
+    const ford = new THREE.Mesh(geo, waterMat(0x6a5f3c, 0.86, 1));
+    ford.receiveShadow = true;
+    scene.add(ford);
   }
 
   // ---------- Ubin Jetty and the bumboats ----------
