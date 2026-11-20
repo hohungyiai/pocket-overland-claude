@@ -8338,7 +8338,7 @@ export async function buildPasirRisCourse(
   const islandTopIn = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
     const segs = outSegs(w);
     const n = v1 - v0 + 1;
-    const out: XZ[] = [], half: number[] = [], mid: number[] = [], apart: boolean[] = [], over: boolean[] = [], even: boolean[] = [], cramp: boolean[] = [], M: (OutMark | null)[] = [];
+    const out: XZ[] = [], half: number[] = [], mid: number[] = [], apart: boolean[] = [], over: boolean[] = [], even: boolean[] = [], cramp: boolean[] = [], hollow: boolean[] = [], M: (OutMark | null)[] = [];
     for (let v = v0; v <= v1; v++) {
       if ((v - v0) % 8 === 7) yield;
       const mm = mark(v);
@@ -8363,7 +8363,7 @@ export async function buildPasirRisCourse(
         }
       half.push(d / 2);
       // (Its middle as high as both sides' kerbs, the far one's from what is drawn there.)
-      let m = NaN, ap = false, ov = false, fv = NaN, cr = false;
+      let m = NaN, ap = false, ov = false, fv = NaN, cr = false, ho = false;
       if (mm && d < Infinity) {
         const f = farTop(mm, P[v][0] - nx * (d + 0.05), P[v][1] - nz * (d + 0.05));
         fv = f;
@@ -8411,12 +8411,18 @@ export async function buildPasirRisCourse(
           // lower kerb, a step of 0.25 m at 1614.9,954.9.)
           if (farOn) m = Math.min(Math.max(gm, Math.min(t0, ff)), Math.max(t0, ff));
           else if (f === f) m = Math.min(m, gm);
+          // (The ground in the middle under both kerbs' tops: a hollow between
+          // two raised roads, the lawn a bank from one kerb's top to the
+          // other's over it, as on an island raised to its roads, not a shelf
+          // down an embankment: see the steep-lawn rule.)
+          ho = farOn && gm < Math.min(t0, ff);
         }
       }
       mid.push(m);
       apart.push(ap);
       even.push(mm !== null && d < 3 && !ap && fv === fv);
       cramp.push(cr);
+      hollow.push(ho);
       over.push(ov);
     }
     // (The sections within r along the kerb either side of i, cum rising
@@ -8558,8 +8564,12 @@ export async function buildPasirRisCourse(
       // dark lump of grass in it at 1262.5,1902.9. Nor where one lies within
       // 2 m along: the ray across missed the far kerb for a metre there, and
       // the sections left out were a pit with upright grass sides.)
+      // (Nor over a hollow between two raised roads, the lawn a bank from
+      // kerb to kerb: left out, the higher road's wall stood over a trough
+      // between it and the lower road's lawn at -183.1,199.9, where the
+      // user's rule B3 wants the bank there is room for.)
       let narrow = false;
-      near(i, 2, (j) => void (narrow ||= half[j] < 3));
+      near(i, 2, (j) => void (narrow ||= half[j] < 3 || hollow[j]));
       if (fill === -Infinity && !narrow) {
         let steep = false;
         for (let d = 0.5; d <= Math.min(3, wi) && !steep; d += 0.5) {
@@ -9408,6 +9418,12 @@ export async function buildPasirRisCourse(
         return Math.hypot(ax + dx * t - x, az + dz * t - z) < r + extra;
       });
     for (const e of E) {
+      // (Before each edge, not after: most go on to the next before the
+      // end, and a run of them held a slice up 168 ms at 1974,582.)
+      if (pause()) {
+        yield;
+        slice = performance.now();
+      }
       const [x0, z0, y0, x1, z1, y1, nx, nz] = e;
       (on[0] = nx), (on[1] = nz);
       const L = Math.hypot(x1 - x0, z1 - z0);
@@ -9469,12 +9485,16 @@ export async function buildPasirRisCourse(
         // 1262.5,1902.9. Counted to the far road's surface, a little past
         // its kerb: held short of 3 m, never a side left out where no lawn
         // is laid.)
-        for (let o = 1.25; o <= 6; o += 0.25) {
-          const h = drawnRoadY(x + nx * o, z + nz * o, yr);
-          if (!(h === h)) continue;
-          if (Math.abs(h + ROAD_LIFT + 0.12 - yr) < 0.5 && yr - groundY(x + nx * KERB_OUT, z + nz * KERB_OUT) <= (o <= 3.25 ? NARROW_DEEP : ISLE_DEEP)) return NaN;
-          break;
-        }
+        // (The ground first, it is quick: asked at every quarter metre
+        // out, beside every wall, the roads near held a slice up 133 ms.)
+        const gk = yr - groundY(x + nx * KERB_OUT, z + nz * KERB_OUT);
+        if (gk <= NARROW_DEEP)
+          for (let o = 1.25; o <= 6; o += 0.25) {
+            const h = drawnRoadY(x + nx * o, z + nz * o, yr);
+            if (!(h === h)) continue;
+            if (Math.abs(h + ROAD_LIFT + 0.12 - yr) < 0.5 && gk <= (o <= 3.25 ? NARROW_DEEP : ISLE_DEEP)) return NaN;
+            break;
+          }
         return dr;
       };
       const under = (x: number, z: number, y: number) => {
@@ -9536,10 +9556,6 @@ export async function buildPasirRisCourse(
             addSheet(ax, az, bx, bz, Math.min(ya - (low ? da + 0.3 : 0), yb - (low ? db + 0.3 : 0)), Math.max(ya + parapetTop(pa_), yb + parapetTop(pb_)));
           }
         }
-      }
-      if (pause()) {
-        yield;
-        slice = performance.now();
       }
     }
     // (The user's rule S3, 19 Nov: wherever a road stands over the ground
