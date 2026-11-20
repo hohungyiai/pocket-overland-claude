@@ -8525,24 +8525,39 @@ export async function buildPasirRisCourse(
       const ends = new Map<number, number[]>();
       const cell = (x: number, z: number) => Math.floor(x / 0.5) * 65536 + Math.floor(z / 0.5);
       const downSet = new Set(downs);
+      const endOf = new Map<number, number>();
       secs.forEach((sec, si) => {
         if (!sec) return;
         const q = sec[sec.length - (downSet.has(si) ? 2 : 1)];
+        endOf.set(si, q);
         const c = cell(lawn.pos[3 * q], lawn.pos[3 * q + 2]);
         (ends.get(c) ?? ends.set(c, []).get(c)!).push(si);
       });
+      // (And joined to it there, the two ends one point: left apart, as much
+      // as 0.35 m, the ground showed up between them, a slit in the grass
+      // the watertight check found at 55 places. Of two ends turned down
+      // both, the later joins the earlier's.)
       for (const si of downs) {
         const sec = secs[si]!;
-        const q = sec[sec.length - 2], x = lawn.pos[3 * q], y = lawn.pos[3 * q + 1], z = lawn.pos[3 * q + 2];
-        let meets = false;
-        for (let a = -1; a <= 1 && !meets; a++)
-          for (let b = -1; b <= 1 && !meets; b++)
+        const q = endOf.get(si)!, x = lawn.pos[3 * q], y = lawn.pos[3 * q + 1], z = lawn.pos[3 * q + 2];
+        let meet = -1, best = 0.35;
+        for (let a = -1; a <= 1; a++)
+          for (let b = -1; b <= 1; b++)
             for (const sj of ends.get(cell(x, z) + a * 65536 + b) ?? []) {
               if (sj === si || !farKerbXZ(secs[sj]![0], sec[0])) continue;
-              const o = secs[sj]!, r = o[o.length - (downSet.has(sj) ? 2 : 1)];
-              if (Math.hypot(lawn.pos[3 * r] - x, lawn.pos[3 * r + 2] - z) < 0.35 && Math.abs(lawn.pos[3 * r + 1] - y) < 0.06) meets = true;
+              const r = endOf.get(sj)!, dd = Math.hypot(lawn.pos[3 * r] - x, lawn.pos[3 * r + 2] - z);
+              if (dd < best && Math.abs(lawn.pos[3 * r + 1] - y) < 0.06) (best = dd), (meet = sj);
             }
-        if (meets) sec.pop();
+        if (meet < 0) continue;
+        // (Its turn-down kept, under the joined end: dropped, or folded up
+        // into the end, the sections beside it, still turned down, met it
+        // with a triangle missing at each side, open to the hollow under the
+        // grass at 538.2,2907.9. Under the joined end it lies under the
+        // grass of both.)
+        const e = downSet.has(meet) && meet > si ? q : endOf.get(meet)!;
+        const ex = lawn.pos[3 * e], ey = lawn.pos[3 * e + 1], ez = lawn.pos[3 * e + 2];
+        sec[sec.length - 2] = e;
+        sec[sec.length - 1] = put(ex, Math.min(ey, groundY(ex, ez) - 0.05), ez);
       }
     }
     // (Points of different sections at one spot, one height, the highest:
@@ -8580,7 +8595,9 @@ export async function buildPasirRisCourse(
     // in mid-air over the ground, a dark slit under it seen along the kerb:
     // a bank down to the ground as drawn there, outward from the run, 1 in
     // 2. Upright, it stood across a grass verge as a step 0.3 m tall at
-    // 1866.6,1870.2. Upright still where the bank would reach a road.)
+    // 1866.6,1870.2. Upright still where the bank would reach a road, and
+    // past 0.6 m: down a road's embankment the bank stood out from the
+    // slope as a slab, dark green, at 1107.5,1952.4 and 944.7,2047.5.)
     // (The ground as drawn, or an island's raised ground where it is one:
     // inside an island raised to the roads round it, a run's end banked
     // down to the 4 m lattice under the raised ground, a dark wedge in the
@@ -8594,20 +8611,40 @@ export async function buildPasirRisCourse(
       // path, the step stayed at 1866.6,1870.2.)
       const blocked = (x: number, z: number, y: number) => drawnRoadAt(x, z, y + 0.05) || onPaved(x, z, y + 0.05) || ((r) => !!r && r.d < PHALF[r.line] + 0.05)(pathIdx.nearest(x, z, 4));
       const toe = (x: number, y: number, z: number) => {
-        const r = Math.min(1.2, 2 * Math.max(0, y - gnd(x, z)));
+        const r = y - gnd(x, z) > 0.6 ? 0 : 2 * Math.max(0, y - gnd(x, z));
         for (const f of [0.5, 1]) if (blocked(x + ux * r * f, z + uz * r * f, gnd(x + ux * r * f, z + uz * r * f) - 0.05)) return [x, Math.min(y, gnd(x, z) - 0.05), z];
         const tx = x + ux * r, tz = z + uz * r;
         return [tx, Math.min(y, gnd(tx, tz) - 0.05), tz];
       };
       for (let c = 0; c + 1 < sec.length; c++) {
         const a = sec[c], b = sec[c + 1];
+        if (a === b) continue;
         const ax = p[3 * a], ay = p[3 * a + 1], az = p[3 * a + 2], bx = p[3 * b], by = p[3 * b + 1], bz = p[3 * b + 2];
         const ga = Math.min(ay, gnd(ax, az) - 0.05), gb = Math.min(by, gnd(bx, bz) - 0.05);
         if (ay - ga < 0.12 && by - gb < 0.12) continue;
+        // (Its foot along the ground every half metre: from the two corners'
+        // feet alone, straight, a bank 5 m across down a road's embankment
+        // stood 1.2 m over the ground in its middle at 1107.5,1952.4. The
+        // top kept one edge with the lawn's, in fans from its two corners.)
+        const m = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.5)), h = m >> 1;
+        const T: number[] = [];
+        for (let i = 0; i <= m; i++) {
+          const t = toe(ax + ((bx - ax) * i) / m, ay + ((by - ay) * i) / m, az + ((bz - az) * i) / m);
+          T.push(put(t[0], t[1], t[2]));
+        }
         const ta = toe(ax, ay, az), tb = toe(bx, by, bz);
-        const q0 = put(ax, ay, az), q1 = put(bx, by, bz), q2 = put(tb[0], tb[1], tb[2]), q3 = put(ta[0], ta[1], ta[2]);
-        if ((bz - az) * ox - (bx - ax) * oz >= 0) lawn.idx.push(q0, q1, q2, q0, q2, q3);
-        else lawn.idx.push(q0, q2, q1, q0, q3, q2);
+        const q0 = put(ax, ay, az), q1 = put(bx, by, bz), q2 = T[m], q3 = T[0];
+        const tri = (u: number, v: number, w: number) => ((bz - az) * ox - (bx - ax) * oz >= 0 ? lawn.idx.push(u, v, w) : lawn.idx.push(u, w, v));
+        tri(q0, q1, T[h]);
+        for (let i = 0; i < m; i++) tri(i < h ? q0 : q1, T[i + 1], T[i]);
+        // (The bank's own side where the run's end stops, upright down to
+        // the ground: open, the hollow under the lawn showed through a
+        // triangle beside it, the watertight check's 48 places from 1107.5,1952.4.)
+        for (const [e, x, y, z, g, t, qe, qt] of [[c === 0, ax, ay, az, ga, ta, q0, q3], [c + 2 === sec.length || sec[c + 2] === b, bx, by, bz, gb, tb, q1, q2]] as const) {
+          if (!e || y - g < 0.12 || Math.hypot(t[0] - x, t[2] - z) < 0.01) continue;
+          const f = put(x, g, z);
+          lawn.idx.push(qe, qt, f, qe, f, qt);
+        }
       }
     };
     for (let i = 0; i < n; i++) {
@@ -8626,8 +8663,8 @@ export async function buildPasirRisCourse(
       const a = secs[i], b = secs[i + 1];
       if (!a || !b) continue;
       for (let c = 0; c + 1 < Math.min(a.length, b.length); c++) {
-        faceUp(lawn, a[c], b[c], a[c + 1]);
-        faceUp(lawn, a[c + 1], b[c], b[c + 1]);
+        if (a[c] !== a[c + 1] && a[c] !== b[c]) faceUp(lawn, a[c], b[c], a[c + 1]);
+        if (b[c] !== b[c + 1] && a[c + 1] !== b[c] && a[c + 1] !== b[c + 1]) faceUp(lawn, a[c + 1], b[c], b[c + 1]);
       }
     }
   };
@@ -9438,6 +9475,7 @@ export async function buildPasirRisCourse(
       const L = Math.hypot(x1 - x0, z1 - z0);
       if (!(L > 0.005) || !(y0 === y0 && y1 === y1)) continue;
       const P = (t: number) => [x0 + (x1 - x0) * t + nx * 0.002, z0 + (z1 - z0) * t + nz * 0.002, y0 + (y1 - y0) * t];
+      (on[0] = nx), (on[1] = nz);
       // (Only a side standing within 6 cm of the kerb's edge closes it: round
       // a tight corner in centimetre pieces, a wall 0.1 m off was taken for
       // the kerb's own side and the corner left open, I2 at -2772.4,2246.3.)
@@ -9450,9 +9488,13 @@ export async function buildPasirRisCourse(
           // (A deck's kerb, the ground well down under the road itself: as
           // deep as its edge beam, not to the ground. Down to the ground, a
           // gap of 0.4 m in a flyover's beam stood a needle 10 m tall up to
-          // it from the grass at 1777.7,1399.1.)
-          if (ya - groundY(ax - nx * 0.6, az - nz * 0.6) >= JOINT_DECK_FROM) fa = Math.max(fa, ya - DECK_DEPTH);
-          if (yb - groundY(bx - nx * 0.6, bz - nz * 0.6) >= JOINT_DECK_FROM) fb = Math.max(fb, yb - DECK_DEPTH);
+          // it from the grass at 1777.7,1399.1. Only a deck's, a deck road's
+          // strip in from it: a road raised on its walls kept to the ground,
+          // or its walls stood open at 1147.6,1933.3. And only with room to
+          // see under it, 2.5 m under its beam: lower, the gap under the
+          // beam was a slit 0.9 m tall at 1228.4,1900.)
+          if (ya - groundY(ax - nx * 0.6, az - nz * 0.6) >= DECK_DEPTH + 2.5 && underIn(ax, az, ya) > 0) fa = Math.max(fa, ya - DECK_DEPTH);
+          if (yb - groundY(bx - nx * 0.6, bz - nz * 0.6) >= DECK_DEPTH + 2.5 && underIn(bx, bz, yb) > 0) fb = Math.max(fb, yb - DECK_DEPTH);
           // (Under an island's lawn carrying on from the kerb's top too: it
           // is hidden there. Left out wherever an island's ground was raised
           // near the kerb, it was left out beside a slip road 0.8 m over the
