@@ -7,7 +7,8 @@ import * as D from '../detail';
 import type { ArtStyle } from '../detail';
 import { SURFACES, type Course, type MapData, type Surface, type XZ } from '../types';
 import { fill, MASK, UbinGround, type UbinMap } from './ground';
-import { UbinTrail } from './trail';
+import { UbinTrail, type TrailDef } from './trail';
+import { KETAM } from './trails';
 
 type Rapier = typeof RAPIER_NS;
 
@@ -39,14 +40,16 @@ interface Tree {
   kind: 'rain' | 'almond' | 'palm' | 'casuarina' | 'mangrove' | 'shrub';
 }
 
-export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: Rapier, opts: { style?: ArtStyle } = {}): Promise<Course> {
+export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: Rapier, opts: { style?: ArtStyle } = {}, def: TrailDef = KETAM): Promise<Course> {
   const detailed = opts.style !== 'stylized';
   const map: UbinMap = await (await fetch(UBIN_MAP)).json();
-  const trail = new UbinTrail(map);
-  // The ways round the obstacles are tracks too (for the ground and the map).
-  trail.obstacles.forEach((o, i) =>
-    map.roads.push({ id: -1 - i, name: 'Way round', kind: 'track', hw: 'track', surface: 'dirt', width: 3.2, nodes: [], pts: o.bypass.pts }),
-  );
+  const trail = new UbinTrail(map, def);
+  // The ways round the obstacles are tracks too (for the ground and the
+  // map). (A hidden detour is on the map's own tracks and paths already.)
+  if (def.wayRound === 'gate')
+    trail.obstacles.forEach((o, i) =>
+      map.roads.push({ id: -1 - i, name: 'Way round', kind: 'track', hw: 'track', surface: 'dirt', width: 3.2, nodes: [], pts: o.bypass.pts }),
+    );
   const ground = new UbinGround(map);
   ground.shape = (x, z) => trail.shape(x, z);
   const B = map.bounds;
@@ -737,12 +740,14 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     // A plane's front faces +z; turn it to face back along the route.
     return makeSign(lines, x, z, Math.atan2(-p.tx, -p.tz));
   };
-  for (const o of trail.obstacles) signAt([o.label], trail.route, o.s0 - 60, -1);
+  // (Named on the easy and medium trails; the hard one has no signs.)
+  if (def.wayRound === 'gate') for (const o of trail.obstacles) signAt([o.label], trail.route, o.s0 - 60, -1);
 
   // ---------- The ways round: a barrier until opened, then marker posts ----------
   const gateBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-  const gates = trail.obstacles.map((o) => {
+  const gates = trail.obstacles.flatMap((o) => {
     const g = o.gate;
+    if (!g) return [];
     const y = heightAt(g.x, g.z);
     const group = new THREE.Group();
     const log = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 5.5, 8).rotateZ(Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x5e4a3a, roughness: 1 }));
@@ -781,12 +786,11 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     scene.remove(sign);
     posts.visible = false;
     scene.add(posts);
-    return { group, collider, posts, opened: false };
+    return [{ o, group, collider, posts, opened: false }];
   });
   const syncGates = () =>
-    trail.obstacles.forEach((o, i) => {
-      const g = gates[i];
-      if (!o.open || g.opened) return;
+    gates.forEach((g) => {
+      if (!g.o.open || g.opened) return;
       g.opened = true;
       world.removeCollider(g.collider, true);
       // The log is dragged off the track to one side (it lies across the
@@ -798,16 +802,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     });
 
   // ---------- Camp ----------
-  const campPoi = map.pois.find((p) => p.kind === 'camp' && Math.hypot(p.x - trail.camp.x, p.z - trail.camp.z) < 200);
-  const camp = { id: 'ubin-endut-senin', label: 'Endut Senin camp site', x: trail.camp.x, z: trail.camp.z, radius: 26 };
+  const campPoi = def.end.camp ? map.pois.find((p) => p.kind === 'camp' && Math.hypot(p.x - trail.camp.x, p.z - trail.camp.z) < 200) : null;
+  const camp = { id: def.end.camp?.id ?? `ubin-${def.id}-end`, label: def.end.camp?.label ?? def.end.label, x: trail.camp.x, z: trail.camp.z, radius: 26 };
   if (campPoi) {
     // On the lane by the camp site.
     camp.x = (trail.camp.x + campPoi.x) / 2;
     camp.z = (trail.camp.z + campPoi.z) / 2;
   }
 
-  signAt(['Endut Senin', 'Campsite'], trail.route, trail.route.length - 30, -1);
-  signAt(['Pulau Ubin', 'Ketam Trail \u2192 7 km'], trail.route, 22, -1);
+  signAt(def.end.sign, trail.route, trail.route.length - 30, -1);
+  signAt(def.startSign, trail.route, 22, -1);
 
   // ---------- Map ----------
   const mapData: MapData = {
@@ -837,7 +841,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         const p = o.line.at((o.s1 - o.s0) / 2);
         return { x: p.x, z: p.z, label: o.label };
       }),
-      { x: camp.x, z: camp.z, label: 'Camp' },
+      { x: camp.x, z: camp.z, label: def.end.camp ? 'Camp' : def.end.label },
       ...(jetty ? [{ x: jetty.pts[0][0], z: jetty.pts[0][1], label: 'Ubin Jetty' }] : []),
       ...map.pois.filter((p) => p.name && ['quarry', 'peak', 'place'].includes(p.kind)).map((p) => ({ x: p.x, z: p.z, label: p.name })),
     ],
@@ -878,7 +882,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   };
 
   return {
-    name: 'Pulau Ubin: Ketam Trail',
+    name: def.name,
     map: mapData,
     styles: true,
     sky: { background: 0xb9d3df, fog: 0xc8d8dc, fogNear: 140, fogFar: 560 },
@@ -898,7 +902,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     prepareAt: (x, z) => streamer.prepare(x, z, 300),
     solidAt: (x, z) => streamer.solidAt(x, z),
     streamStats: () => ({ ...streamer.stats, horizon: streamer.stats.horizon }),
-    camps: [camp],
+    camps: def.end.camp ? [camp] : [],
     update(time, _dt, cam, player) {
       wind.value = time;
       const at = player ?? cam;
