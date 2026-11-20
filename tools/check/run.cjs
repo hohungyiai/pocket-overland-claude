@@ -37,16 +37,16 @@ const CHECKS = [
   ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0],
   // (Known: seven real junctions where five or six roads meet at one point
   // in the map data; the ratchet is there to catch new ones.)
-  ['No junction offers more than four ways to go', 'arms.js', '__checkArms', 0, 7],
+  ['No junction offers more than four ways to go', 'arms.js', '__checkArms', 0, { pasirris: 7, whole: 4 }],
   ['No two junctions overlap', 'junctions.js', '__checkJunctionOverlap', 0],
   ['No kerb across a road', 'junctions.js', '__checkKerbAcross', 0],
   ['Junctions stay on their roads', 'junctions.js', '__checkJunctionSpill', 0],
-  ['No junction is paved more than 5.5 m from its roads, anywhere inside it', 'junctions.js', '__checkJunctionReach', 0, 35],
+  ['No junction is paved more than 5.5 m from its roads, anywhere inside it', 'junctions.js', '__checkJunctionReach', 0, { pasirris: 35, whole: 16 }],
   ['Crossings lie on their own road', 'crossings.js', '__checkCrossings', 0],
   ['No traffic light on a road or in a junction', 'crossings.js', '__checkLightPoles', 0],
   ['A junction\'s yellow box lies on its paving', 'crossings.js', '__checkYellowBoxes', 0],
   ['A footpath lies on the grass, never under it or folded over itself', 'paths.js', '__checkPaths', 0],
-  ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, 23],
+  ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, { pasirris: 22, whole: 6 }],
   ['No step where road pieces meet', 'seams.js', '__checkSteps', 0],
   ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
   ['A through road\'s lines carry on across its junctions', 'through.js', '__checkThroughLines', 0],
@@ -55,8 +55,8 @@ const CHECKS = [
   ['Every road joining a through road has its give-way line', 'through.js', '__checkGiveWays', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
   // Drivable from a standstill: 60% of what the car can do (src/limits.ts).
-  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, 13],
-  ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, 4],
+  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, { pasirris: 13, whole: 5 }],
+  ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, { pasirris: 4 }],
   ['No side tilt that could tip the car', 'drive.js', '__checkTilt', 0],
   ['The drive bot gets through the hard spots', 'routes.js', '__checkRoutes', 0],
   ['The drive bot gets round the map on random trips, never stuck or tipped over', 'walk.js', '__checkWalk', 0],
@@ -67,38 +67,38 @@ const CHECKS = [
   ['No bite out of a road\'s edge', 'lanes.js', '__checkEdges', 0],
   ['Widths change no faster than 1 m per 20 m (50 m on expressways), through junctions too', 'lanes.js', '__checkWidths', 0],
   // (79: corners OSM itself draws as a jog, nearly all on service lanes.)
-  ['No road jogs sideways (sharp turn and straight back)', 'kinks.js', '__checkKinks', 0, 79],
+  ['No road jogs sideways (sharp turn and straight back)', 'kinks.js', '__checkKinks', 0, { pasirris: 78, whole: 11, trial: 1 }],
   ['No gap where two roads split or join', 'gores.js', '__checkGores', 0],
   // (120: 69 sides of ground splits still drawn from one point, 51 paved junctions whose outline kinks.)
-  ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, 9],
+  ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, { pasirris: 8, whole: 4 }],
   // The finished road (finish.js): what is drawn, followed along the whole of
   // every road, whatever rule drew it. (Known: counted on the map as it
   // stood when these checks were written.)
-  ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, 148],
+  ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, { pasirris: 147, whole: 13 }],
   // (201 to 213, the user's call on 16 Nov: thin medians on today's map
   // now end in a rounded point and are counted in more pieces, their total
   // length down from 444 m to 400 m.)
-  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, 213],
-  ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, 198],
-  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, 38],
-  ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, 54],
+  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, { pasirris: 191, whole: 16, trial: 1 }],
+  ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, { pasirris: 197, whole: 29, trial: 7 }],
+  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, { pasirris: 21 }],
+  ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, { pasirris: 54, whole: 9, trial: 1 }],
   // The sides of raised roads (edges.js): a parapet wherever the road's edge
   // drops away, and walls that end by coming down to the ground, not as a
   // square stub. (Known: counted on today's map when these were written.)
-  ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, 24],
-  ['A wall beside a road never ends as a square stub on the verge', 'edges.js', '__checkWallEnds', 0, 97],
+  ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, { pasirris: 14, whole: 5, trial: 1 }],
+  ['A wall beside a road never ends as a square stub on the verge', 'edges.js', '__checkWallEnds', 0, { pasirris: 33, whole: 37, trial: 4 }],
   ['The ground beside a raised road keeps its bank: the road never cuts it away', 'edges.js', '__checkBanks', 0],
   // (Roads as one line: where the map marks a road as carrying straight on
   // past a side road, nothing of the joint may show. No marks, nothing to test.)
-  ['A road is one strip past a side road: no cut, step, turn or break in its kerb and lines', 'finish.js', '__checkOneStrip', 0, { trial: 1 }],
+  ['A road is one strip past a side road: no cut, step, turn or break in its kerb and lines', 'finish.js', '__checkOneStrip', 0],
   // (Kerbs and markings as one line, as the road is: read off the drawn
   // meshes. Redrawn maps only: today's map keeps its old lines until the
   // redrawn map replaces it.)
   ['An edge line never jumps sideways or breaks off and starts again', 'marks.js', '__checkEdgeBreaks', 0],
-  ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0, { trial: 2 }],
+  ['Every kerb has its edge line beside it, but at a mouth, crossing or gore', 'marks.js', '__checkKerbLines', 0],
   ['Every marking lies on the surface drawn under it, never more than 1 cm under it', 'marks.js', '__checkMarkDepth', 0],
   // (A count that may only go down: 233 when it was written, the live build 262. The user's call, 2026-11-16: fixed in the next round.)
-  ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0, 231],
+  ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0, { whole: 231, trial: 31 }],
   ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
   ['Every island narrows smoothly to its point: no corner of its outline turns more than 4 deg within 10 m of it', 'marks.js', '__checkNoseCorners', 0],
   // (The user's rules 1 and 2 at every point, 18 Nov.)
@@ -114,10 +114,14 @@ const CHECKS = [
   // (The user's slip-road rules S3-S5, 19 Nov, read off the finished
   // meshes: no edge of a road, kerb or island's lawn over a fall without a
   // face down to what lies below, and no ground standing over a kerb or a
-  // wall's top. Zero, not a count that may go down.)
-  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0],
-  ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0],
-  ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, 21],
+  // wall's top. Counts that may only go down, the user's calls on 20 Nov:
+  // today's map, built the old way, at what it has (05:29 UTC); the
+  // redrawn maps' few left (roads overlapping a lower one at a ramp's
+  // edge, a lane's end by the Tampines Hub garage, the trial map's cut end
+  // of a viaduct) held at a count too, for the next changes to fix (08:44).)
+  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 28, trial: 8 }],
+  ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0, { pasirris: 4, whole: 1 }],
+  ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, { whole: 21, trial: 6 }],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
   ['Every petrol station is a place: a paved, solid forecourt a road runs onto and its lanes end on, clear of public roads, and the pump works only on it', 'fuel.js', '__checkStations', 0],

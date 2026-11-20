@@ -28,8 +28,10 @@ window.__watertightIndex = () => {
   // Undersides of decks, as the tops are.
   const under = [];
   const ugrid = new Map();
-  // Edges of the top surfaces, counted, to find those that border nothing.
-  const edges = new Map();
+  // Edges of the top surfaces, counted, to find those that border nothing:
+  // a tile's at a time. (All the map's at once, keyed by their ends, were
+  // more than the page could hold, and it closed.)
+  const open = [];
   const key = (x, y, z) => `${Math.round(x * 200)},${Math.round(y * 200)},${Math.round(z * 200)}`;
   const put = (grid, i, x0, z0, x1, z1) => {
     for (let a = Math.floor(x0 / C); a <= Math.floor(x1 / C); a++)
@@ -40,6 +42,7 @@ window.__watertightIndex = () => {
   };
   for (const k of d.farTiles()) {
     const accs = d.tileAccs(k);
+    const edges = new Map();
     for (const [kind, r] of Object.entries(accs)) {
       if (!r || !r.idx) continue;
       const top = TOPS.includes(kind);
@@ -81,6 +84,7 @@ window.__watertightIndex = () => {
         }
       }
     }
+    for (const e of edges.values()) if (e.n === 1) open.push(e.e);
   }
   /** The heights of every top surface over (x, z) (or every underside). */
   const topsAt = (x, z, list = tri, grid = tgrid) => {
@@ -130,7 +134,6 @@ window.__watertightIndex = () => {
     const e = hv(i + 1, j + 1);
     return e + (1 - fx) * (b - e) + (1 - fz) * (c - e);
   };
-  const open = [...edges.values()].filter((e) => e.n === 1).map((e) => e.e);
   const undersAt = (x, z) => topsAt(x, z, under, ugrid);
   return (window.__wtIdx = { topsAt, undersAt, facesNear, open, groundAt });
 };
@@ -229,5 +232,7 @@ window.__checkGroundOverTops = (all = false) => {
     }
   }
   const bad = F.places(pts, 4);
+  // (Last of the two: the index let go, for the checks after.)
+  delete window.__wtIdx;
   return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm' };
 };
