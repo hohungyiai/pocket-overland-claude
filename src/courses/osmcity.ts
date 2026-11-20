@@ -9494,10 +9494,17 @@ export async function buildPasirRisCourse(
       if (!(L > 0.005) || !(y0 === y0 && y1 === y1)) continue;
       const P = (t: number) => [x0 + (x1 - x0) * t + nx * 0.002, z0 + (z1 - z0) * t + nz * 0.002, y0 + (y1 - y0) * t];
       (on[0] = nx), (on[1] = nz);
-      // (Only a side standing within 6 cm of the kerb's edge closes it: round
-      // a tight corner in centimetre pieces, a wall 0.1 m off was taken for
-      // the kerb's own side and the corner left open, I2 at -2772.4,2246.3.)
-      for (const [ga, gb] of gapsOf(x0, z0, x1, z1, y0, y1, -0.1, -0.12, 0.06)) {
+      // (Only a side standing within 4.5 cm of the kerb's edge closes it:
+      // round a tight corner in centimetre pieces, a wall 0.1 m off was
+      // taken for the kerb's own side and the corner left open, I2 at
+      // -2772.4,2246.3; and one 5.5 cm off left a kerb's end open at
+      // 1624.5,-474.4, the watertight check asking for 5.)
+      // (And reaching up to within 3 cm of its top: a wall standing 10 cm
+      // under a kerb's top, at the road's level, left a slit along under
+      // the kerb at -2642.3,-2262 and -3483.8,-1485.6. Down to the ground:
+      // stopped at that wall's top, a piece raised beside a wall's end hung
+      // open over the ground at 1683.5,2396.2.)
+      for (const [ga, gb] of gapsOf(x0, z0, x1, z1, y0, y1, -0.03, -0.12, 0.045)) {
         const m = Math.max(1, Math.ceil(((gb - ga) * L) / 0.5));
         for (let q = 0; q < m; q++) {
           const [ax, az, ya] = P(ga + ((gb - ga) * q) / m), [bx, bz, yb] = P(ga + ((gb - ga) * (q + 1)) / m);
