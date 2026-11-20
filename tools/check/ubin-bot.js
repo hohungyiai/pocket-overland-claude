@@ -144,3 +144,14 @@ window.__ubinRound = (i) => {
 };
 window.__ubinObstacles = () =>
   window.game.course.trail.obstacles.map((o) => ({ kind: o.kind, s0: +o.s0.toFixed(1), s1: +o.s1.toFixed(1), tries: o.tries, open: o.open, done: o.done, side: o.side }));
+/** Points along the route from s0 to s1, `off` metres to its left (negative: right). */
+window.__ubinRouteOff = (s0, s1, off) => {
+  const R = window.game.course.trail.route;
+  const out = [];
+  for (let s = Math.max(0, s0); s <= Math.min(R.length, s1); s += 1) {
+    const p = R.at(s);
+    // Left of travel, with x east and z south: (tz, -tx).
+    out.push([p.x + p.tz * off, p.z - p.tx * off]);
+  }
+  return out;
+};
