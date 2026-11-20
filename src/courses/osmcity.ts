@@ -8706,7 +8706,10 @@ export async function buildPasirRisCourse(
       const ax = p[3 * v] - p[3 * u], ay = p[3 * v + 1] - p[3 * u + 1], az = p[3 * v + 2] - p[3 * u + 2];
       const bx = p[3 * w] - p[3 * u], by = p[3 * w + 1] - p[3 * u + 1], bz = p[3 * w + 2] - p[3 * u + 2];
       const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
-      return Math.abs(ny) < 0.3 * Math.hypot(nx, ny, nz);
+      // (Upright only: a steep bank's triangle moved over, its lawn's edge
+      // was left with nothing beside it in the lawn, the watertight check
+      // finding it open at -123.9,5.6.)
+      return Math.abs(ny) < 0.02 * Math.hypot(nx, ny, nz);
     };
     const toSide = (u: number, v: number, w: number) => {
       const p = lawn.pos, b = side.pos.length / 3;
