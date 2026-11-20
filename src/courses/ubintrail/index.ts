@@ -44,6 +44,12 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   const detailed = opts.style !== 'stylized';
   const map: UbinMap = await (await fetch(UBIN_MAP)).json();
   const trail = new UbinTrail(map, def);
+  // Paths the trail (or its detour) follows are driven: a track's width.
+  for (const r of map.roads) {
+    if (r.kind !== 'path' || r.pts.length < 2) continue;
+    const on = (l: { nearest(x: number, z: number, r: number): { d: number } | null } | null) => !!l && r.pts.every(([x, z]) => (l.nearest(x, z, 6)?.d ?? 99) < 2);
+    if (on(trail.route) || on(trail.detour)) Object.assign(r, { kind: 'track', width: 3.4 });
+  }
   // The ways round the obstacles are tracks too (for the ground and the
   // map). (A hidden detour is on the map's own tracks and paths already.)
   if (def.wayRound === 'gate')

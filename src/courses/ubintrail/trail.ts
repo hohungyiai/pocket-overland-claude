@@ -100,6 +100,7 @@ const TUNE = {
   duneH: 3.5,
   duneFace: 12,
   sandSink: 0.02,
+  fordSink: 0.18,
   ...((globalThis as { __ubinTune?: object }).__ubinTune ?? {}),
 };
 const SOFT_SAND: Surface = { name: 'Soft sand', grip: TUNE.sandGrip, drag: TUNE.sandDrag, offroad: true, sink: TUNE.sandSink };
@@ -110,7 +111,7 @@ const ROCKS: Surface = { name: 'Roots and rock', grip: 0.62, drag: 1.5, offroad:
 const SCREE: Surface = { name: 'Loose rock', grip: 0.5, drag: 1.2, offroad: true };
 const DEEP_MUD: Surface = { name: 'Deep mud', grip: 0.32, drag: 3, offroad: true, sink: 0.16 };
 const TIDAL: Surface = { name: 'Tidal sand', grip: 0.3, drag: 4, offroad: true, sink: 0.2 };
-const FORD: Surface = { name: 'Ford', grip: 0.72, drag: 3, offroad: true, sink: 0.12 };
+const FORD: Surface = { name: 'Ford', grip: 0.72, drag: 3, offroad: true, sink: TUNE.fordSink };
 const LEDGES: Surface = { name: 'Rock ledges', grip: 0.78, drag: 1.2, offroad: true };
 const CAMBER: Surface = { name: 'Off-camber shore', grip: 0.55, drag: 1.8, offroad: true };
 const KIND_SURFACE: Record<ObstacleKind, Surface> = {

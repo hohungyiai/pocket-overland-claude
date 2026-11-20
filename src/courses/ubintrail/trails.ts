@@ -92,10 +92,10 @@ export const CHEK_JAWA: TrailDef = {
     [2586, -123], // the end of the lane on Jalan Durian
     [3209, 171], // the south shore
     [3688, -14], // Punai Hut
-    [4106, 90], // the Chek Jawa shore, by the floating pontoon
+    [3934, 18], // the Chek Jawa shore, where the boardwalk starts
   ],
   obstacles: [
-    { kind: 'ford', label: 'Ford', at: [2930, -110], len: 40, needs: { low: true }, p: { depth: 0.9, bank: 2.4, out: 8 } },
+    { kind: 'ford', label: 'Ford', at: [2930, -110], len: 50, needs: { low: true }, p: { depth: 0.9, bank: 3.4, out: 15 } },
     { kind: 'sand', label: 'Tidal sand', at: [3120, -40], len: 140, needs: { speed: true }, p: { tidal: 1, duneH: 2.6, duneFace: 10, dip: 0.35 } },
     { kind: 'camber', label: 'Off-camber shore', at: [3230, 172], len: 150, needs: {}, p: { deg: 17, dir: 1 } },
     { kind: 'mud', label: 'Mangrove mud', at: [3500, 90], len: 190, needs: { low: true, diff: true } },
