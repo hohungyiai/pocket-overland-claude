@@ -93,6 +93,8 @@ const TUNE = {
   climbH: 8, // metres up
   climbUp: 18, // over this run
   looseGrip: 0.8,
+  looseWade: 0.5, // loose gravel hit fast: it ploughs in (per (m/s over looseFrom)^2), so charging the climb does not work
+  looseFrom: 4.5,
   looseDrag: 1.6,
   humpH: 0.9,
   humpLen: 2.2,
@@ -105,19 +107,21 @@ const TUNE = {
   duneFace: 12,
   sandSink: 0.02,
   fordSink: 0.18,
+  fordWade: 0.18,
   ...((globalThis as { __ubinTune?: object }).__ubinTune ?? {}),
 };
 const SOFT_SAND: Surface = { name: 'Soft sand', grip: TUNE.sandGrip, drag: TUNE.sandDrag, offroad: true, sink: TUNE.sandSink };
-const LOOSE: Surface = { name: 'Loose gravel', grip: TUNE.looseGrip, drag: TUNE.looseDrag, offroad: true };
+const LOOSE: Surface = { name: 'Loose gravel', grip: TUNE.looseGrip, drag: TUNE.looseDrag, offroad: true, wade: TUNE.looseWade, wadeFrom: TUNE.looseFrom };
 const RUTS: Surface = { name: 'Washout', grip: 0.78, drag: 1.5, offroad: true };
 // The harder trails' ground.
 const ROCKS: Surface = { name: 'Roots and rock', grip: 0.62, drag: 1.5, offroad: true };
 const SCREE: Surface = { name: 'Loose rock', grip: 0.5, drag: 1.2, offroad: true };
 const DEEP_MUD: Surface = { name: 'Deep mud', grip: 0.32, drag: 3, offroad: true, sink: 0.16 };
 const TIDAL: Surface = { name: 'Tidal sand', grip: 0.3, drag: 4, offroad: true, sink: 0.2 };
-const FORD: Surface = { name: 'Ford', grip: 0.72, drag: 3, offroad: true, sink: TUNE.fordSink };
+const FORD: Surface = { name: 'Ford', grip: 0.72, drag: 3, offroad: true, sink: TUNE.fordSink, wade: TUNE.fordWade };
 const LEDGES: Surface = { name: 'Rock ledges', grip: 0.78, drag: 1.2, offroad: true };
-const CAMBER: Surface = { name: 'Off-camber shore', grip: 0.55, drag: 1.8, offroad: true };
+const CAMBER: Surface = { name: 'Off-camber shore', grip: 0.8, drag: 1.8, offroad: true };
+const SLICK: Surface = { name: 'Slick bank', grip: 0.25, drag: 1.2, offroad: true };
 const KIND_SURFACE: Record<ObstacleKind, Surface> = {
   climb: LOOSE,
   washout: RUTS,
@@ -563,9 +567,18 @@ export class UbinTrail {
       return -depth * down * (1 - up) * (1 - smoothstep(6, 16, d)) + (P.bank ?? 1.2) * bell((s - (len - out * 0.6)) / (out * 0.6)) * (1 - smoothstep(4, 9, d));
     }
     if (o.kind === 'camber') {
-      // The track tilts towards the sea: stay on the high side.
-      const tilt = Math.tan(((P.deg ?? 16) * Math.PI) / 180);
-      return (P.dir ?? 1) * sd * tilt * fade(10) * (1 - smoothstep(7, 12, d));
+      // The track is a narrow bench along the bank above the sea: level
+      // enough on its high side (a car's width, against the bank), but from
+      // the middle down it falls away steep and slick. Drive the middle and
+      // the downhill wheels slide, and the car goes down the bank.
+      const E = P.edge ?? 1;
+      const u = (P.dir ?? 1) * sd - E; // metres uphill of the bench's edge
+      const bench = Math.tan(((P.bench ?? 5) * Math.PI) / 180);
+      const steep = Math.tan(((P.deg ?? 27) * Math.PI) / 180);
+      const W = P.width ?? 3.2;
+      let y = u >= 0 ? u * bench : u * steep;
+      if (u > W) y = W * bench + (u - W) * Math.tan(Math.PI / 6); // the bank above
+      return y * fade(10) * (1 - smoothstep(9, 14, d));
     }
     return 0;
   }
@@ -574,7 +587,13 @@ export class UbinTrail {
   surface(x: number, z: number): Surface | null {
     for (const o of this.obstacles) {
       const n = o.line.nearest(x, z, 8);
-      if (!n || n.d > 3.6) continue;
+      // (The ford is the ford all the way across the water; the camber's
+      // slick side runs down the bank.)
+      if (!n || n.d > (o.kind === 'ford' ? 8 : o.kind === 'camber' ? 8 : 3.6)) continue;
+      if (o.kind === 'camber' && (o.p.dir ?? 1) * n.sd < (o.p.edge ?? 1) + 0.2) {
+        if (n.s < 2 || n.s > o.s1 - o.s0 - 2) continue;
+        return SLICK;
+      }
       if (n.s < 2 || n.s > o.s1 - o.s0 - 2) continue;
       return o.kind === 'sand' && o.p.tidal ? TIDAL : KIND_SURFACE[o.kind];
     }
@@ -604,7 +623,7 @@ export class UbinTrail {
       if (n && n.d < 16 && n.s > -1 && n.s < len + 1) out = { ...(out ?? {}), zone: o.label };
       // Passed it: got to the far end on the hard line (or left it there,
       // a little wide, at speed).
-      if (n && o.inside && !o.done && (n.s > len - 3 || o.furthest > len - 3) && n.d < 10) {
+      if (n && o.inside && !o.done && (n.s > len - 3 || o.furthest > len - 3) && n.d < (o.kind === 'camber' ? 3.5 : 10)) {
         o.done = 'hard';
         o.inside = false;
         const nice = NICE[o.kind];

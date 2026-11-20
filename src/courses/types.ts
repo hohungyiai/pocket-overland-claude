@@ -15,6 +15,10 @@ export interface Surface {
   offroad?: boolean;
   /** Soft ground the tyres sink into: rolling resistance as a share of the wheel's load. */
   sink?: number;
+  /** Water to wade through: it holds the car back with the square of its speed (a bow wave), so charging it does not work. */
+  wade?: number;
+  /** Off the road only: the speed (m/s) below which `wade` does nothing (0 if unset): loose gravel ploughs in only when hit fast. */
+  wadeFrom?: number;
 }
 
 export const SURFACES = {

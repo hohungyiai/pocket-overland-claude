@@ -308,6 +308,9 @@ export class Vehicle {
     const grips = this.grips;
     const off = this.off;
     let sink = 0;
+    let wade = 0;
+    const lv0 = this.body.linvel();
+    const sp0 = Math.hypot(lv0.x, lv0.z);
     for (let i = 0; i < 4; i++) {
       off[i] = false;
       grips[i] = 0;
@@ -324,6 +327,8 @@ export class Vehicle {
             const load = Math.max(0, c.wheelSuspensionForce(i) ?? 0);
             grips[i] = s.grip * load;
             sink += (s.sink ?? 0) * load;
+            // (v-squared above the surface's wadeFrom speed; the ford's is 0.)
+            if (s.wade) wade += (s.wade / 4) * Math.max(0, sp0 - (s.wadeFrom ?? 0)) ** 2;
           }
         }
       } else {
@@ -349,12 +354,12 @@ export class Vehicle {
     }
     // Soft ground: the tyres sink in and it pulls against the way the car
     // is rolling (never so hard that it starts it rolling back).
-    if (sink > 0) {
+    if (sink > 0 || wade > 0) {
       const lv = this.body.linvel();
       const sp = Math.hypot(lv.x, lv.z);
       if (sp > 0.01) {
         const m = this.body.mass();
-        const dv = Math.min(sp, (sink / m) * dt);
+        const dv = Math.min(sp, (sink / m + wade) * dt);
         this.body.applyImpulse({ x: (-lv.x / sp) * dv * m, y: 0, z: (-lv.z / sp) * dv * m }, true);
       }
     }

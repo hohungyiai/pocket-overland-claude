@@ -64,7 +64,8 @@ export const PUAKA: TrailDef = {
   ],
   obstacles: [
     { kind: 'rocks', label: 'Roots and rock', at: [65, 24], len: 190, needs: { diff: true } },
-    { kind: 'descent', label: 'Loose descent', at: [480, -102], len: 110, needs: { low: true } },
+    // (Control, not kit: low range makes it easier, but the brakes get you down too.)
+    { kind: 'descent', label: 'Loose descent', at: [480, -102], len: 110, needs: {} },
     // (No way round the last climb: the top is the point. The tips say what it needs.)
     { kind: 'summit', label: 'Puaka Hill ledges', at: [369, 231], len: 85, needs: { low: true, diff: true }, round: false, p: { ledgeH: 0.3, humpH: 0.45 } },
   ],
@@ -99,7 +100,8 @@ export const CHEK_JAWA: TrailDef = {
   obstacles: [
     { kind: 'ford', label: 'Ford', at: [2930, -110], len: 50, needs: { low: true }, p: { depth: 0.9, bank: 3.4, out: 15 } },
     { kind: 'sand', label: 'Tidal sand', at: [3120, -40], len: 140, needs: { speed: true }, p: { tidal: 1, duneH: 2.6, duneFace: 10, dip: 0.35 } },
-    { kind: 'camber', label: 'Off-camber shore', at: [3230, 172], len: 150, needs: {}, p: { deg: 17, dir: 1 } },
+    // (A line, not kit: the high side, against the bank.)
+    { kind: 'camber', label: 'Off-camber shore', at: [3230, 172], len: 150, needs: {}, p: { deg: 30, bench: 5, edge: 1, width: 3.2, dir: 1 } },
     { kind: 'mud', label: 'Mangrove mud', at: [3500, 90], len: 190, needs: { low: true, diff: true } },
   ],
   wayRound: 'hidden',

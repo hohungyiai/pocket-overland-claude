@@ -24,17 +24,28 @@ const only = args.filter((a) => a !== 'all' && !COURSES.includes(a));
 
 // The kit for an obstacle, from what it needs: the right kit, and each
 // kit with one thing left out. (Cruise: how fast the bot drives at it.)
-const kitName = (k) => [k.low && 'low range', k.diff && 'the diff lock', k.cruise >= 9 && 'speed'].filter(Boolean).join(' and ') || 'no kit';
+const kitName = (k) => [k.low && 'low range', k.diff && 'the diff lock', k.cruise >= 9 && 'speed', k.off && 'the high line'].filter(Boolean).join(' and ') || 'no kit';
 const pace = (o) => (o.needs.speed ? 10 : o.kind === 'climb' ? 5 : o.kind === 'washout' ? 3 : 4);
-const kits = (o) => {
+const kits = (o, room = 150) => {
   const right = { low: !!o.needs.low, diff: !!o.needs.diff, cruise: pace(o) };
   const wrong = [];
   // (A descent needs low range for control, not to get down; an
   // off-camber stretch needs a line, not kit.)
-  if (o.kind !== 'descent') {
-    if (o.needs.low) wrong.push(['without low range', { ...right, low: false, cruise: Math.max(right.cruise, 6) }]);
-    if (o.needs.diff) wrong.push(['without the diff lock', { ...right, diff: false }]);
-    if (o.needs.speed) wrong.push(['crawling at it', { ...right, cruise: 4 }]);
+  // Each missing thing is tried twice: at the obstacle's own pace, and
+  // charging it after a long, fast run-up (so momentum is no way round).
+  const both = (what, kit) => {
+    wrong.push([what, kit]);
+    wrong.push([`${what}, charging it from ${Math.round(45 + room)} m back`, { ...kit, cruise: kit.low ? 8 : 14, runUp: room }]);
+  };
+  if (o.needs.low) both('without low range', { ...right, low: false, cruise: Math.max(right.cruise, 6) });
+  if (o.needs.diff) both('without the diff lock', { ...right, diff: false });
+  if (o.needs.speed) wrong.push(['crawling at it', { ...right, cruise: 4 }]);
+  if (o.kind === 'camber') {
+    // A line, not kit: the high side, against the bank. The middle of the
+    // track slides you down it, slow or fast.
+    const up = o.p.dir ?? 1;
+    right.off = ((o.p.edge ?? 1) + 1.5) * up;
+    both('on the middle of the track', { ...right, off: 0 });
   }
   return { right, wrong, none: { low: false, diff: false, cruise: o.needs.speed ? 4 : 6 } };
 };
@@ -58,27 +69,30 @@ const kits = (o) => {
     results.push({ name: `${course}: ${name}`, ok });
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${course}: ${name}${detail ? '  ' + detail : ''}`);
   };
-  const want = (n) => !only.length || only.some((o) => n.includes(o));
+  const want = (n) => !only.length || only.some((o) => n.toLowerCase().includes(o.toLowerCase()));
   try {
     for (course of courses) {
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
-      const drive = (pg, s0, s1, kit, extra = {}) => pg.evaluate(([a, b, k]) => window.__ubinDrive(window.__ubinRoute(a, b), k), [s0, s1, { ...kit, ...extra }]);
+      const drive = (pg, s0, s1, kit, extra = {}) =>
+        pg.evaluate(([a, b, k]) => window.__ubinDrive(window.__ubinRouteOff(a - (k.runUp ?? 0), b, k.off ?? 0), k), [s0, s1, { ...kit, ...extra }]);
       for (let i = 0; i < info.obs.length; i++) {
         const o = info.obs[i];
         if (!want(o.kind)) continue;
-        const K = kits(o);
+        // (The run-up stays clear of the obstacle before.)
         const from = o.s0 - 45;
+        const K = kits(o, Math.max(0, Math.min(150, from - (i ? info.obs[i - 1].s1 + 10 : 0))));
         const to = o.s1 + 25;
         // Each thing it needs, left out: no way through, even backing up
         // for more runs at it.
         for (const [what, kit] of K.wrong) {
           const r = await drive(page, from, to, kit, { timeout: 150, reverseAfterStall: 2 });
-          check(`${o.label}: ${what}, the bot does not get through`, !r.done, `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.stalls} stalls)`);
+          const sw = (await page.evaluate(() => window.__ubinObstacles()))[i];
+          check(`${o.label}: ${what}, the bot does not get through`, !(r.done && sw.done === 'hard'), `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.stalls} stalls, credited: ${sw.done})`);
           await page.close();
           page = await fresh();
         }
@@ -139,7 +153,7 @@ const kits = (o) => {
         const said = [];
         for (const [n, leg] of legs.entries()) {
           if (leg.s1 <= leg.s0) continue;
-          const r = await page.evaluate(([l, first]) => window.__ubinDrive(window.__ubinRoute(l.s0, l.s1), { ...l.kit, timeout: 900, place: first }), [leg, n === 0]);
+          const r = await page.evaluate(([l, first]) => window.__ubinDrive(window.__ubinRouteOff(l.s0, l.s1, l.kit.off ?? 0), { ...l.kit, timeout: 900, place: first }), [leg, n === 0]);
           secs += r.seconds;
           lean = Math.max(lean, r.maxLeanDeg);
           said.push(...r.says.map((x) => x[1]));

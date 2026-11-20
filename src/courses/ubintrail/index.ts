@@ -96,6 +96,8 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     lane: new THREE.Color(0.55, 0.55, 0.52),
     sand: new THREE.Color(0.9, 0.82, 0.62),
     mud: new THREE.Color(0.3, 0.27, 0.18),
+    wetMud: new THREE.Color(0.17, 0.13, 0.08),
+    puddle: new THREE.Color(0.1, 0.1, 0.08),
     rock: new THREE.Color(0.55, 0.53, 0.5),
     bed: new THREE.Color(0.4, 0.38, 0.3),
     sea: new THREE.Color(0.42, 0.47, 0.4),
@@ -121,7 +123,13 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       else out.lerp(C.lane, edge);
     }
     const o = trail.surface(x, z);
-    if (o) out.lerp(/sand/i.test(o.name) ? C.sand : /rock|ledge|gravel/i.test(o.name) ? C.rock : /mud|ford/i.test(o.name) ? C.mud : C.dirt, 0.7);
+    if (o) {
+      if (/mud|ford|slick/i.test(o.name)) {
+        // Wet, dark mud, with darker puddles in the ruts.
+        out.lerp(C.wetMud, 0.92);
+        if (valueNoise(x / 2.2, z / 2.2, SEED + 11) > 0.62) out.lerp(C.puddle, 0.6);
+      } else out.lerp(/sand/i.test(o.name) ? C.sand : /rock|ledge|gravel/i.test(o.name) ? C.rock : C.dirt, 0.7);
+    }
     return out;
   }
 
@@ -670,11 +678,20 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const len = o.s1 - o.s0;
     const a = o.line.at(0);
     const lvl = heightAt(a.x, a.z) - 0.3;
+    // A pool across the track, rounded at both ends, its edges wobbling a
+    // little, from the foot of the bank in to the foot of the bank out.
+    const sa = (o.p.inn ?? 8) * 0.35;
+    const sb = len - (o.p.out ?? 6) * 0.55;
     const P: number[] = [];
     const I: number[] = [];
-    for (let s = 2; s <= len - 2; s += 1) {
+    for (let s = sa; s <= sb + 0.01; s += 0.75) {
       const p = o.line.at(s);
-      for (const side of [-7, 7]) P.push(p.x - p.tz * side, lvl, p.z + p.tx * side);
+      const t = (s - sa) / (sb - sa);
+      const half = 9 * Math.sqrt(Math.max(0, Math.sin(Math.PI * t))) + 0.4;
+      for (const side of [-1, 1]) {
+        const w = half * (1 + 0.12 * Math.sin(s * 0.7 + side * 2));
+        P.push(p.x - p.tz * side * w, lvl, p.z + p.tx * side * w);
+      }
       const k = P.length / 3 - 2;
       if (k >= 2) I.push(k - 2, k - 1, k, k - 1, k + 1, k);
     }
@@ -684,7 +701,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     geo.computeVertexNormals();
     if (geo.attributes.normal.getY(0) < 0) geo.setIndex(I.map((_, i) => I[i - (i % 3) + [0, 2, 1][i % 3]]));
     geo.computeVertexNormals();
-    const ford = new THREE.Mesh(geo, waterMat(0x6a5f3c, 0.86, 1));
+    const ford = new THREE.Mesh(geo, waterMat(0x5b5a3e, 0.93, 2));
     ford.receiveShadow = true;
     scene.add(ford);
   }
