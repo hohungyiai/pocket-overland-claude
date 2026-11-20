@@ -8318,7 +8318,7 @@ export async function buildPasirRisCourse(
   // for the whole 4 m to the next.)
   // (A generator, a pause every few sections: done in one go, a long
   // kerb's island top held a frame up for 150 ms.)
-  const islandTop = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
+  const islandTop = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, side: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
     const Pd: XZ[] = [], cd: number[] = [], md: (OutMark | null)[] = [], td: number[] = [];
     if (v0 > 0) Pd.push(P[v0 - 1]), cd.push(cum[v0 - 1]), md.push(null), td.push(NaN);
     const d0 = Pd.length;
@@ -8333,9 +8333,9 @@ export async function buildPasirRisCourse(
     }
     const d1 = Pd.length - 1;
     if (v1 + 1 < P.length) Pd.push(P[v1 + 1]), cd.push(cum[v1 + 1]), md.push(null), td.push(NaN);
-    yield* islandTopIn(w, lawn, Pd, cd, d0, d1, (v) => md[v], (v) => td[v], farTop);
+    yield* islandTopIn(w, lawn, side, Pd, cd, d0, d1, (v) => md[v], (v) => td[v], farTop);
   };
-  const islandTopIn = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
+  const islandTopIn = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, side: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
     const segs = outSegs(w);
     const n = v1 - v0 + 1;
     const out: XZ[] = [], half: number[] = [], mid: number[] = [], apart: boolean[] = [], over: boolean[] = [], even: boolean[] = [], cramp: boolean[] = [], hollow: boolean[] = [], M: (OutMark | null)[] = [];
@@ -8696,6 +8696,23 @@ export async function buildPasirRisCourse(
     // down to the 4 m lattice under the raised ground, a dark wedge in the
     // grass from above at -2781,2241.)
     const gnd = (x: number, z: number) => Math.max(groundY(x, z), islandFill(x, z, true));
+    // (The user's rule S5, 19 Nov: no grass on an upright face. Where a
+    // run's end stands upright, past 0.6 m or beside a road, and its side
+    // where the run stops, it is a low wall, the kerb's side's colour:
+    // drawn in grass, it stood as a green face at the foot of a raised
+    // road's wall at 1867.4,1818.2.)
+    const upright = (u: number, v: number, w: number) => {
+      const p = lawn.pos;
+      const ax = p[3 * v] - p[3 * u], ay = p[3 * v + 1] - p[3 * u + 1], az = p[3 * v + 2] - p[3 * u + 2];
+      const bx = p[3 * w] - p[3 * u], by = p[3 * w + 1] - p[3 * u + 1], bz = p[3 * w + 2] - p[3 * u + 2];
+      const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+      return Math.abs(ny) < 0.3 * Math.hypot(nx, ny, nz);
+    };
+    const toSide = (u: number, v: number, w: number) => {
+      const p = lawn.pos, b = side.pos.length / 3;
+      for (const q of [u, v, w]) side.pos.push(p[3 * q], p[3 * q + 1], p[3 * q + 2]), side.uv.push(p[3 * q] + p[3 * q + 2], p[3 * q + 1]);
+      side.idx.push(b, b + 1, b + 2);
+    };
     const cap = (sec: number[], ox: number, oz: number) => {
       const p = lawn.pos;
       const ol = Math.hypot(ox, oz), ux = ox / ol, uz = oz / ol;
@@ -8727,7 +8744,7 @@ export async function buildPasirRisCourse(
         }
         const ta = toe(ax, ay, az), tb = toe(bx, by, bz);
         const q0 = put(ax, ay, az), q1 = put(bx, by, bz), q2 = T[m], q3 = T[0];
-        const tri = (u: number, v: number, w: number) => ((bz - az) * ox - (bx - ax) * oz >= 0 ? lawn.idx.push(u, v, w) : lawn.idx.push(u, w, v));
+        const tri = (u: number, v: number, w: number) => (upright(u, v, w) ? toSide(u, v, w) : (bz - az) * ox - (bx - ax) * oz >= 0 ? lawn.idx.push(u, v, w) : lawn.idx.push(u, w, v));
         tri(q0, q1, T[h]);
         for (let i = 0; i < m; i++) tri(i < h ? q0 : q1, T[i + 1], T[i]);
         // (The bank's own side where the run's end stops, upright down to
@@ -8736,7 +8753,7 @@ export async function buildPasirRisCourse(
         for (const [e, x, y, z, g, t, qe, qt] of [[c === 0, ax, ay, az, ga, ta, q0, q3], [c + 2 === sec.length || sec[c + 2] === b, bx, by, bz, gb, tb, q1, q2]] as const) {
           if (!e || y - g < 0.12 || Math.hypot(t[0] - x, t[2] - z) < 0.01) continue;
           const f = put(x, g, z);
-          lawn.idx.push(qe, qt, f, qe, f, qt);
+          toSide(qe, qt, f);
         }
       }
     };
@@ -9829,7 +9846,7 @@ export async function buildPasirRisCourse(
     }
     deck.idx = out;
   }
-  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc, lawn: Acc) => Generator<void>)[]; linePart?: number[]; segs?: Map<number, number[][]> }>();
+  const outWork = new Map<string, { rings: OutRing[]; todo: [number, number, number][]; draws: ((kerb: Acc, yellow: Acc, lawn: Acc, side: Acc) => Generator<void>)[]; linePart?: number[]; segs?: Map<number, number[][]> }>();
   const OUT_PARTS = 8;
   const OUT_LINES = 12;
   /** How many places along a side of the outline are asked (one every 4 m or so). */
@@ -10161,7 +10178,7 @@ export async function buildPasirRisCourse(
             const short = (J: number) => J + 1 < Q.length && Math.hypot(Q[J + 1][0] - Q[J][0], Q[J + 1][1] - Q[J][1]) < 0.5;
             while (j1 + 1 <= m && dr(j1 + 1) && j1 - j0 < 12 && (work + cost(j1 + 1) <= 24 || short(j1 + 1))) work += cost(++j1);
             const J0 = j0, J1 = j1;
-            w.draws.push(function* (kerb, yellow, lawn) {
+            w.draws.push(function* (kerb, yellow, lawn, side) {
               // (Heights where the ground does not lie as the strips drape it,
               // from the surface the side bounds: kerbs at Q's points, lines
               // at Q2's, from Q's point J0 to its point J1 + 1.)
@@ -10348,7 +10365,7 @@ export async function buildPasirRisCourse(
                 const h = kerbOn(mm, Q2, v, busy, gNear, hK2[v] - KERB_UP) + KERB_UP;
                 if (h === h && Math.abs(h - hK2[v]) < 0.5) hK2[v] = h;
               }
-              yield* islandTop(w, lawn, Q2, qc2, j0, j1 + 1, (v) => (mk(of2[v])?.kerb ? mk(of2[v])! : null), (v) => hK2[v] + 0.07, (mm, x, z) => drawnTopAt(mm, x, z, undefined, true));
+              yield* islandTop(w, lawn, side, Q2, qc2, j0, j1 + 1, (v) => (mk(of2[v])?.kerb ? mk(of2[v])! : null), (v) => hK2[v] + 0.07, (mm, x, z) => drawnTopAt(mm, x, z, undefined, true));
               yield;
               runs(Q2, j0, j1, (a) => of2[a], isKerb, (lo, hi, a, b) => {
                 strip(kerb, Q2, qc2, a, b, 0.19, 0.07, { lo, hi, off: -0.16, yAt: (j) => hK2[j], bisect: true });
@@ -10383,9 +10400,10 @@ export async function buildPasirRisCourse(
           const kerb = acc('kerb');
           const yellow = acc('yellow');
           const lawn = acc('lawn');
+          const side = acc('kerbSide');
           for (const draw of w.draws) {
             // (Set again each step: the lines lie on the outline's own fills, see fillTrisNow.)
-            const it = draw(kerb, yellow, lawn);
+            const it = draw(kerb, yellow, lawn, side);
             for (;;) {
               fillTrisNow = fillTrisFor(k, fillRings);
               const r = it.next();
