@@ -30,6 +30,8 @@ export interface ObstacleDef {
   at: XZ;
   len: number;
   needs: Needs;
+  /** false: no way round this one, even on a signposted trail. */
+  round?: boolean;
   /** Shape numbers for this kind (see shape()). */
   p?: Record<string, number>;
 }
@@ -42,6 +44,8 @@ export interface TrailDef {
   /** Paths may carry the route (not just lanes and tracks). */
   paths?: boolean;
   obstacles: ObstacleDef[];
+  /** What the ways round need (none, if left out). */
+  roundKit?: { low?: boolean; diff?: boolean };
   /** 'gate': a signposted way round each obstacle, opened after three tries. 'hidden': one unmarked detour, always open. */
   wayRound: 'gate' | 'hidden';
   /** The hidden detour's waypoints (found on the map's tracks and paths), and the obstacles it skips. */
@@ -320,7 +324,8 @@ export class UbinTrail {
       let bypass: Polyline;
       let side = 1;
       let gate: Obstacle['gate'] = null;
-      if (def.wayRound === 'gate') {
+      // (Nothing to go round where nothing stops you: a descent, a camber.)
+      if (def.wayRound === 'gate' && od.round !== false && od.kind !== 'descent' && od.kind !== 'camber') {
         const w = this.wayRound(s0, s1);
         bypass = w.bypass;
         side = w.side;
@@ -340,7 +345,7 @@ export class UbinTrail {
         side,
         gate,
         tries: 0,
-        open: def.wayRound !== 'gate',
+        open: !gate,
         done: null,
         inside: false,
         counted: false,
@@ -357,6 +362,45 @@ export class UbinTrail {
     }
     const end = R.at(L);
     this.camp = { x: end.x, z: end.z };
+  }
+
+  // The profile spread beside the route: route samples every 4 m in a
+  // grid, blended by distance, so the ground is smooth where the route
+  // bends back near itself (a nearest point would jump from one part of
+  // the route to another, and the ground with it).
+  private liftGrid: Map<string, [number, number, number][]> | null = null;
+  private liftNear(x: number, z: number) {
+    const G = 25;
+    if (!this.liftGrid) {
+      this.liftGrid = new Map();
+      for (let s = 0; s <= this.route.length; s += 4) {
+        const p = this.route.at(s);
+        const k = `${Math.floor(p.x / G)},${Math.floor(p.z / G)}`;
+        if (!this.liftGrid.has(k)) this.liftGrid.set(k, []);
+        this.liftGrid.get(k)!.push([p.x, p.z, this.liftAt(s)]);
+      }
+    }
+    const cx = Math.floor(x / G);
+    const cz = Math.floor(z / G);
+    let dmin = Infinity;
+    const near: [number, number][] = [];
+    for (let i = cx - 2; i <= cx + 2; i++)
+      for (let j = cz - 2; j <= cz + 2; j++)
+        for (const [px, pz, h] of this.liftGrid.get(`${i},${j}`) ?? []) {
+          const d2 = (px - x) ** 2 + (pz - z) ** 2;
+          if (d2 > 2500) continue;
+          near.push([d2, h]);
+          dmin = Math.min(dmin, d2);
+        }
+    if (!near.length) return 0;
+    let sw = 0;
+    let sh = 0;
+    for (const [d2, h] of near) {
+      const w = Math.exp(-(d2 - dmin) / 200);
+      sw += w;
+      sh += w * h;
+    }
+    return (sh / sw) * (1 - smoothstep(7, 50, Math.sqrt(dmin)));
   }
 
   /** Extra height of the route's profile at s along it. */
@@ -411,10 +455,7 @@ export class UbinTrail {
   /** The obstacle's shape at (x, z): extra height on and beside the trail. */
   shape(x: number, z: number): number {
     let y = 0;
-    if (this.lift.length) {
-      const n = this.route.nearest(x, z, 60);
-      if (n) y += this.liftAt(n.s) * (1 - smoothstep(7, 50, n.d));
-    }
+    if (this.lift.length) y += this.liftNear(x, z);
     for (const o of this.obstacles) {
       const n = o.line.nearest(x, z, 40);
       if (!n) continue;
@@ -468,10 +509,9 @@ export class UbinTrail {
     // A bump under one side of the car: centred `side` metres off the line.
     const under = (side: number, w = 1.6) => clamp(1 - Math.abs(sd - side) / w, 0, 1);
     const bell = (t: number) => (Math.abs(t) > 1 ? 0 : 0.5 + 0.5 * Math.cos(Math.PI * t));
-    if (o.kind === 'rocks') {
-      // Roots and rock steps on alternate sides, so the car twists corner
-      // to corner and one wheel or another is always light or in the air.
-      const H = P.humpH ?? 0.55;
+    // Roots and rock steps on alternate sides, so the car twists corner to
+    // corner and one wheel or another is always light or in the air.
+    const humps = (H: number) => {
       const k = P.period ?? 5.6;
       const L = P.humpLen ?? 1.8;
       let h = 0;
@@ -483,7 +523,8 @@ export class UbinTrail {
         h += H * jig * bell((s - c) / L) * under(1) + H * jig * bell((s - c - k / 2) / L) * under(-1);
       }
       return h * fade(4) * (1 - smoothstep(3, 6, d));
-    }
+    };
+    if (o.kind === 'rocks') return humps(P.humpH ?? 0.55);
     if (o.kind === 'summit') {
       // Rock ledges across the track, a step up every few metres.
       const step = P.every ?? 9;
@@ -491,7 +532,7 @@ export class UbinTrail {
       const t = s / step;
       const ledge = H * (Math.floor(t) + smoothstep(0.75, 0.9, t - Math.floor(t)));
       // (Held at the top: the ledges are part of the climb.)
-      return (ledge - H * (len / step) * smoothstep(0, len, s)) * (1 - smoothstep(4, 9, d)) * fade(3);
+      return (ledge - H * (len / step) * smoothstep(0, len, s)) * (1 - smoothstep(4, 9, d)) * fade(3) + humps(P.humpH ?? 0);
     }
     if (o.kind === 'descent') {
       // Washed-out ruts down the slope.

@@ -24,6 +24,9 @@ const NEAR_STEP = 2; // metres between ground points (1 m on obstacle tiles)
 
 const LANE: Surface = { name: 'Lane', grip: 0.98, drag: 0.8 };
 const TRACK: Surface = { name: 'Dirt track', grip: 0.82, drag: 1.8, offroad: true };
+// The signposted ways round: an easy, well-worn track (a road as far as
+// the car is concerned: the diff does not matter on it).
+const WAY: Surface = { name: 'Way round', grip: 0.85, drag: 1.6 };
 const FOREST: Surface = { name: 'Forest floor', grip: 0.72, drag: 3.5, offroad: true };
 // (Ubin's own copies of the shared beach, wetland and grass: off the road,
 // so the diff and soft ground work as they do on the trails.)
@@ -53,9 +56,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   // The ways round the obstacles are tracks too (for the ground and the
   // map). (A hidden detour is on the map's own tracks and paths already.)
   if (def.wayRound === 'gate')
-    trail.obstacles.forEach((o, i) =>
-      map.roads.push({ id: -1 - i, name: 'Way round', kind: 'track', hw: 'track', surface: 'dirt', width: 3.2, nodes: [], pts: o.bypass.pts }),
-    );
+    trail.obstacles.forEach((o, i) => {
+      if (o.gate) map.roads.push({ id: -1 - i, name: 'Way round', kind: 'track', hw: 'track', surface: 'dirt', width: 3.2, nodes: [], pts: o.bypass.pts });
+    });
   const ground = new UbinGround(map);
   ground.shape = (x, z) => trail.shape(x, z);
   const B = map.bounds;
@@ -75,7 +78,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const r = ground.road(x, z, 6);
     if (r && r.d < r.half + 0.4) {
       const kind = map.roads[r.road].kind;
-      return kind === 'lane' ? LANE : TRACK;
+      return kind === 'lane' ? LANE : map.roads[r.road].name === 'Way round' ? WAY : TRACK;
     }
     const m = ground.maskAt(x, z);
     if (m & MASK.beach) return BEACH;

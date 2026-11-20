@@ -30,7 +30,7 @@ export const KETAM: TrailDef = {
 };
 
 /**
- * Medium: over Puaka Hill. From Puaka Bridge along the path round the south
+ * Medium: over Puaka Hill. From Jalan Endut Senin along the path round the south
  * of Ubin Quarry (roots and rock, climbing), a loose steep descent to the
  * Sungei Noordin side, round by the lane to Jalan Endut Senin, then up the
  * path to the top of Puaka Hill over rock ledges. The view is the reward.
@@ -43,11 +43,11 @@ export const PUAKA: TrailDef = {
   grade: 'medium',
   paths: true,
   waypoints: [
-    [-129, 32], // Puaka Bridge
+    [-44, 105], // off Jalan Endut Senin, where the path round the quarry starts
     [356, -120], // the path round the south of the quarry
     [604, 112], // down to the lane
     [321, 379], // Jalan Endut Senin, at the foot of the hill path
-    [438, 162], // the top of Puaka Hill
+    [453, 166], // the top of Puaka Hill
   ],
   profile: [
     [[21, 70], 0],
@@ -61,14 +61,16 @@ export const PUAKA: TrailDef = {
     [[351, 237], 3],
     [[407, 197], 8],
     [[452, 168], 34],
-    [[438, 162], 34],
   ],
   obstacles: [
     { kind: 'rocks', label: 'Roots and rock', at: [65, 24], len: 190, needs: { diff: true } },
     { kind: 'descent', label: 'Loose descent', at: [480, -102], len: 110, needs: { low: true } },
-    { kind: 'summit', label: 'Puaka Hill ledges', at: [369, 231], len: 110, needs: { low: true, diff: true } },
+    // (No way round the last climb: the top is the point. The tips say what it needs.)
+    { kind: 'summit', label: 'Puaka Hill ledges', at: [369, 231], len: 85, needs: { low: true, diff: true }, round: false, p: { ledgeH: 0.3, humpH: 0.45 } },
   ],
   wayRound: 'gate',
+  // (The ways round climb the hill too: low range, but no diff lock.)
+  roundKit: { low: true },
   end: { label: 'Puaka Hill', sign: ['Puaka Hill', 'Lookout'] },
   startSign: ['Puaka Hill', 'Trail → 2 km'],
   clean: 'Clean run over Puaka Hill: every obstacle on the hard line. The whole island is below you.',

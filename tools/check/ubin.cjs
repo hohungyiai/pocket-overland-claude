@@ -64,7 +64,7 @@ const kits = (o) => {
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ kind: o.kind, label: o.label, needs: o.needs, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
       const drive = (pg, s0, s1, kit, extra = {}) => pg.evaluate(([a, b, k]) => window.__ubinDrive(window.__ubinRoute(a, b), k), [s0, s1, { ...kit, ...extra }]);
@@ -87,7 +87,7 @@ const kits = (o) => {
         check(`${o.label}: with ${kitName(K.right)} the bot gets through on the hard line`, right.done && st.done === 'hard', `(${right.seconds}s, lean ${right.maxLeanDeg}°, ${st.done}) says: ${JSON.stringify(right.says.map((t) => t[1]))}`);
         await page.close();
         page = await fresh();
-        if (info.wayRound !== 'gate') continue;
+        if (!o.gate) continue;
         // Tries with no kit, from the run-in each time: the way round
         // opens after the third.
         let st2 = null;
@@ -99,9 +99,10 @@ const kits = (o) => {
           if (st2.open) break;
         }
         check(`${o.label}: the way round opens after three tries, not before`, st2.open && st2.tries === 3, `(tries ${st2.tries}) ${JSON.stringify([...new Set(sayings)])}`);
-        const round = await page.evaluate(([i]) => window.__ubinDrive(window.__ubinRound(i), { low: false, diff: false, cruise: 6, timeout: 150 }), [i]);
+        const rk = { low: !!info.roundKit.low, diff: !!info.roundKit.diff, cruise: 6 };
+        const round = await page.evaluate(([i, k]) => window.__ubinDrive(window.__ubinRound(i), { ...k, timeout: 150 }), [i, rk]);
         const st3 = (await page.evaluate(() => window.__ubinObstacles()))[i];
-        check(`${o.label}: the way round gets through with no kit`, round.done && st3.done === 'round', `(${round.seconds}s, ${st3.done})`);
+        check(`${o.label}: the way round gets through with ${kitName(rk)}`, round.done && st3.done === 'round', `(${round.seconds}s, ${st3.done})`);
         await page.close();
         page = await fresh();
       }
