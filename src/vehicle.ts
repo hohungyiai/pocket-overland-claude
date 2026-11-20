@@ -35,6 +35,7 @@ const TUNING = {
   steerRate: 2.6, // rad/s
 };
 
+const DUST = new THREE.Color(0x8a7458);
 const GRAVITY = 9.81; // the world's (main.ts)
 
 // Front-left, front-right, rear-left, rear-right.
@@ -51,6 +52,11 @@ export class Vehicle {
   readonly mesh = new THREE.Group();
   lowRange = false;
   diffLock = false;
+  private paint!: THREE.MeshStandardMaterial;
+  /** How dusty and muddy the car is, 0 (just washed) .. 1. */
+  dust = 0;
+  /** Out of fuel: the engine carries on, gently, at a crawl (fuel.ts). */
+  crawl = 0;
   /** Signed forward speed, m/s. */
   speed = 0;
   surface: Surface = SURFACES.gravel;
@@ -111,7 +117,7 @@ export class Vehicle {
   }
 
   private buildMesh() {
-    const paint = new THREE.MeshStandardMaterial({ color: 0xd9cdb0, roughness: 0.55, metalness: 0.1 });
+    const paint = (this.paint = new THREE.MeshStandardMaterial({ color: 0xd9cdb0, roughness: 0.55, metalness: 0.1 }));
     const dark = new THREE.MeshStandardMaterial({ color: 0x2c2f33, roughness: 0.8 });
     const glass = new THREE.MeshStandardMaterial({ color: 0x23323d, roughness: 0.15, metalness: 0.4 });
     const accent = new THREE.MeshStandardMaterial({ color: 0x9a5a2c, roughness: 0.7 });
@@ -250,6 +256,13 @@ export class Vehicle {
     this.snap();
   }
 
+  /** Dust and mud on the paint: duller and browner as it builds up. */
+  setDust(k: number) {
+    this.dust = Math.min(1, Math.max(0, k));
+    this.paint.color.setHex(0xd9cdb0).lerp(DUST, this.dust * 0.55);
+    this.paint.roughness = 0.55 + this.dust * 0.4;
+  }
+
   update(dt: number, input: DriveInput) {
     const c = this.controller;
     const v = c.currentVehicleSpeed();
@@ -266,7 +279,7 @@ export class Vehicle {
 
     // Engine: simple torque falloff toward top speed of the selected range.
     const low = this.lowRange;
-    const top = low ? TUNING.topSpeedLow : TUNING.topSpeedHigh;
+    const top = Math.min(low ? TUNING.topSpeedLow : TUNING.topSpeedHigh, this.crawl || Infinity);
     const force = low ? TUNING.engineForceLow : TUNING.engineForceHigh;
     let drive = 0;
     let brake = 0;

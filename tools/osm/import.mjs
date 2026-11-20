@@ -43,6 +43,7 @@ const QUERY = (s, w, n, e) => `[out:json][timeout:120];
   way["natural"~"water|wood|wetland|beach|scrub|grassland|coastline"](${s},${w},${n},${e});
   way["waterway"~"canal|river|drain|stream"](${s},${w},${n},${e});
   way["amenity"~"parking"](${s},${w},${n},${e});
+  nwr["amenity"="fuel"](${s},${w},${n},${e});
   relation["natural"="water"](${s},${w},${n},${e});
   relation["landuse"](${s},${w},${n},${e});
   relation["leisure"="park"](${s},${w},${n},${e});
@@ -402,6 +403,516 @@ export function build(raw, origin) {
       return [q(x), q(z)];
     });
 
+  // --- Petrol stations (amenity=fuel, as an outline or a point): where the
+  // car refuels. Named by brand, the way people know them. Each becomes a
+  // place, not a building: a paved forecourt (the station's outline, with
+  // its canopy roof, rounded out 3 m and kept clear of the kerbed roads
+  // beside it), on which the game puts a canopy, pumps and a sign. ---
+  const fuel = [];
+  const fuelWays = new Set(); // outlines and canopy roofs the forecourt replaces
+  {
+    const feats = [];
+    for (const el of raw.elements) {
+      if (el.tags?.amenity !== 'fuel') continue;
+      let pts = null;
+      if (el.type === 'way') pts = wayPts(el);
+      else if (el.type === 'node') {
+        nodes.set(el.id, [el.lat, el.lon]);
+        const [x, z] = proj(el.id);
+        // (A point only: a forecourt about 24 x 16 m round it.)
+        pts = [[x - 12, z - 8], [x + 12, z - 8], [x + 12, z + 8], [x - 12, z + 8]];
+      }
+      if (!pts?.length) continue;
+      if (el.type === 'way') fuelWays.add(el.id);
+      const x = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+      const z = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+      const name = el.tags.brand || el.tags.name || el.tags.operator || '';
+      const same = feats.find((f) => Math.hypot(f.x - x, f.z - z) < 30); // a station drawn twice (roof and site)
+      if (same) {
+        same.pts.push(...pts);
+        same.name ||= name;
+      } else feats.push({ name, x, z, pts: [...pts] });
+    }
+    // Canopy roofs on the forecourt (often drawn apart from the site).
+    for (const wy of ways) {
+      if (wy.tags?.building !== 'roof' || !closed(wy)) continue;
+      const pts = wayPts(wy);
+      const x = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+      const z = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+      const f = feats.find((f) => Math.hypot(f.x - x, f.z - z) < 25);
+      if (!f) continue;
+      f.pts.push(...pts);
+      fuelWays.add(wy.id);
+    }
+    const hull = (P) => {
+      const p = [...P].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+      const lo = [];
+      const hi = [];
+      for (const v of p) {
+        while (lo.length > 1 && cross(lo[lo.length - 2], lo[lo.length - 1], v) <= 0) lo.pop();
+        lo.push(v);
+      }
+      for (const v of p.reverse()) {
+        while (hi.length > 1 && cross(hi[hi.length - 2], hi[hi.length - 1], v) <= 0) hi.pop();
+        hi.push(v);
+      }
+      return lo.slice(0, -1).concat(hi.slice(0, -1));
+    };
+    const inHull = (p, H) => {
+      let c = false;
+      for (let i = 0, j = H.length - 1; i < H.length; j = i++) {
+        const [ax, az] = H[i];
+        const [bx, bz] = H[j];
+        if (az > p[1] !== bz > p[1] && p[0] < ((bx - ax) * (p[1] - az)) / (bz - az) + ax) c = !c;
+      }
+      return c;
+    };
+    // Kerbed roads near a station: the forecourt stops 2.5 m short of their
+    // edge, clear of the road's paved verge.
+    const kerbed = edges.filter((e) => e.cls !== 'service' && !e.lv);
+    // (And 2 m clear of a footpath or cycle path beside it: the path stays
+    // whole, on the grass, never under the forecourt.)
+    const pathsBy = paths.map((p) => ({ pts: p.pts, w: 0, path: true }));
+    const pushOff = (p, extra = [], mid = null) => {
+      for (let round = 0; round < 3; round++)
+        for (const e of [...kerbed, ...extra]) {
+          for (let k = 0; k + 1 < e.pts.length; k++) {
+            const [ax, az] = e.pts[k];
+            const [bx, bz] = e.pts[k + 1];
+            const dx = bx - ax;
+            const dz = bz - az;
+            const ll = dx * dx + dz * dz || 1;
+            const u = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - az) * dz) / ll));
+            const cx = ax + dx * u;
+            const cz = az + dz * u;
+            const d = Math.hypot(p[0] - cx, p[1] - cz);
+            const need = e.path ? 2 : e.w / 2 + 2.5;
+            // (A path: the forecourt stays on the station's own side of it,
+            // so a corner reaching across the path is drawn back, not out.)
+            if (e.path && mid && u > 0 && u < 1 && d < 15) {
+              const side = (q) => Math.sign(dx * (q[1] - az) - dz * (q[0] - ax));
+              if (side(p) !== side(mid)) {
+                const L = Math.sqrt(ll);
+                const s = side(mid);
+                p[0] = cx + (-dz / L) * need * s;
+                p[1] = cz + (dx / L) * need * s;
+                continue;
+              }
+            }
+            if (d >= need || d < 1e-6) continue;
+            p[0] = cx + ((p[0] - cx) / d) * need;
+            p[1] = cz + ((p[1] - cz) / d) * need;
+          }
+        }
+      return p;
+    };
+    const lanes = edges.filter((e) => e.cls === 'service' && !e.lv);
+    const gapTo = (x, z, P) => {
+      let c = false;
+      let best = Infinity;
+      for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+        const [ax, az] = P[i];
+        const [bx, bz] = P[j];
+        if (az > z !== bz > z && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+        const dx = bx - ax;
+        const dz = bz - az;
+        const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+        best = Math.min(best, Math.hypot(ax + dx * u - x, az + dz * u - z));
+      }
+      return c ? 0 : best;
+    };
+    const nearKerbed = (x, z, more) =>
+      kerbed.some((r) => {
+        for (let k = 0; k + 1 < r.pts.length; k++) {
+          const [ax, az] = r.pts[k];
+          const [bx, bz] = r.pts[k + 1];
+          if (Math.min(ax, bx) - x > 60 || x - Math.max(ax, bx) > 60 || Math.min(az, bz) - z > 60 || z - Math.max(az, bz) > 60) continue;
+          const dx = bx - ax;
+          const dz = bz - az;
+          const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+          if (Math.hypot(ax + dx * u - x, az + dz * u - z) < r.w / 2 + more) return true;
+        }
+        return false;
+      });
+    for (const f of feats) {
+      // Rounded out 3 m: the hull of the outline with a ring round each corner.
+      const h = hull(f.pts);
+      const round = [];
+      for (const [x, z] of h) for (let a = 0; a < 8; a++) round.push([x + 3 * Math.cos((a * Math.PI) / 4), z + 3 * Math.sin((a * Math.PI) / 4)]);
+      // (Every 1.5 m along its edge, not only its corners, kept off the roads.)
+      const h1 = hull(round);
+      const dense = [];
+      for (let i = 0; i < h1.length; i++) {
+        const [ax, az] = h1[i];
+        const [bx, bz] = h1[(i + 1) % h1.length];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 1.5));
+        for (let t = 0; t < n; t++) dense.push([ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n]);
+      }
+      // (A path that runs right through the station's own outline, more
+      // than 3 m inside it, is left be.)
+      const h0 = hull(f.pts);
+      const deepIn = (p) => {
+        if (!inHull(p, h0)) return false;
+        for (let i = 0; i < h0.length; i++) {
+          const [ax, az] = h0[i];
+          const [bx, bz] = h0[(i + 1) % h0.length];
+          const dx = bx - ax;
+          const dz = bz - az;
+          const u = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - az) * dz) / (dx * dx + dz * dz || 1)));
+          if (Math.hypot(ax + dx * u - p[0], az + dz * u - p[1]) < 3) return false;
+        }
+        return true;
+      };
+      const nearPaths = pathsBy.filter((q) => q.pts.some((p) => Math.hypot(p[0] - f.x, p[1] - f.z) < 120) && !q.pts.some(deepIn));
+      let ring = dense.map((p) => pushOff(p, nearPaths, [f.x, f.z]));
+      ring = simplifyRing([...ring, ring[0]], 0.4).slice(0, -1);
+      if (ringArea(ring) < 0) ring.reverse();
+      if (Math.abs(ringArea(ring)) < 120) continue; // squeezed out by the roads beside it
+      const x = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+      const z = ring.reduce((s, p) => s + p[1], 0) / ring.length;
+      const r = Math.max(...ring.map((p) => Math.hypot(p[0] - x, p[1] - z)));
+      const pts = qp(ring);
+      fuel.push({ name: f.name || 'Petrol station', x: q(x), z: q(z), r: q(r), pts });
+      // The ground under it is paved (no trees), to its edge and no further,
+      // so its kerb meets the grass cleanly.
+      // (The ground's own paving is drawn in 4 m cells: kept 3 m inside the
+      // forecourt so no cell's corner shows as teeth past its kerb.)
+      const inner = ring.map((p, i) => {
+        const a = ring[(i + ring.length - 1) % ring.length];
+        const b = ring[(i + 1) % ring.length];
+        const n1 = [-(p[1] - a[1]), p[0] - a[0]];
+        const n2 = [-(b[1] - p[1]), b[0] - p[0]];
+        const l1 = Math.hypot(...n1) || 1;
+        const l2 = Math.hypot(...n2) || 1;
+        let nx = n1[0] / l1 + n2[0] / l2;
+        let nz = n1[1] / l1 + n2[1] / l2;
+        const ln = Math.hypot(nx, nz) || 1;
+        nx /= ln;
+        nz /= ln;
+        const cos = Math.max(0.5, (nx * n1[0]) / l1 + (nz * n1[1]) / l1);
+        return [p[0] + (nx * 3) / cos, p[1] + (nz * 3) / cos];
+      });
+      if (ringArea(inner) > 20) areas.push({ kind: 'parking', name: 'Forecourt', pts: qp(inner) });
+    }
+    // A footway stub wholly on a forecourt (a shop's door, a few metres
+    // long) is the forecourt's own paving: it goes.
+    for (let i = paths.length - 1; i >= 0; i--) {
+      const P = paths[i].pts;
+      let len = 0;
+      for (let k = 1; k < P.length; k++) len += Math.hypot(P[k][0] - P[k - 1][0], P[k][1] - P[k - 1][1]);
+      if (len < 8 && fuel.some((f) => P.every((p) => inHull(p, f.pts)))) paths.splice(i, 1);
+    }
+    // A lane running along a forecourt's edge, just off it or with its side
+    // over its kerb, is cut out there (the forecourt keeps its own size; the
+    // lane does not hug it). What is left of the lane either goes on past,
+    // or stops short beside the forecourt and is turned onto it (below).
+    let cutOut = 0;
+    let stubs = 0;
+    let emptied = 0;
+    for (const f of fuel) {
+      const P = f.pts;
+      let edgeDir = [1, 0];
+      const edgeGap = (x, z) => {
+        let best = Infinity;
+        for (let i = 0; i < P.length; i++) {
+          const [ax, az] = P[i];
+          const [bx, bz] = P[(i + 1) % P.length];
+          const dx = bx - ax;
+          const dz = bz - az;
+          const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+          const d = Math.hypot(ax + dx * u - x, az + dz * u - z);
+          if (d < best) {
+            best = d;
+            edgeDir = [dx, dz];
+          }
+        }
+        return best;
+      };
+      for (const e of [...lanes]) {
+        if (e.gone || !e.pts.some((p) => Math.hypot(p[0] - f.x, p[1] - f.z) < f.r + 40)) continue;
+        // Every metre along it: hugging the edge or not.
+        const samples = [];
+        for (let k = 0; k + 1 < e.pts.length; k++) {
+          const [ax, az] = e.pts[k];
+          const [bx, bz] = e.pts[k + 1];
+          const L = Math.hypot(bx - ax, bz - az) || 1;
+          const n = Math.max(1, Math.ceil(L));
+          const nx = -(bz - az) / L;
+          const nz = (bx - ax) / L;
+          for (let t = 0; t < n; t++) {
+            const x = ax + ((bx - ax) * t) / n;
+            const z = az + ((bz - az) * t) / n;
+            const g = edgeGap(x, z);
+            const ed = edgeDir;
+            const cos = Math.abs(ed[0] * (bx - ax) + ed[1] * (bz - az)) / ((Math.hypot(...ed) || 1) * L);
+            const inside = inHull([x, z], P);
+            const hangs = [1, -1].some((sg) => {
+              const sx = x + nx * sg * (e.w / 2);
+              const sz = z + nz * sg * (e.w / 2);
+              return !inHull([sx, sz], P) || edgeGap(sx, sz) < 0.5;
+            });
+            const hug = cos > 0.87 && (inside ? g < e.w / 2 + 1 && hangs : g <= e.w / 2 + 1.5) && !nearKerbed(x, z, e.w / 2 + 2);
+            samples.push({ p: [x, z], hug });
+          }
+        }
+        samples.push({ p: e.pts[e.pts.length - 1], hug: false });
+        // Runs of 3 m or more that hug: cut out.
+        const keepS = samples.map(() => true);
+        for (let i = 0; i < samples.length; ) {
+          if (!samples[i].hug) {
+            i++;
+            continue;
+          }
+          let j = i;
+          while (j < samples.length && samples[j].hug) j++;
+          if (j - i >= 3) for (let k = i; k < j; k++) keepS[k] = false;
+          i = j;
+        }
+        if (keepS.every(Boolean)) continue;
+        cutOut++;
+        // The pieces left, each 2 m or more: the first keeps the lane's start
+        // joint, the last its end joint; a cut end is a new joint.
+        const pieces = [];
+        for (let i = 0; i < samples.length; ) {
+          if (!keepS[i]) {
+            i++;
+            continue;
+          }
+          let j = i;
+          while (j < samples.length && keepS[j]) j++;
+          pieces.push([i, j - 1]);
+          i = j;
+        }
+        e.gone = true;
+        const orig = { ...e };
+        let slot = e; // (the first piece left keeps the lane's place in the list)
+        for (const [i, j] of pieces) {
+          if (j - i < 2) continue;
+          const atStart = i === 0;
+          const atEnd = j === samples.length - 1;
+          if (!atStart && !atEnd) continue; // (adrift: joined to nothing)
+          const pts = samples.slice(i, j + 1).map((s) => [q(s.p[0]), q(s.p[1])]);
+          const piece = { ...orig, gone: false, pts };
+          if (!atStart) {
+            piece.a = jOut.length;
+            jOut.push([...pts[0]]);
+          }
+          if (!atEnd) {
+            piece.b = jOut.length;
+            jOut.push([...pts[pts.length - 1]]);
+          }
+          piece.pts = simplify(piece.pts, 0.12);
+          if (slot) {
+            Object.assign(slot, piece);
+            slot = null;
+          } else {
+            edges.push(piece);
+            lanes.push(piece);
+          }
+        }
+        if (slot) emptied++;
+      }
+    }
+    // (A lane cut away whole: its place in the list goes to the last one, so
+    // every other piece keeps its number: the checks name some by it.)
+    const compact = () => {
+      for (let i = 0; i < edges.length; i++) {
+        if (!edges[i].gone) continue;
+        while (edges.length > i + 1 && edges[edges.length - 1].gone) edges.pop();
+        if (edges.length === i + 1) {
+          edges.pop();
+          break;
+        }
+        edges[i] = edges.pop();
+      }
+      for (let i = lanes.length - 1; i >= 0; i--) if (lanes[i].gone) lanes.splice(i, 1);
+      for (const e of edges) delete e.gone;
+    };
+    compact();
+    if (cutOut) console.log(`station lanes: ${cutOut} cut where they ran along a forecourt's edge (${emptied} wholly)`);
+    // A lane that stops short beside a forecourt goes on onto it, straight,
+    // and ends on it: a way in, not a stub on the grass.
+    const deg = new Map();
+    for (const e of edges) for (const j of [e.a, e.b]) deg.set(j, (deg.get(j) ?? 0) + 1);
+    const onKerbed = (x, z) =>
+      kerbed.some((e) => e.pts.some((p, k) => {
+        if (k + 1 >= e.pts.length) return false;
+        const [bx, bz] = e.pts[k + 1];
+        const dx = bx - p[0];
+        const dz = bz - p[1];
+        const u = Math.max(0, Math.min(1, ((x - p[0]) * dx + (z - p[1]) * dz) / (dx * dx + dz * dz || 1)));
+        return Math.hypot(p[0] + dx * u - x, p[1] + dz * u - z) < e.w / 2 + 0.5;
+      }));
+    for (const f of fuel) {
+      const P = f.pts;
+      for (const e of lanes) {
+        for (const atA of [true, false]) {
+          const j = atA ? e.a : e.b;
+          if (deg.get(j) !== 1) continue;
+          let p = atA ? e.pts[0] : e.pts[e.pts.length - 1];
+          if (Math.hypot(p[0] - f.x, p[1] - f.z) > f.r + 20 || gapTo(p[0], p[1], P) > 15) continue;
+          // (Ends on it, or crossed it and stops past it: either way it ends
+          // on it, 3 m in from the edge it came in by.)
+          const crosses = e.pts.some((pt) => gapTo(pt[0], pt[1], P) === 0);
+          if (gapTo(p[0], p[1], P) === 0 || crosses) {
+            // A lane that ends on the forecourt ends 3 m in from its edge
+            // (the forecourt is the paving beyond; no lane's end lies under it).
+            const own = atA ? [...e.pts].reverse() : [...e.pts];
+            const depth = (pt) => {
+              if (gapTo(pt[0], pt[1], P) > 0) return 0;
+              let edge = Infinity;
+              for (let i = 0; i < P.length; i++) {
+                const [ax, az] = P[i];
+                const [bx, bz] = P[(i + 1) % P.length];
+                const dx = bx - ax;
+                const dz = bz - az;
+                const u = Math.max(0, Math.min(1, ((pt[0] - ax) * dx + (pt[1] - az) * dz) / (dx * dx + dz * dz || 1)));
+                edge = Math.min(edge, Math.hypot(ax + dx * u - pt[0], az + dz * u - pt[1]));
+              }
+              return edge;
+            };
+            // (Walk in from the lane's other end to the first point 3 m in.)
+            const line = [own[0]];
+            for (let k = 0; k + 1 < own.length; k++) {
+              const [ax, az] = own[k];
+              const [bx, bz] = own[k + 1];
+              const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) * 2));
+              let stop = null;
+              for (let t = 1; t <= n; t++) {
+                const pt = [ax + ((bx - ax) * t) / n, az + ((bz - az) * t) / n];
+                if (depth(pt) >= 3) {
+                  stop = pt;
+                  break;
+                }
+              }
+              if (stop) {
+                line.push([q(stop[0]), q(stop[1])]);
+                break;
+              }
+              line.push(own[k + 1]);
+            }
+            const L = line.reduce((t, pt, i) => (i ? t + Math.hypot(pt[0] - line[i - 1][0], pt[1] - line[i - 1][1]) : 0), 0);
+            if (line.length >= 2 && L >= 3 && line.length <= own.length && depth(line[line.length - 1]) >= 3) {
+              e.pts = atA ? line.reverse() : line;
+              jOut[j] = [...(atA ? e.pts[0] : e.pts[e.pts.length - 1])];
+              continue;
+            }
+            if (gapTo(p[0], p[1], P) === 0) continue;
+          }
+          // (First back off any of it that runs along beside the forecourt.)
+          const own = atA ? [...e.pts].reverse() : [...e.pts];
+          const beside = (pt) => gapTo(pt[0], pt[1], P) > 0 && gapTo(pt[0], pt[1], P) <= e.w / 2 + 4;
+          while (own.length > 2 && beside(own[own.length - 1]) && beside(own[own.length - 2])) own.pop();
+          p = own[own.length - 1];
+          // Onto it the shortest way to 3 m in: square across an edge near
+          // by (or towards its middle), never along one.
+          const edgeIn = (x, z) => {
+            let edge = Infinity;
+            for (let i = 0; i < P.length; i++) {
+              const [ax, az] = P[i];
+              const [bx, bz] = P[(i + 1) % P.length];
+              const dx = bx - ax;
+              const dz = bz - az;
+              const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+              edge = Math.min(edge, Math.hypot(ax + dx * u - x, az + dz * u - z));
+            }
+            return edge;
+          };
+          const dirs = [];
+          {
+            const dl = Math.hypot(f.x - p[0], f.z - p[1]) || 1;
+            dirs.push([(f.x - p[0]) / dl, (f.z - p[1]) / dl]);
+          }
+          for (let i = 0; i < P.length; i++) {
+            const [ax, az] = P[i];
+            const [bx, bz] = P[(i + 1) % P.length];
+            const dx = bx - ax;
+            const dz = bz - az;
+            const u = ((p[0] - ax) * dx + (p[1] - az) * dz) / (dx * dx + dz * dz || 1);
+            if (u < 0.05 || u > 0.95) continue;
+            if (Math.hypot(ax + dx * u - p[0], az + dz * u - p[1]) > 16) continue;
+            const L = Math.hypot(dx, dz) || 1;
+            let [ux, uz] = [-dz / L, dx / L];
+            if (ux * (ax + dx * u - p[0]) + uz * (az + dz * u - p[1]) < 0) [ux, uz] = [-ux, -uz];
+            dirs.push([ux, uz]);
+          }
+          let more = [];
+          let ok = false;
+          let bestSteps = Infinity;
+          // (No turn sharper than a right angle and a bit: a lane bends onto
+          // the forecourt, it does not double back.)
+          const hd = (() => {
+            const a = own[Math.max(0, own.length - 2)];
+            const b = own[own.length - 1];
+            const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+            return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+          })();
+          for (const [ux, uz] of dirs) {
+            if (ux * hd[0] + uz * hd[1] < -0.2) continue;
+            const got = [];
+            for (let step = 1; step <= 25 && step < bestSteps; step++) {
+              const x = p[0] + ux * step;
+              const z = p[1] + uz * step;
+              if (onKerbed(x, z)) break;
+              if (step % 2 === 0 || gapTo(x, z, P) === 0) got.push([q(x), q(z)]);
+              if (gapTo(x, z, P) === 0 && edgeIn(x, z) >= 3) {
+                got.push([q(x), q(z)]);
+                bestSteps = step;
+                more = got;
+                ok = true;
+                break;
+              }
+            }
+          }
+          more = more.filter((m, i) => !i || m[0] !== more[i - 1][0] || m[1] !== more[i - 1][1]);
+          if (!ok || !more.length) {
+            // (No way onto it without doubling back: a short stub goes.)
+            const len = e.pts.reduce((t, pt, i) => (i ? t + Math.hypot(pt[0] - e.pts[i - 1][0], pt[1] - e.pts[i - 1][1]) : 0), 0);
+            if (len < 40) {
+              e.gone = true;
+              stubs++;
+            }
+            continue;
+          }
+          const end = more[more.length - 1];
+          // (The turn onto it rounded, 4 m each way: a lane bends, it does not
+          // kink.)
+          const C = own[own.length - 1];
+          const R = 4;
+          let back = 0;
+          let A = null;
+          for (let k = own.length - 1; k > 0 && !A; k--) {
+            const l = Math.hypot(own[k][0] - own[k - 1][0], own[k][1] - own[k - 1][1]);
+            if (back + l >= R) {
+              const t = (R - back) / l;
+              A = [own[k][0] + (own[k - 1][0] - own[k][0]) * t, own[k][1] + (own[k - 1][1] - own[k][1]) * t];
+              own.length = k;
+            } else back += l;
+          }
+          let rest = more;
+          if (A) {
+            const dl = Math.hypot(more[0][0] - C[0], more[0][1] - C[1]) || 1;
+            const B = [C[0] + ((more[0][0] - C[0]) / dl) * R, C[1] + ((more[0][1] - C[1]) / dl) * R];
+            const curve = [];
+            for (let t = 0; t <= 1.001; t += 0.125)
+              curve.push([
+                q((1 - t) * (1 - t) * A[0] + 2 * (1 - t) * t * C[0] + t * t * B[0]),
+                q((1 - t) * (1 - t) * A[1] + 2 * (1 - t) * t * C[1] + t * t * B[1]),
+              ]);
+            rest = more.filter((m) => Math.hypot(m[0] - C[0], m[1] - C[1]) > R + 0.5);
+            own.push(...curve);
+          }
+          own.push(...rest);
+          e.pts = atA ? own.reverse() : own;
+          jOut[j] = [...end];
+        }
+      }
+    }
+    compact();
+    if (stubs) console.log(`station lanes: ${stubs} stub(s) beside a forecourt dropped`);
+  }
+
   // --- Coastline: joined into long lines (land on the left in OSM) ---
   const coast = stitch(ways.filter((wy) => wy.tags?.natural === 'coastline').map((wy) => wy.nodes), true).map((ids) =>
     qp(simplify(ids.map(proj).filter(Boolean), 1)),
@@ -410,7 +921,7 @@ export function build(raw, origin) {
   // --- Buildings ---
   const buildings = [];
   for (const wy of ways) {
-    if (!wy.tags?.building || !closed(wy)) continue;
+    if (!wy.tags?.building || !closed(wy) || fuelWays.has(wy.id)) continue;
     let pts = simplifyRing(wayPts(wy), 0.5).slice(0, -1);
     if (pts.length < 3) continue;
     if (ringArea(pts) < 0) pts = pts.reverse(); // consistent winding
@@ -418,6 +929,35 @@ export function build(raw, origin) {
     const levels = +t['building:levels'] || 0;
     const height = parseFloat(t.height) || 0;
     buildings.push({ k: t.building, l: levels || undefined, h: height || undefined, name: t.name, pts: qp(pts) });
+  }
+
+  // Buildings standing on a forecourt (the shop): the canopy keeps clear.
+  // (The buildings list is filled just above.)
+  for (const f of fuel) {
+    const inRing = (x, z) => {
+      let c = false;
+      for (let i = 0, j = f.pts.length - 1; i < f.pts.length; j = i++) {
+        const [ax, az] = f.pts[i];
+        const [bx, bz] = f.pts[j];
+        if (az > z !== bz > z && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+      }
+      return c;
+    };
+    const shops = [];
+    for (let i = buildings.length - 1; i >= 0; i--) {
+      const b = buildings[i];
+      const x = b.pts.reduce((s, p) => s + p[0], 0) / b.pts.length;
+      const z = b.pts.reduce((s, p) => s + p[1], 0) / b.pts.length;
+      if (!inRing(x, z) && !b.pts.some((p) => inRing(p[0], p[1]))) continue;
+      // (A big one is the station itself drawn as a building, canopy and
+      // all: the game builds that. A small one is the shop.)
+      if (inRing(x, z) && Math.abs(ringArea(b.pts)) > 250) {
+        buildings.splice(i, 1);
+        continue;
+      }
+      shops.push([q(x), q(z), q(Math.max(...b.pts.map((p) => Math.hypot(p[0] - x, p[1] - z))))]);
+    }
+    if (shops.length) f.shops = shops;
   }
 
   // --- Land mask: 10 m cells, sea flood-filled from the water side of
@@ -431,6 +971,7 @@ export function build(raw, origin) {
     attribution: 'Map data © OpenStreetMap contributors (ODbL)',
     origin: [lat0, lon0],
     bbox: raw.bbox,
+    fuel,
     junctions: jOut,
     edges,
     paths,

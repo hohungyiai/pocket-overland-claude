@@ -1,0 +1,4 @@
+{
+  "//": "Where each garage's drive-in bay is (x east, z south, metres; yaw the way a car parked in it faces). Read by src/garage.ts and by tools/osm/redraw.mjs, which keeps the lane to each bay.",
+  "tampines-hub": { "x": -790, "z": 1479.2, "yaw": 0 }
+}

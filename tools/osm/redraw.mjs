@@ -10,7 +10,8 @@
 //          kept only where it is the quickest way between two roads: a run
 //          of lanes between two proper roads that is shorter than 2/3 of
 //          the way round by those roads. Car park aisles, driveways and
-//          loops off one street go.
+//          loops off one street go, but for the way in to a petrol
+//          station's forecourt or a garage's bay.
 //   corners  a short slip road that only cuts the corner of a junction (its
 //          two ends are joined by two other short roads through one
 //          joint) is folded into the junction: the junction gives the
@@ -40,6 +41,9 @@
 // Map data © OpenStreetMap contributors, ODbL 1.0.
 
 import fs from 'node:fs';
+
+// Garage bays (the lane to each is kept).
+const BAYS = JSON.parse(fs.readFileSync(new URL('../../src/garage-bays.json', import.meta.url), 'utf8'));
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -145,9 +149,193 @@ if (steps.has('lanes')) {
         for (const i of by.used) keep.add(i);
       }
   }
+  // Lanes to a place. A garage's bay keeps the lane it lies on, and the way
+  // from there to a road. (Petrol stations: below.)
+  const inRing = (x, z, P) => {
+    let c = false;
+    for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+      const [ax, az] = P[i];
+      const [bx, bz] = P[j];
+      if (az > z !== bz > z && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+    }
+    return c;
+  };
+  const courts = (M.fuel ?? []).filter((f) => f.pts?.length).map((f) => f.pts);
+  const nearPt = (e, x, z) => {
+    let best = Infinity;
+    for (let k = 0; k + 1 < e.pts.length; k++) {
+      const [ax, az] = e.pts[k];
+      const [bx, bz] = e.pts[k + 1];
+      const dx = bx - ax;
+      const dz = bz - az;
+      const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+      best = Math.min(best, Math.hypot(ax + dx * u - x, az + dz * u - z));
+    }
+    return best;
+  };
+  const wayToRoad = (lane) => {
+    if (run[lane] < 0) return [];
+    const allow = new Set(runs[run[lane]]);
+    let best = null;
+    for (const from of [edges[lane].a, edges[lane].b]) {
+      if (roadAt[from].length) return [];
+      for (const to of new Set(runs[run[lane]].flatMap((i) => [edges[i].a, edges[i].b]))) {
+        if (!roadAt[to].length) continue;
+        const w = way(laneAt, from, to, Infinity, allow);
+        if (w && (!best || w.len < best.len)) best = w;
+      }
+    }
+    return best?.used ?? [];
+  };
+  let toPlaces = 0;
+  for (const b of Object.entries(BAYS).filter(([k]) => !k.startsWith('/')).map(([, b]) => b)) {
+    let lane = -1;
+    let d = 7;
+    edges.forEach((e, i) => {
+      if (!isLane(e)) return;
+      const di = nearPt(e, b.x, b.z);
+      if (di < d) [lane, d] = [i, di];
+    });
+    if (lane < 0) continue;
+    toPlaces++;
+    keep.add(lane);
+    for (const i of wayToRoad(lane)) keep.add(i);
+  }
+  // A petrol station gets ONE lane in: the shortest way by lanes from a road
+  // to where a lane first comes to its forecourt, then straight on onto it,
+  // ending on it. Nothing of the lane beyond that point is kept, so no lane
+  // runs along the outside of a forecourt or on past it onto the grass.
+  const ringGap = (x, z, P) => {
+    let best = Infinity;
+    for (let i = 0; i < P.length; i++) {
+      const [ax, az] = P[i];
+      const [bx, bz] = P[(i + 1) % P.length];
+      const dx = bx - ax;
+      const dz = bz - az;
+      const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+      best = Math.min(best, Math.hypot(ax + dx * u - x, az + dz * u - z));
+    }
+    return best;
+  };
+  const entries = [];
+  for (const P of courts) {
+    const cx = P.reduce((t, p) => t + p[0], 0) / P.length;
+    const cz = P.reduce((t, p) => t + p[1], 0) / P.length;
+    const R = Math.max(...P.map((p) => Math.hypot(p[0] - cx, p[1] - cz)));
+    // Shortest ways from any road joint, by lanes.
+    const dist = new Map();
+    const via = new Map();
+    const open = [];
+    pos.forEach((_, j) => {
+      if (j < N && roadAt[j].length && laneAt[j].length) {
+        dist.set(j, 0);
+        open.push([0, j]);
+      }
+    });
+    while (open.length) {
+      let m = 0;
+      for (let k = 1; k < open.length; k++) if (open[k][0] < open[m][0]) m = k;
+      const [d, j] = open[m];
+      open[m] = open[open.length - 1];
+      open.pop();
+      if (d > (dist.get(j) ?? Infinity) || d > 400) continue;
+      for (const i of laneAt[j] ?? []) {
+        const to = edges[i].a === j ? edges[i].b : edges[i].a;
+        const nd = d + edges[i].len;
+        if (nd >= (dist.get(to) ?? Infinity)) continue;
+        dist.set(to, nd);
+        via.set(to, i);
+        open.push([nd, to]);
+      }
+    }
+    let best = null;
+    edges.forEach((e, i) => {
+      if (!isLane(e) || !e.pts.some((p) => Math.hypot(p[0] - cx, p[1] - cz) < R + 40)) return;
+      for (const fromA of [true, false]) {
+        const start = fromA ? e.a : e.b;
+        if (!dist.has(start)) continue;
+        const pts = fromA ? e.pts : [...e.pts].reverse();
+        let along = 0;
+        for (let k = 0; k + 1 < pts.length; k++) {
+          const [ax, az] = pts[k];
+          const [bx, bz] = pts[k + 1];
+          const L = Math.hypot(bx - ax, bz - az);
+          const n = Math.max(1, Math.ceil(L * 2));
+          let hit = null;
+          for (let t = 0; t <= n; t++) {
+            const x = ax + ((bx - ax) * t) / n;
+            const z = az + ((bz - az) * t) / n;
+            if (inRing(x, z, P) || ringGap(x, z, P) <= e.w / 2 + 0.6) {
+              hit = { k, p: [x, z], cost: dist.get(start) + along + (L * t) / n };
+              break;
+            }
+          }
+          if (hit) {
+            if (!best || hit.cost < best.cost) best = { ...hit, i, fromA, start, pts };
+            break;
+          }
+          along += L;
+        }
+      }
+    });
+    if (!best) continue;
+    // The way there from the road.
+    for (let j = best.start; via.has(j); ) {
+      const i = via.get(j);
+      keep.add(i);
+      j = edges[i].a === j ? edges[i].b : edges[i].a;
+    }
+    // Then straight onto the forecourt, ending 3 m in from its edge.
+    const line = [...best.pts.slice(0, best.k + 1), best.p];
+    let [x, z] = best.p;
+    // (Square on to its nearest edge, so it crosses that edge, not runs along it.)
+    let ux = 0;
+    let uz = 0;
+    {
+      let bd = Infinity;
+      for (let i = 0; i < P.length; i++) {
+        const [ax, az] = P[i];
+        const [bx, bz] = P[(i + 1) % P.length];
+        const dx = bx - ax;
+        const dz = bz - az;
+        const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+        const dd = Math.hypot(ax + dx * u - x, az + dz * u - z);
+        if (dd < bd) {
+          bd = dd;
+          const L = Math.hypot(dx, dz) || 1;
+          [ux, uz] = [-dz / L, dx / L];
+        }
+      }
+      if (!inRing(x + ux * 4, z + uz * 4, P) && inRing(x - ux * 4, z - uz * 4, P)) [ux, uz] = [-ux, -uz];
+      if (!inRing(x + ux * 4, z + uz * 4, P)) {
+        const dl = Math.hypot(cx - x, cz - z) || 1;
+        [ux, uz] = [(cx - x) / dl, (cz - z) / dl];
+      }
+    }
+    for (let step = 0; step < 40; step++) {
+      x += ux;
+      z += uz;
+      if (Math.hypot(x - best.p[0], z - best.p[1]) >= 1.5) line.push([x, z]);
+      if (inRing(x, z, P) && ringGap(x, z, P) >= 3) break;
+    }
+    const e = edges[best.i];
+    const j = pos.length;
+    pos.push([x, z]);
+    const entry = { ...e, pts: line, a: best.start, b: j, len: lenOf(line) };
+    if (keep.has(best.i)) {
+      // (A lane already kept for another reason: the way in is its own piece.)
+      edges.push(entry);
+      keep.add(edges.length - 1);
+    } else {
+      Object.assign(e, entry);
+      keep.add(best.i);
+    }
+    toPlaces++;
+    entries.push([+best.p[0].toFixed(1), +best.p[1].toFixed(1)]);
+  }
   const before = edges.filter(isLane).length;
   edges = edges.filter((e, i) => !isLane(e) || keep.has(i));
-  report.lanes = { runs: runs.length, lanes: before, kept: keep.size, dropped: before - keep.size, through };
+  report.lanes = { runs: runs.length, lanes: before, kept: keep.size, dropped: before - keep.size, through, toPlaces, entries };
 }
 
 // ---------- corners ----------
@@ -1156,7 +1344,7 @@ const idFor = (j) => {
   }
   return idOf.get(j);
 };
-const outEdges = edges.flatMap(({ len, len0, spans, ...e }) => {
+const outEdges = edges.flatMap(({ len, len0, spans, trimmed, ...e }) => {
   const o = { ...e, a: idFor(e.a), b: idFor(e.b) };
   if (spans) {
     const all = spans.reduce((t, sp) => t + sp[0], 0);
@@ -1200,6 +1388,7 @@ const out = {
   waterways: M.waterways.filter(touches),
   rail: M.rail.filter(touches),
   stations: M.stations.filter(touches),
+  ...(M.fuel ? { fuel: M.fuel.filter(touches) } : {}),
   buildings: M.buildings.filter(touches),
   ...(M.signals ? { signals: M.signals.filter(near) } : {}),
 };

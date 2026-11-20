@@ -19,6 +19,7 @@
 
       <div id="hud">
         <div class="speed"><span id="hud-speed">0</span><small>km/h</small></div>
+        <div id="hud-fuel" class="fuel" hidden><i><b></b></i><span></span></div>
         <div id="hud-surface" class="surface">Gravel</div>
         <div id="hud-zone" class="zone"></div>
       </div>
@@ -38,12 +39,17 @@
         <p class="small">LOW = low range for climbs and rocks · DIFF = locks the differential · Keyboard: WASD, L, K, R, C</p>
       </div>
       <button id="btn-camp" class="btn camp" hidden>Make camp</button>
+      <button id="btn-backup" class="btn camp" hidden>Back up your journey</button>
+      <button id="btn-fuel" class="btn camp fill" hidden>Fill up</button>
+      <button id="btn-garage" class="btn camp" hidden>Enter garage</button>
+      <div id="notice" class="notice" hidden></div>
       <div id="fade"></div>
       <div id="rotate">Turn your phone sideways to drive</div>
       <button id="btn-menu" class="btn menu" aria-label="Menu">&#9776;</button>
       <div id="loading">Building the world…</div>
       <div id="menu">
         <h1>Pocket Overland</h1>
+        <div id="menu-warning" class="menu-note" hidden></div>
         <p>Choose a drive</p>
         <div class="choices">
           <button data-course="pasirris"><b>Pasir Ris &amp; Tampines</b><span>Singapore · real streets, parks and blocks · map data © OpenStreetMap contributors</span></button>
@@ -53,6 +59,7 @@
           <button data-course="ubintrail"><b>Pulau Ubin: Ketam Trail</b><span>The first off-road trail · jetty to Endut Senin camp round Ketam Quarry · map data © OpenStreetMap contributors</span></button>
           <button data-course="ubin"><b>Ubin test track</b><span>Gravel loop · climb, rocks, water, sand</span></button>
         </div>
+        <div id="menu-tools" class="menu-tools"></div>
       </div>
     </div>
     <script type="module" src="./src/main.ts"></script>

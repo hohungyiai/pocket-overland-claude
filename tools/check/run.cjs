@@ -7,7 +7,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
-const DEPS = { 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js', 'edges.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'], 'outline.js': ['finish.js'], 'watertight.js': ['finish.js'] };
+const DEPS = { 'fuel.js': ['bot.js'], 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js', 'edges.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'], 'outline.js': ['finish.js'], 'watertight.js': ['finish.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
   // A check with known spots passes while it finds no more than that many:
@@ -19,6 +19,9 @@ const CHECKS = [
   // those lands inside a slice (31 ms alone, 61 ms after one finished-road
   // check, 102 ms after all of them, in a different kind of slice each time).
   ['The game starts within 20 s', 'perf.js', '__checkStart', 0],
+  // Saving (save.ts): codes round-trip, a damaged code is refused, the autosave holds the car's spot.
+  ['A save code gives back the same journey, and a damaged or cut-short code is refused', 'save.js', '__checkSaveCodes', 0],
+  ['The autosave keeps the car\'s spot, and your place on other drives', 'save.js', '__checkAutosave', 0.5],
   ['No frame draws more than the budget, anywhere on the map', 'perf.js', '__checkDrawn', 0],
   ['No slice of map building holds a frame up for more than 100 ms', 'perf.js', '__checkSlices', 0],
   ['Ground never rises above a road', 'ground.js', '__checkGround', 0],
@@ -115,6 +118,12 @@ const CHECKS = [
   ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0],
   ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0],
   ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, 21],
+  // (Last: these move the car.)
+  // Fuel (fuel.ts): never stranded, and every station can be filled up at.
+  ['Every petrol station is a place: a paved, solid forecourt a road runs onto and its lanes end on, clear of public roads, and the pump works only on it', 'fuel.js', '__checkStations', 0],
+  ['With an empty tank the car still climbs the steepest slip road, at a crawl', 'fuel.js', '__checkFuelCrawl', 0],
+  // Garages (garage.ts).
+  ['Every garage bay lies wholly on a road, clear overhead and paved on its approach, and a car in it is offered the garage', 'garage.js', '__checkGarageBay', 0],
 ];
 
 (async () => {
@@ -148,7 +157,7 @@ const CHECKS = [
       if (!ok) failed = true;
       const tail = known > 0 ? `(known: ${known}, may not grow)` : `(limit ${limit})`;
       console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}: ${r.bad} of ${r.samples} samples off, worst ${worst} ${r.unit ?? 'm'} ${tail}${r.note ? ` [${r.note}]` : ''}`);
-      if (!ok || known > 0) for (const w of r.worst.slice(0, ok ? 3 : 12)) console.log('      ', JSON.stringify(w));
+      if (!ok || known > 0) for (const w of r.worst.slice(0, process.env.ALL ? Infinity : ok ? 3 : 12)) console.log('      ', JSON.stringify(w));
     }
     await b.close();
   } finally {

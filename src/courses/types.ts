@@ -27,7 +27,7 @@ export interface MapData {
   background: string;
   areas: { pts: XZ[]; color: string }[];
   lines: { pts: XZ[]; width: number; color: string; closed?: boolean }[];
-  pois: { x: number; z: number; label: string }[];
+  pois: { x: number; z: number; label: string; kind?: 'fuel' | 'garage' }[];
   /** Resolution of the pre-painted minimap (default 1 px per metre). */
   pxPerM?: number;
   /** Credit line for the map data, shown on the full map. */
@@ -66,6 +66,8 @@ export interface Course {
    * of the obstacle you are at. (Courses with obstacles.)
    */
   coach?(c: { x: number; z: number; speed: number; low: boolean; diff: boolean; stuck: number }): { tip?: string; say?: string; zone?: string } | null;
+  /** Petrol stations: where fuel is used and where you fill up (fuel.ts). */
+  fuel?: import('../fuel').Station[];
   /** Places where you can make camp (rest and save). */
   camps?: import('../camp').CampSpot[];
   sky: { background: number; fog: number; fogNear: number; fogFar: number };

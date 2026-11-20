@@ -11,7 +11,12 @@ import { Vehicle } from './vehicle';
 import { Controls } from './controls';
 import { PerfOverlay } from './perf';
 import { Weather } from './weather';
-import { Camps, loadSave } from './camp';
+import { Camps } from './camp';
+import { loadJourney, saveJourney, spotOf, checkStorage, storageWarning, backupPanel, restorePanel, describe, encodeCode, decodeCode, normalise, type Journey, type StorageHealth } from './save';
+import { Fuel, CRAWL_SPEED, distText, onForecourt } from './fuel';
+import { SURFACES } from './courses/types';
+import { Stations } from './station';
+import { Garages, garagePanel, homePicker, garageById, type GarageSpot } from './garage';
 import './style.css';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -32,7 +37,8 @@ const COURSES = {
 } as const;
 type CourseId = keyof typeof COURSES;
 
-async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: number; yaw: number; cam: number } | null) {
+async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: number; yaw: number; cam: number; y?: number } | null) {
+  const health = await health$;
   await RAPIER.init();
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -84,7 +90,12 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   // Weather (style-neutral): showers come and go; wet ground grips a little less.
   const weather = new Weather({ scene, sun, hemi, sunOffset });
   const rawSurface = course.surfaceAt;
-  course.surfaceAt = (x, z, y) => weather.feel(rawSurface(x, z, y));
+  // A petrol station's forecourt is paved to its kerb, whatever the ground
+  // raster under its edge says.
+  const courts = course.fuel ?? [];
+  const paved = (x: number, z: number, y: number) =>
+    courts.some((s) => Math.abs(x - s.x) < s.r + 1 && Math.abs(z - s.z) < s.r + 1 && onForecourt(s, x, z)) ? SURFACES.asphalt : rawSurface(x, z, y);
+  course.surfaceAt = (x, z, y) => weather.feel(paved(x, z, y));
   let toast: string | null = null;
   let toastTime = 0;
   const say = (text: string, secs = 4) => {
@@ -94,6 +105,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   weather.onChange = (text) => say(text);
   const camps = course.camps?.length ? new Camps(scene, course.camps, course.heightAt) : null;
 
+  let fromGarage = false;
   const fwdMap = new THREE.Vector3();
   const carHeading = () => Math.atan2(-fwdMap.set(1, 0, 0).applyQuaternion(car.mesh.quaternion).z, fwdMap.x);
   // The drive pauses while the full map is open, so nothing moves while you look.
@@ -119,6 +131,8 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   );
   const openMap = () => {
     controls.reset();
+    if (!fromGarage) fullMap.range = null;
+    fromGarage = false;
     fullMap.open(car.mesh.position.x, car.mesh.position.z, carHeading());
   };
   const minimap = new Minimap($('app'), course.map, openMap);
@@ -201,15 +215,183 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
     if (!spot) return;
     fadeThen(() => {
       const p = car.mesh.position;
-      const saved = camps.pitch(spot, { x: p.x, z: p.z, yaw: carHeading() }, courseId, style);
+      camps.pitch(spot, { x: p.x, z: p.z, yaw: carHeading() });
+      const saved = autosave(spot.label, spot.id);
       weather.setTime('evening');
       say(saved ? `Evening at ${spot.label}. Journey saved.` : `Evening at ${spot.label}.`, 6);
     });
   });
 
   if (at) {
-    car.placeAt(new THREE.Vector3(at.x, course.heightAt(at.x, at.z), at.z), at.yaw);
+    // (A saved height puts the car back on the bridge deck it was on, not the ground below.)
+    const y = at.y !== undefined && course.surfaceY ? course.surfaceY(at.x, at.z, at.y) : course.heightAt(at.x, at.z);
+    car.placeAt(new THREE.Vector3(at.x, y, at.z), at.yaw);
     camMode = at.cam % camModes.length;
+  }
+
+  // ---- Saving: kept on the phone all the time (see save.ts) ----
+  const blank = (): Journey => ({ course: courseId, x: 0, z: 0, yaw: 0, label: '', odo: 0, savedAt: Date.now(), backupOdo: 0, backupAt: Date.now() });
+  const journey: Journey = loadJourney() ?? blank();
+  let lastSaved = { x: NaN, z: NaN, camp: '' };
+  let lastPos = { x: car.mesh.position.x, y: car.mesh.position.y, z: car.mesh.position.z };
+  // Fuel (fuel.ts): used only on maps with petrol stations.
+  const fuel = new Fuel(course.fuel ?? [], journey.fuel ?? 1);
+  const hudFuel = $('hud-fuel');
+  hudFuel.hidden = !fuel.used;
+  const btnFuel = $('btn-fuel');
+  let fuelStage = fuel.level < 0.05 ? 2 : fuel.level < 0.25 ? 1 : 0;
+  tap(btnFuel, () => {
+    if (fuel.at(car.mesh.position.x, car.mesh.position.z)) fuel.filling = true;
+  });
+  // Dust and mud build up off the tarmac; the garage washes them off.
+  car.setDust(journey.dust ?? 0);
+
+  // Petrol stations as places (station.ts): forecourt, canopy, pumps, sign.
+  const stations = new Stations(scene, world, RAPIER, course.fuel ?? []);
+
+  // ---- Garages (garage.ts): drive into the bay, tap Enter garage ----
+  const garages = new Garages(scene, courseId, (x, z) => {
+    const g = course.heightAt(x, z);
+    return course.surfaceY?.(x, z, g + 0.5) ?? g;
+  });
+  for (const g of garages.here) course.map.pois.push({ x: g.x, z: g.z, label: `${g.name} Garage`, kind: 'garage' });
+  const btnGarage = $('btn-garage');
+  const enterGarage = (g: GarageSpot) => {
+    pause(true);
+    journey.garages = [...new Set([...(journey.garages ?? []), g.id])];
+    if (!journey.home) journey.home = g.id;
+    autosave(`${g.name} Garage`);
+    btnGarage.hidden = true;
+    const panel = garagePanel($('app'), g, { fuel: fuel.used ? fuel.level : null, dust: car.dust, home: journey.home === g.id }, (a) => {
+      if (a === 'refuel') {
+        fuel.level = 1;
+        fuelStage = 0;
+        panel.update({ fuel: 1 });
+      } else if (a === 'wash') {
+        car.setDust(0);
+        panel.update({ dust: 0 });
+      } else if (a === 'home') {
+        journey.home = g.id;
+        panel.update({ home: true });
+      } else if (a === 'backup') {
+        backupPanel($('app'), journey, (done) => {
+          if (done) {
+            journey.backupOdo = journey.odo;
+            journey.backupAt = Date.now();
+            driveSecs = 0;
+          }
+          autosave(`${g.name} Garage`);
+        });
+        return;
+      } else if (a === 'plan') {
+        panel.el.remove();
+        pause(false);
+        fromGarage = true;
+        fullMap.range = fuel.used ? { metres: fuel.rangeKm * 1000, text: `Fuel ${Math.round(fuel.level * 100)}% · about ${Math.round(fuel.rangeKm)} km` } : null;
+        openMap();
+        return;
+      } else if (a === 'leave') {
+        pause(false);
+        say(`Out on the road from ${g.name}.`, 4);
+      }
+      autosave(`${g.name} Garage`);
+    });
+  };
+  tap(btnGarage, () => {
+    const p = car.mesh.position;
+    const g = garages.at(p.x, p.z);
+    if (g) enterGarage(g);
+  });
+  // Driving time since the last backup, this visit.
+  let driveSecs = 0;
+  const autosave = (label?: string, camp?: string) => {
+    const p = car.mesh.position;
+    Object.assign(journey, {
+      course: courseId,
+      x: p.x,
+      z: p.z,
+      y: p.y,
+      yaw: carHeading(),
+      label: label ?? camps?.active?.label ?? course.zoneAt(p.x, p.z) ?? course.name,
+      fuel: fuel.level,
+      dust: car.dust,
+      style,
+      camp: camp ?? camps?.active?.id,
+      savedAt: Date.now(),
+    });
+    if (!journey.camp) delete journey.camp;
+    (journey.spots ??= {})[courseId] = spotOf(journey);
+    lastSaved = { x: p.x, z: p.z, camp: journey.camp ?? '' };
+    return saveJourney(journey);
+  };
+  let saveTimer = 10;
+  const saveIfMoved = () => {
+    const p = car.mesh.position;
+    if (Math.hypot(p.x - lastSaved.x, p.z - lastSaved.z) > 2 || (camps?.active?.id ?? '') !== lastSaved.camp || Number.isNaN(lastSaved.x)) autosave();
+  };
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && saveIfMoved());
+  window.addEventListener('pagehide', saveIfMoved);
+
+  // Backups: offered once you stop after a long drive, never mid-drive.
+  const btnBackup = $('btn-backup');
+  let paused = false;
+  const pause = (on: boolean) => {
+    paused = on;
+    controls.reset();
+    if (!on) {
+      last = performance.now();
+      acc = 0;
+    }
+  };
+  const openBackup = () => {
+    autosave();
+    pause(true);
+    btnBackup.hidden = true;
+    backupPanel($('app'), journey, (done) => {
+      if (done) {
+        journey.backupOdo = journey.odo;
+        journey.backupAt = Date.now();
+        driveSecs = 0;
+        autosave();
+      } else snooze();
+      pause(false);
+    });
+  };
+  // How long a drive counts as long: shorter when this tab may lose progress.
+  const longKm = health.installed ? 80 : 20;
+  const longSecs = health.installed ? 7200 : 1800;
+  let snoozeOdo = 0;
+  const snooze = () => (snoozeOdo = journey.odo);
+  const backupDue = () =>
+    journey.odo - snoozeOdo > 2000 && (journey.odo - journey.backupOdo > longKm * 1000 || (driveSecs > longSecs && journey.odo - journey.backupOdo > 2000));
+  tap(btnBackup, openBackup);
+  let stoppedFor = 0;
+
+  // Before the drive: say plainly if this tab may not keep it.
+  const warning = storageWarning(health);
+  // (A risk notice goes after 12 s of driving, or a tap.)
+  let noticeLeft = 0;
+  const notice = $('notice');
+  if (warning) {
+    notice.innerHTML = '';
+    const t = document.createElement('span');
+    t.textContent = warning.short;
+    const b = document.createElement('button');
+    b.className = 'btn';
+    b.textContent = warning.level === 'none' ? 'I understand' : 'OK';
+    notice.append(t, b);
+    notice.classList.toggle('strong', warning.level === 'none');
+    notice.hidden = false;
+    if (warning.level === 'none') pause(true);
+    const hide = () => {
+      notice.hidden = true;
+      if (paused) pause(false);
+    };
+    b.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      hide();
+    });
+    if (warning.level === 'risk') noticeLeft = 12;
   }
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
@@ -345,6 +527,12 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       requestAnimationFrame(frame);
       return;
     }
+    if (paused) {
+      last = now;
+      renderer.render(scene, camera);
+      requestAnimationFrame(frame);
+      return;
+    }
     if (sim.fast > 0) {
       fastFrame(now);
       requestAnimationFrame(frame);
@@ -373,6 +561,23 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
 
     const p = car.mesh.position;
     placeSun(p);
+    // Odometer (a jump, from ↺ or a reload, isn't driving).
+    const moved = Math.hypot(p.x - lastPos.x, p.z - lastPos.z);
+    if (moved < 10) {
+      journey.odo += moved;
+      fuel.burn(moved, p.y - lastPos.y, car.surface, car.lowRange);
+      // (About 3 km of gravel, or 600 m of sand or mud, to cake it.)
+      const grime = car.surface.drag >= 20 ? 1 / 600 : car.surface.drag >= 1.5 ? 1 / 3000 : 0;
+      if (grime && car.wheelsOnGround) car.setDust(car.dust + moved * grime);
+    }
+    lastPos = { x: p.x, y: p.y, z: p.z };
+    car.crawl = fuel.empty ? CRAWL_SPEED : 0;
+    if (fuel.filling && fuel.pump(dt)) {
+      fuel.filling = false;
+      say(`Tank full at ${fuel.at(p.x, p.z)?.name ?? 'the station'}.`, 5);
+      fuelStage = 0;
+      autosave();
+    }
     course.update?.(now / 1000, dt, camera.position, p);
     weather.update(dt, camera.position);
     camps?.update(now / 1000);
@@ -391,7 +596,51 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       const tip = coach?.tip ?? (stuckTime > 3 ? (car.lowRange && car.diffLock ? 'Tip: back up and take a run at it, or tap ↺' : 'Tip: try LOW range and DIFF lock') : null);
       toastTime -= 0.1;
       if (toastTime <= 0) toast = null;
-      const zone = tip ?? toast ?? coach?.zone ?? course.zoneAt(p.x, p.z);
+      // Fuel: a calm word when low, the way to the nearest station, a crawl when empty.
+      let fuelLine: string | null = null;
+      if (fuel.used) {
+        const near = fuel.nearest(p.x, p.z);
+        const where = near ? `${near.station.name}, ${distText(near.dist)}` : '';
+        const stage = fuel.level <= 0 ? 3 : fuel.level < 0.05 ? 2 : fuel.level < 0.25 ? 1 : 0;
+        if (stage > fuelStage) {
+          if (stage === 1) say(`Fuel getting low. Nearest: ${where}`, 8);
+          else toast = null; // (the reserve and crawl lines below take over)
+        }
+        fuelStage = Math.max(fuelStage, stage);
+        if (stage === 2) fuelLine = `Fuel on reserve · ${where}`;
+        if (stage === 3) fuelLine = `Out of fuel: crawling on to ${where}`;
+        minimap.target = stage > 0 && near ? near.station : null;
+        const range = fuel.rangeKm;
+        hudFuel.querySelector('b')!.style.width = `${Math.round(fuel.level * 100)}%`;
+        hudFuel.querySelector('span')!.textContent = fuel.filling ? `Filling ${Math.round(fuel.level * 100)}%` : stage === 3 ? 'Empty' : `${range < 10 ? range.toFixed(1) : Math.round(range)} km`;
+        hudFuel.classList.toggle('low', stage > 0);
+        hudFuel.classList.toggle('empty', stage === 3);
+        // Fill up: stopped on a station's forecourt.
+        const station = fuel.at(p.x, p.z);
+        if (!station) fuel.filling = false;
+        btnFuel.hidden = !station || fuel.filling || fuel.level > 0.98 || Math.abs(car.speed) > 0.8;
+        btnFuel.textContent = `Fill up at ${station?.name ?? ''}`;
+      }
+      // Garage: the bay drapes on the road once that's built (a ray down, past the car).
+      garages.settle((x, z) => {
+        if (course.solidAt && !course.solidAt(x, z)) return null;
+        const hit = world.castRay(new RAPIER.Ray({ x, y: course.heightAt(x, z) + 6, z }, { x: 0, y: -1, z: 0 }), 12, true, undefined, undefined, undefined, car.body);
+        return hit ? course.heightAt(x, z) + 6 - hit.timeOfImpact : null;
+      });
+      stations.settle(
+        (x, z) => course.heightAt(x, z),
+        (x, z) => !course.solidAt || course.solidAt(x, z),
+        (x, z) => {
+          const hit = world.castRay(new RAPIER.Ray({ x, y: course.heightAt(x, z) + 6, z }, { x: 0, y: -1, z: 0 }), 12, true, undefined, undefined, undefined, car.body);
+          return hit ? { y: course.heightAt(x, z) + 6 - hit.timeOfImpact, ground: hit.collider.shape.type === RAPIER.ShapeType.HeightField } : null;
+        },
+        (x, z) => course.safeSpot?.(x, z) ?? null,
+      );
+      // Garage: Enter garage when stopped in its bay.
+      const bay = garages.at(p.x, p.z);
+      btnGarage.hidden = !bay || Math.abs(car.speed) > 0.8 || paused;
+      if (bay) btnGarage.textContent = `Enter ${bay.name} Garage`;
+      const zone = tip ?? toast ?? fuelLine ?? coach?.zone ?? course.zoneAt(p.x, p.z);
       // Camp button: shown when stopped inside a camp, or while camped.
       if (camps) {
         const spot = camps.at(p.x, p.z);
@@ -399,6 +648,22 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
         const show = !!camps.active || (!!spot && Math.abs(car.speed) < 0.8);
         btnCamp.hidden = !show;
         btnCamp.textContent = camps.active ? 'Break camp' : `Make camp`;
+      }
+      // Saving: every 10 s while driving; a backup offer once stopped after a long drive.
+      if (Math.abs(car.speed) > 1) {
+        driveSecs += 0.1;
+        if (noticeLeft > 0 && (noticeLeft -= 0.1) <= 0) notice.hidden = true;
+      }
+      saveTimer -= 0.1;
+      if (saveTimer <= 0) {
+        saveTimer = 10;
+        saveIfMoved();
+      }
+      stoppedFor = Math.abs(car.speed) < 1 ? stoppedFor + 0.1 : 0;
+      if (btnBackup.hidden && stoppedFor > 2 && btnCamp.hidden && btnFuel.hidden && btnGarage.hidden && backupDue()) btnBackup.hidden = false;
+      else if (!btnBackup.hidden && stoppedFor === 0) {
+        btnBackup.hidden = true;
+        snooze();
       }
       hudZone.textContent = zone ?? '';
       hudZone.style.opacity = zone ? '1' : '0';
@@ -419,13 +684,14 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   $('loading').remove();
 
   // Handy for testing in the console.
-  Object.assign(window, { game: { car, course, controls, world, renderer, scene, camera, weather, camps, sim } });
+  Object.assign(window, { game: { RAPIER, car, course, controls, world, renderer, scene, camera, weather, camps, sim, journey, autosave, openBackup, fuel, stations, garages, enterGarage, save: { encodeCode, decodeCode, normalise, loadJourney } } });
 }
 
 // ---- Course picker ----
 const params = new URLSearchParams(location.search);
 const go = (id: CourseId) => {
   $('menu').remove();
+  document.body.classList.add('driving');
   $('loading').style.display = 'flex';
   // Let the loading screen paint before the (blocking) world build.
   requestAnimationFrame(() =>
@@ -440,28 +706,124 @@ const go = (id: CourseId) => {
 const chosen = params.get('course');
 const style: ArtStyle = params.get('style') === 'stylized' ? 'stylized' : 'detailed';
 const atParts = (params.get('at') ?? '').split(',').map(Number);
-const at = atParts.length === 4 && atParts.every(Number.isFinite) ? { x: atParts[0], z: atParts[1], yaw: atParts[2], cam: atParts[3] } : null;
+const at =
+  (atParts.length === 4 || atParts.length === 5) && atParts.every(Number.isFinite)
+    ? { x: atParts[0], z: atParts[1], yaw: atParts[2], cam: atParts[3], y: atParts[4] }
+    : null;
+// Checked once, before the menu shows and before a drive starts.
+const health$: Promise<StorageHealth> = checkStorage();
+const continueFrom = (j: Pick<Journey, 'course' | 'x' | 'z' | 'yaw' | 'y' | 'style'>) => {
+  if (!(j.course in COURSES)) return;
+  const q = new URLSearchParams({ course: j.course, style: j.style ?? 'detailed', at: [j.x, j.z, j.yaw, 0, ...(j.y !== undefined ? [j.y] : [])].map((v) => +v.toFixed(2)).join(',') });
+  location.replace(`${location.pathname}?${q}`);
+};
 if (chosen && chosen in COURSES) go(chosen as CourseId);
 else {
   $('loading').style.display = 'none';
-  const save = loadSave();
-  if (save && save.course in COURSES) {
+  const choices = document.querySelector('#menu .choices')!;
+  const journey = loadJourney();
+  if (journey && journey.course in COURSES) {
     const b = document.createElement('button');
-    b.innerHTML = `<b>Continue</b><span>From ${save.label} · saved ${new Date(save.savedAt).toLocaleDateString()}</span>`;
-    b.addEventListener('click', () => {
-      const q = new URLSearchParams({ course: save.course, style: save.style ?? 'detailed', at: [save.x, save.z, save.yaw, 0].map((v) => +v.toFixed(2)).join(',') });
-      location.replace(`${location.pathname}?${q}`);
-    });
-    document.querySelector('#menu .choices')!.prepend(b);
+    b.className = 'continue';
+    b.innerHTML = `<b>Continue</b><span></span>`;
+    b.querySelector('span')!.textContent = describe(journey);
+    b.addEventListener('click', () => continueFrom(journey));
+    choices.prepend(b);
   }
-  document.querySelectorAll<HTMLButtonElement>('#menu [data-course]').forEach((b) =>
+  // Backup and restore, and the plain word on whether this tab keeps progress.
+  const tools = $('menu-tools');
+  const mk = (label: string, fn: () => void) => {
+    const b = document.createElement('button');
+    b.className = 'link';
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    tools.append(b);
+    return b;
+  };
+  const openRestore = (prefill = '') =>
+    restorePanel(
+      $('app'),
+      prefill,
+      (c) => c in COURSES,
+      (j) => {
+        saveJourney(j);
+        continueFrom(j);
+      },
+      () => history.replaceState(null, '', location.pathname),
+    );
+  if (journey) mk('Back up your journey', () => backupPanel($('app'), journey, (done) => {
+    if (!done) return;
+    journey.backupOdo = journey.odo;
+    journey.backupAt = Date.now();
+    saveJourney(journey);
+  }));
+  mk('Restore from a save code', () => openRestore());
+  // Home garage: a new journey starts there; choosing one drives you to it.
+  const startAt = (g: GarageSpot) => {
+    const j: Journey = journey ?? { course: g.courses[0], x: g.x, z: g.z, yaw: g.yaw, label: '', odo: 0, savedAt: Date.now(), backupOdo: 0, backupAt: Date.now() };
+    Object.assign(j, { course: g.courses[0], x: g.x, z: g.z, yaw: g.yaw, label: `${g.name} Garage`, home: g.id, garages: [...new Set([...(j.garages ?? []), g.id])], savedAt: Date.now() });
+    delete j.y;
+    delete j.camp;
+    saveJourney(j);
+    continueFrom(j);
+  };
+  const pickHome = () => homePicker($('app'), journey?.home, startAt, () => {});
+  if (!journey) {
+    const b = document.createElement('button');
+    b.className = 'continue';
+    b.innerHTML = `<b>Start your journey</b><span>From your home garage in Singapore</span>`;
+    b.addEventListener('click', pickHome);
+    choices.prepend(b);
+  } else {
+    const home = garageById(journey.home);
+    mk(home ? `Home: ${home.name}` : 'Choose a home garage', pickHome);
+  }
+  // A shared restore link: …#restore=PO1-…
+  const fromHash = () => {
+    const hash = decodeURIComponent(location.hash);
+    if (hash.startsWith('#restore=') && !document.querySelector('.panel')) openRestore(hash.slice(9));
+  };
+  fromHash();
+  window.addEventListener('hashchange', fromHash);
+  health$.then((h) => {
+    const w = storageWarning(h);
+    if (!w) return;
+    const box = $('menu-warning');
+    const t = document.createElement('span');
+    t.textContent = w.text;
+    box.append(t);
+    box.classList.toggle('strong', w.level === 'none');
+    box.hidden = false;
+    // Android: the browser's own install, when it offers one.
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      const prompt = e as Event & { prompt(): Promise<void> };
+      const b = document.createElement('button');
+      b.className = 'btn primary';
+      b.textContent = 'Install';
+      b.addEventListener('click', () => prompt.prompt());
+      box.append(b);
+    });
+  });
+  // A drive you've been on before carries on where you left it (each drive
+  // keeps its own place, so looking at another never loses this one).
+  document.querySelectorAll<HTMLButtonElement>('#menu [data-course]').forEach((b) => {
+    const id = b.dataset.course as CourseId;
+    const spot = journey?.spots?.[id];
+    if (spot) {
+      const line = document.createElement('span');
+      line.className = 'carry-on';
+      line.textContent = `Carry on from ${spot.label || 'where you left it'}`;
+      b.append(line);
+    }
     b.addEventListener('click', () => {
-      const id = b.dataset.course as CourseId;
+      if (spot) return continueFrom({ course: id, ...spot });
       history.replaceState(null, '', `?course=${id}`);
       go(id);
-    }),
-  );
+    });
+  });
 }
+
 $('btn-menu').addEventListener('pointerdown', (e) => {
   e.stopPropagation();
   location.href = location.pathname;
