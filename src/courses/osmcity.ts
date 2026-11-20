@@ -8494,6 +8494,24 @@ export async function buildPasirRisCourse(
       // all but upright, a dark wedge at the island's tip.)
       const fall = y1 < t0 - 0.005;
       const sh = fall ? KERB_OUT + Math.min(0.15, (wi - KERB_OUT) / 2) : (KERB_OUT + wi) / 2;
+      // (Nor where it would stand more than 0.6 m over the ground within
+      // 3 m of the kerb, down a raised road's embankment: the lawn, level
+      // with the kerb, stood out from the slope as a shelf with a green face
+      // metres tall at its end, at 1107.5,1952.4 and 944.7,2047.5, and up
+      // to 1.2 m over it, as fins down the slope at 1572.2,917.2. The kerb's
+      // wall goes down to the slope there; 0.6 m is as much as a run's end
+      // banks, see cap.)
+      if (fill === -Infinity) {
+        let steep = false;
+        for (let d = 0.5; d <= Math.min(3, wi) && !steep; d += 0.5) {
+          const yp = d <= sh ? t0 : lerp(fall ? t0 : (t0 + y1) / 2, y1, (d - sh) / Math.max(1e-6, wi - sh));
+          steep = yp - groundY(P[v][0] + ox * d, P[v][1] + oz * d) > 0.6;
+        }
+        if (steep) {
+          secs.push(null);
+          continue;
+        }
+      }
       // (On a filled island none: all its lawn past the kerb from the one
       // ground. A narrow section's inner end landing on its neighbour's
       // ledge, level with the kerb, 11 cm over that ground, stood a face
