@@ -8411,15 +8411,17 @@ export async function buildPasirRisCourse(
           // lower kerb, a step of 0.25 m at 1614.9,954.9.)
           if (farOn) m = Math.min(Math.max(gm, Math.min(t0, ff)), Math.max(t0, ff));
           else if (f === f) m = Math.min(m, gm);
-          // (The ground in the middle well under both kerbs' tops, more
-          // than a kerb on the ground stands over it, and the two within
-          // ISLE_DEEP of each other: a hollow between two raised roads, the
+          // (The ground in the middle under both kerbs' tops, and the two
+          // within ISLE_DEEP of each other: a hollow between two roads, the
           // lawn a gentle bank from one kerb's top to the other's over it,
           // as on an island raised to its roads. Not a road on an
-          // embankment over one on the ground: read as a hollow, its lawn
-          // came back as a grass ramp 5.8 m tall at 1107.5,1952.4. See the
-          // steep-lawn rule.)
-          ho = farOn && Math.abs(t0 - ff) < ISLE_DEEP && gm < Math.min(t0, ff) - 0.35;
+          // embankment over one on the ground, 4 to 6 m apart: read as a
+          // hollow, its lawn came back as a grass ramp 5.8 m tall at
+          // 1107.5,1952.4. Nor only where the middle lies more than a
+          // kerb's height under both: the ground falls with the lower road
+          // there, and the bank stopped short of -183.1,199.9 in a dark
+          // wedge. See the steep-lawn rule.)
+          ho = farOn && Math.abs(t0 - ff) < ISLE_DEEP && gm < Math.min(t0, ff);
         }
       }
       mid.push(m);
