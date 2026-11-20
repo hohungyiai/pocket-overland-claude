@@ -148,7 +148,6 @@ window.__checkWatertight = (all = false) => {
   const STEP = 0.15;
   const STEP_GROUND = 0.4;
   const pts = [];
-  const hist = {};
   let n = 0;
   for (const [x0, y0, z0, x1, y1, z1, ox, oz, kind] of W.open) {
     // (The roads' own tops, their kerbs' and the islands' lawns: a footpath
@@ -190,14 +189,11 @@ window.__checkWatertight = (all = false) => {
       if (at <= below + step) continue;
       const ix = x - nx * 0.1, iz = z - nz * 0.1;
       if (W.undersAt(ix, iz).some((h) => h < y - 0.3 && at <= h + 0.05)) continue;
-      const hk = kind + (iv.length ? ' faces' : ' none');
-      hist[hk] = (hist[hk] ?? 0) + 1;
       pts.push({ x: +x.toFixed(1), z: +z.toFixed(1), y: +y.toFixed(2), value: +(y - below).toFixed(2), open: +(at - below).toFixed(2), kind });
     }
   }
-  window.__wtPts = pts;
   const bad = F.places(pts, 4);
-  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm', hist };
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm' };
 };
 
 window.__checkGroundOverTops = (all = false) => {
