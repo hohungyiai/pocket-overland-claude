@@ -1024,6 +1024,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       return { x: p.x, z: p.z, yaw: Math.atan2(-p.tz, p.tx) };
     },
     prepareAt: (x, z) => streamer.prepare(x, z, 300),
+    retryAt: (x, z) => trail.retryAt(x, z),
     solidAt: (x, z) => streamer.solidAt(x, z),
     streamStats: () => ({ ...streamer.stats, horizon: streamer.stats.horizon }),
     camps: def.end.camp ? [camp] : [],

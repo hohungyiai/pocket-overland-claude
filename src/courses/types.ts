@@ -65,6 +65,8 @@ export interface Course {
   update?(time: number, dt: number, camera?: { x: number; z: number }, player?: { x: number; z: number }): void;
   /** Nearest safe place to put the car back (on a road, out of the water), if the course knows one. */
   safeSpot?(x: number, z: number): { x: number; z: number; yaw: number } | null;
+  /** On or beside a trail obstacle: where to start it again (a little before it, facing along the trail). */
+  retryAt?(x: number, z: number): { x: number; z: number; yaw: number; label: string } | null;
   /** Height of whatever the car can stand on at (x, z) near height y: a bridge deck, else the ground. */
   surfaceY?(x: number, z: number, y: number): number;
   /** Load the world around a point right away (before placing the car there). */

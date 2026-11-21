@@ -756,6 +756,24 @@ export class UbinTrail {
     return o.parts[0];
   }
 
+  /**
+   * On an obstacle, or stuck beside it (slid off the bank into the water, or
+   * bogged off the line): where to start it again, a little before it on
+   * the trail, facing along it.
+   */
+  retryAt(x: number, z: number): { x: number; z: number; yaw: number; label: string } | null {
+    let best: { o: Obstacle; d: number } | null = null;
+    for (const o of this.obstacles) {
+      const n = o.line.nearest(x, z, 60);
+      // (Not before it, and not once past its end.)
+      if (!n || n.d > 40 || n.s < 2 || n.s > o.s1 - o.s0 - 1) continue;
+      if (!best || n.d < best.d) best = { o, d: n.d };
+    }
+    if (!best) return null;
+    const p = this.route.at(Math.max(0, best.o.s0 - 12));
+    return { x: p.x, z: p.z, yaw: Math.atan2(-p.tz, p.tx), label: best.o.label };
+  }
+
   /** Is (x, z) on an obstacle's way round? */
   onBypass(o: Obstacle, x: number, z: number) {
     const n = o.bypass.nearest(x, z, 10);
