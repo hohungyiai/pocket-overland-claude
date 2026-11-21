@@ -40,11 +40,11 @@ const kits = (o, room = 150) => {
   if (o.needs.low) both('without low range', { ...right, low: false, cruise: Math.max(right.cruise, 6) });
   if (o.needs.diff) both('without the diff lock', { ...right, diff: false });
   if (o.needs.speed) wrong.push(['crawling at it', { ...right, cruise: 4 }]);
-  if (o.kind === 'camber') {
+  if (o.camber) {
     // A line, not kit: the high side, against the bank. The middle of the
     // track slides you down it, slow or fast.
-    const up = o.p.dir ?? 1;
-    right.off = ((o.p.edge ?? 1) + 1.5) * up;
+    const up = o.camber.dir ?? 1;
+    right.off = ((o.camber.edge ?? 1) + 1.5) * up;
     both('on the middle of the track', { ...right, off: 0 });
   }
   return { right, wrong, none: { low: false, diff: false, cruise: o.needs.speed ? 4 : 6 } };
@@ -75,17 +75,19 @@ const kits = (o, room = 150) => {
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
       const drive = (pg, s0, s1, kit, extra = {}) =>
         pg.evaluate(([a, b, k]) => window.__ubinDrive(window.__ubinRouteOff(a - (k.runUp ?? 0), b, k.off ?? 0), k), [s0, s1, { ...kit, ...extra }]);
       for (let i = 0; i < info.obs.length; i++) {
         const o = info.obs[i];
-        if (!want(o.kind)) continue;
-        // (The run-up stays clear of the obstacle before.)
-        const from = o.s0 - 45;
-        const K = kits(o, Math.max(0, Math.min(150, from - (i ? info.obs[i - 1].s1 + 10 : 0))));
+        if (!want(o.kind) && !want(o.label)) continue;
+        // (The start, and the run-up, stay clear of the obstacle before: on
+        // a trail of chained stretches there is little room to charge one.)
+        const prevEnd = i ? info.obs[i - 1].s1 + 8 : 0;
+        const from = Math.max(prevEnd, o.s0 - 45);
+        const K = kits(o, Math.max(0, Math.min(150, from - prevEnd)));
         const to = o.s1 + 25;
         // Each thing it needs, left out: no way through, even backing up
         // for more runs at it.
