@@ -86,6 +86,28 @@ const kits = (o, room = 150) => {
         return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
+      // Water never hangs in the air: every edge point of the ford's water
+      // within 0.15 m of the ground under it, and every puddle no more than
+      // 0.12 m above the lowest ground at its rim.
+      if (want('water')) {
+        const w = await page.evaluate(() => {
+          const c = window.game.course;
+          const { edges, puddles } = c.water?.() ?? { edges: [], puddles: [] };
+          let worstE = 0, badE = 0, worstP = 0, badP = 0, at = null;
+          for (const e of edges) {
+            const gap = e.y - c.heightAt(e.x, e.z);
+            if (gap > worstE) { worstE = gap; at = [Math.round(e.x), Math.round(e.z)]; }
+            if (gap > 0.15) badE++;
+          }
+          for (const p of puddles) {
+            const gap = p.y - p.lo;
+            worstP = Math.max(worstP, gap);
+            if (gap > 0.12) badP++;
+          }
+          return { n: edges.length, badE, worstE, np: puddles.length, badP, worstP, at };
+        });
+        check('water and puddles sit on the ground, never in the air', w.badE === 0 && w.badP === 0, `(${w.badE} of ${w.n} water edge points over 0.15 m, worst ${w.worstE.toFixed(2)} m at ${w.at}; ${w.badP} of ${w.np} puddles over 0.12 m, worst ${w.worstP.toFixed(2)} m)`);
+      }
       const drive = (pg, s0, s1, kit, extra = {}) =>
         pg.evaluate(([a, b, k]) => window.__ubinDrive(window.__ubinRouteOff(a - (k.runUp ?? 0), b, k.off ?? 0), k), [s0, s1, { ...kit, ...extra }]);
       for (let i = 0; i < info.obs.length; i++) {
