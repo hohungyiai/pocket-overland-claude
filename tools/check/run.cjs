@@ -119,12 +119,14 @@ const CHECKS = [
   // redrawn maps' few left (roads overlapping a lower one at a ramp's
   // edge, a lane's end by the Tampines Hub garage, the trial map's cut end
   // of a viaduct) held at a count too, for the next changes to fix (08:44).)
-  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 28, trial: 8 }],
+  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 30, trial: 8 }],
   ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0, { pasirris: 4, whole: 1 }],
   ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, { whole: 21, trial: 6 }],
-  // (The reviewer's and feedback thread's rule, 20 Nov.)
-  ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0],
-  ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0],
+  // (The reviewer's and feedback thread's rule, 20 Nov. The user held today's
+  // dips and holes, and the top-edge count's six small lips in those holes,
+  // at a count that may only go down (21 Nov), for a follow-up to fix.)
+  ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0, { whole: 227, trial: 11 }],
+  ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0, { whole: 402, trial: 20 }],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
   ['Every petrol station is a place: a paved, solid forecourt a road runs onto and its lanes end on, clear of public roads, and the pump works only on it', 'fuel.js', '__checkStations', 0],
