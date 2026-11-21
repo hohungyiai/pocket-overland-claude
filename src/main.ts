@@ -641,7 +641,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
     if (hudTimer <= 0) {
       hudTimer = 0.1;
       hudSpeed.textContent = `${Math.round(Math.abs(car.speed) * 3.6)}`;
-      hudSurface.textContent = car.wheelsOnGround ? car.surface.name : 'Airborne';
+      hudSurface.textContent = car.wheelsOnGround || car.winch ? car.surface.name : 'Airborne';
       // Never a fail state: if the car sits stuck under throttle, offer a tip.
       stuckTime = Math.abs(car.speed) < 0.4 && Math.abs(controls.input.throttle) > 0.3 ? stuckTime + 0.1 : 0;
       // A trail coaches its own obstacles (and opens a way round after a few tries).

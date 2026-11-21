@@ -236,6 +236,7 @@ const kits = (o, room = 150) => {
             for (let k = 0; g.sim.steps < until && k < 30000; k++) await wait(5);
           };
           const out = [];
+          const props = (t.props?.() ?? []).filter((r) => r.kind === 'boulder' || r.kind === 'rock');
           try {
             for (let i = 0; i < t.obstacles.length; i++) {
               const o = t.obstacles[i];
@@ -270,6 +271,7 @@ const kits = (o, room = 150) => {
                   const hadTree = !!tree;
                   let secs = 0;
                   const ends = [];
+                  const look = { ang: 0, tilt: 0, clear: 0 };
                   // As a player would: hook up, and if it lets go short of
                   // the track, hook up again (up to three pulls).
                   for (let pull = 0; pull < 3 && tree; pull++) {
@@ -277,9 +279,46 @@ const kits = (o, room = 150) => {
                     g.car.winchLastEnd = null;
                     let home = false;
                     // (Checked four times a second, as the game does every frame.)
+                    let last = { x: g.car.body.translation().x, z: g.car.body.translation().z };
                     for (let q4 = 0; q4 < 360 && g.car.winch; q4++, secs += 0.25) {
                       await run(0.25);
                       const c = g.car.body.translation();
+                      // How it looks while hauled back: going the way its
+                      // cable runs, wheels down, and on the ground (not over a rock).
+                      if (tree.to && g.car.winch) {
+                        // (The body's way, against its cable's.)
+                        const mx = c.x - last.x;
+                        const mz = c.z - last.z;
+                        const ml = Math.hypot(mx, mz);
+                        const tp2 = g.car.towPoint;
+                        if (ml > 0.1) {
+                          const cx = tree.x - tp2.x;
+                          const cz = tree.z - tp2.z;
+                          const ang = (Math.acos(Math.max(-1, Math.min(1, (mx * cx + mz * cz) / (ml * Math.hypot(cx, cz))))) * 180) / Math.PI;
+                          if (q4 >= 2) look.ang = Math.max(look.ang, ang);
+                        }
+                        last = { x: c.x, z: c.z };
+                        // (Wheels down: its up against the ground's, and its
+                        // height off the ground along that up.)
+                        const H = (x, z) => g.course.heightAt(x, z);
+                        const gx = (H(c.x + 1, c.z) - H(c.x - 1, c.z)) / 2;
+                        const gz = (H(c.x, c.z + 1) - H(c.x, c.z - 1)) / 2;
+                        const gl = Math.hypot(gx, 1, gz);
+                        const q = g.car.body.rotation();
+                        const ux2 = 2 * (q.x * q.y - q.w * q.z);
+                        const uy2 = 1 - 2 * (q.x * q.x + q.z * q.z);
+                        const uz2 = 2 * (q.y * q.z + q.w * q.x);
+                        const dot = (-gx * ux2 + uy2 - gz * uz2) / gl;
+                        if (q4 >= 4) look.tilt = Math.max(look.tilt, (Math.acos(Math.max(-1, Math.min(1, dot))) * 180) / Math.PI);
+                        // (On the ground: at least two of its wheels within
+                        // 0.3 m of the ground under them, or of a boulder it rides over.)
+                        const G = (x, z) => g.course.winchGround?.(x, z) ?? H(x, z);
+                        const gaps = [[1.5, 0.85], [1.5, -0.85], [-1.5, 0.85], [-1.5, -0.85]].map(([a, b]) => {
+                          const v = new g.car.mesh.position.constructor(a, -0.92, b).applyQuaternion(g.car.mesh.quaternion.clone().set(q.x, q.y, q.z, q.w));
+                          return c.y + v.y - G(c.x + v.x, c.z + v.z);
+                        }).sort((m, n) => m - n);
+                        if (q4 >= 4) look.clear = Math.max(look.clear, gaps[1]);
+                      }
                       if (g.course.winchHome(c.x, c.z)) { g.car.winch = null; home = true; }
                     }
                     const tn = o.line.nearest(tree.x, tree.z, 60);
@@ -304,7 +343,7 @@ const kits = (o, room = 150) => {
                   // offered there, so it is never stranded.)
                   const wedged = !onTrackNow(p) && before && Math.abs(n.sd - before.sd) < 0.3 && Math.abs(gain) < 1;
                   const retry = wedged ? !!g.course.retryAt?.(p.x, p.z) : false;
-                  out.push({ wedged, retry, gain, i, label: o.label, s: Math.round(s), off, before: before ? +before.sd.toFixed(1) : null, tree: hadTree, ends: ends.join(','), secs: Math.round(secs), sd: n ? +n.sd.toFixed(1) : null, onTrack: !!n && Math.abs(n.sd) < w + 0.5 });
+                  out.push({ ang: Math.round(look.ang), tilt: Math.round(look.tilt), clear: +look.clear.toFixed(2), wedged, retry, gain, i, label: o.label, s: Math.round(s), off, before: before ? +before.sd.toFixed(1) : null, tree: hadTree, ends: ends.join(','), secs: Math.round(secs), sd: n ? +n.sd.toFixed(1) : null, onTrack: !!n && Math.abs(n.sd) < w + 0.5 });
                 }
             }
           } finally {
@@ -315,8 +354,8 @@ const kits = (o, room = 150) => {
         }, info.obs);
         // Back on the track, and no further along than where it hooked up (never hauled past a crux).
         // (A few metres' slack: one car length.)
-        const bad = res.filter((r) => (r.wedged ? !r.retry : !r.onTrack) || r.gain > 5);
-        check('stuck off any stretch, the winch gets the car back onto the track, no further along', bad.length === 0, `(${res.length - bad.length} of ${res.length} places${res.some((r) => r.wedged) ? `, of them not shifted at all but Try again offered: ${JSON.stringify(res.filter((r) => r.wedged).map((r) => [r.label, r.s, r.off]))}` : ''}; slowest ${Math.max(...res.map((r) => r.secs))} s${bad.length ? '; failed: ' + JSON.stringify(bad) : ''})`);
+        const bad = res.filter((r) => (r.wedged ? !r.retry : !r.onTrack) || r.gain > 5 || r.ang > 30 || r.tilt > 35 || r.clear > 0.3);
+        check('stuck off any stretch, the winch hauls the car back onto the track along its cable, wheels down, no further along', bad.length === 0, `(${res.length - bad.length} of ${res.length} places${res.some((r) => r.wedged) ? `, of them not shifted at all but Try again offered: ${JSON.stringify(res.filter((r) => r.wedged).map((r) => [r.label, r.s, r.off]))}` : ''}; slowest ${Math.max(...res.map((r) => r.secs))} s; worst cable angle ${Math.max(...res.map((r) => r.ang))}°, tilt off the ground's ${Math.max(...res.map((r) => r.tilt))}°, second-lowest wheel ${Math.max(...res.map((r) => r.clear)).toFixed(2)} m off the ground${bad.length ? '; failed: ' + JSON.stringify(bad) : ''})`);
         const sc = await page.evaluate(() => {
           const g = window.game;
           const t = g.course.trail;

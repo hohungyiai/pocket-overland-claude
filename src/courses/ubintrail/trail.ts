@@ -550,7 +550,6 @@ export class UbinTrail {
     // back off).
     let home = 0;
     for (const q of near?.parts ?? []) if (q.kind === 'camber' && ns >= q.from && ns <= q.to) home = (q.p.dir ?? 1) * ((q.p.edge ?? 1) + 1.5);
-    const to = { x: nx + ntz * home, z: nz - ntx * home };
     let best: { x: number; y: number; z: number; help?: boolean; to?: { x: number; z: number } } | null = null;
     let score = -Infinity;
     for (const a of this.anchors) {
@@ -580,6 +579,19 @@ export class UbinTrail {
       // Off the track, a tree on the far edge first: pulled across, the car
       // ends up on the track. On it, the one furthest along.
       const far = across && line ? Math.sign(line.nearest(a.x, a.z, 40)?.sd ?? side) !== side : false;
+      // Hauled from off the track the car goes along its cable, to where
+      // the cable crosses the track's middle (on an off-camber shore, its
+      // high line): the tree must be across it, and the crossing short of
+      // the tree.
+      let to: { x: number; z: number } | undefined;
+      if (across) {
+        const sdOf = (px: number, pz: number) => (px - nx) * ntz - (pz - nz) * ntx;
+        const c = sdOf(x, z);
+        const t = sdOf(a.x, a.z);
+        const f = (home - c) / (t - c || 1e-6);
+        if (!(f > 0 && f < 0.85)) continue;
+        to = { x: x + (a.x - x) * f, z: z + (a.z - z) * f };
+      }
       const sc = across ? (far ? 5 : 0) + toTrack - Math.abs(as - at) * 0.05 : (as - at) * 0.1 + ahead;
       if (sc > score) {
         score = sc;
@@ -600,6 +612,19 @@ export class UbinTrail {
     const n = f.line.nearest(x, z, 40);
     // (Onto a camber's high line all the way; elsewhere well onto the track.)
     return !!n && (n.sd - f.home) * f.side < (f.home ? 0.5 : 1.6);
+  }
+
+  /** The boulders, as the winch's haul rides over them: centre, radius, height above the ground. */
+  private boulders: { x: number; z: number; r: number; top: number }[] | null = null;
+  /** How far above the ground a boulder stands at (x, z) (0 where there is none). */
+  boulderAt(x: number, z: number): number {
+    if (!this.boulders) this.boulders = this.props().filter((p) => p.kind === 'boulder').map((p) => ({ x: p.x, z: p.z, r: Math.max(p.sx, p.sz) / 2, top: p.sy * 0.75 }));
+    let best = 0;
+    for (const b of this.boulders) {
+      const d = Math.hypot(x - b.x, z - b.z);
+      if (d < b.r) best = Math.max(best, b.top * Math.sqrt(1 - (d / b.r) ** 2));
+    }
+    return best;
   }
 
   // ---------------- The clean-run score ----------------

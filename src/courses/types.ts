@@ -92,6 +92,8 @@ export interface Course {
   winchAt?(x: number, y: number, z: number, fx: number, fz: number, avoid?: { x: number; z: number } | null, kit?: { low: boolean; diff: boolean }): { x: number; y: number; z: number; help?: boolean; to?: { x: number; z: number } } | null;
   /** Winching back from off the track: the car is on it again, so the winch unhooks. */
   winchHome?(x: number, z: number): boolean;
+  /** The ground the winch's haul rides on: the ground, or a boulder's top. */
+  winchGround?(x: number, z: number): number;
   /** Clean-run score: a penalty (winch pull 5, try again 10) on the stretch at (x, z). */
   penalty?(what: 'winch' | 'retry', x: number, z: number): void;
   /** Clean-run score: the stretch being driven and its points so far. */

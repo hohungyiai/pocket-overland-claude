@@ -106,6 +106,9 @@ export class Vehicle {
   }
   private readonly tmpQ = new THREE.Quaternion();
   private readonly tmpV = new THREE.Vector3();
+  private readonly R: Rapier;
+  /** Being hauled back from off the track: the haul places the body itself. */
+  private hauled = false;
   private readonly grips = [0, 0, 0, 0];
   private readonly off = [false, false, false, false];
 
@@ -114,6 +117,7 @@ export class Vehicle {
     RAPIER: Rapier,
     private course: Course,
   ) {
+    this.R = RAPIER;
     const s = course.start;
     const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), course.startYaw);
     this.body = world.createRigidBody(
@@ -304,6 +308,16 @@ export class Vehicle {
   }
 
   update(dt: number, input: DriveInput) {
+    // (Hauled back from off the track the body is placed, not pushed: no
+    // slope or wall moves it off its cable's line. Let go, it is a car again,
+    // at rest.)
+    const hauled = !!this.winch?.to;
+    if (hauled !== this.hauled) {
+      this.hauled = hauled;
+      this.body.setBodyType(hauled ? this.R.RigidBodyType.KinematicPositionBased : this.R.RigidBodyType.Dynamic, true);
+      this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    }
     const c = this.controller;
     const v = c.currentVehicleSpeed();
     this.speed = v;
@@ -435,8 +449,7 @@ export class Vehicle {
       // soon as it is back on).
       const help = !this.winch.to;
       const tp = this.towPoint;
-      const p0 = this.body.translation();
-      const flat = help ? Math.hypot(this.winch.x - tp.x, this.winch.z - tp.z) : Math.hypot(this.winch.to!.x - p0.x, this.winch.to!.z - p0.z);
+      const flat = help ? Math.hypot(this.winch.x - tp.x, this.winch.z - tp.z) : Math.hypot(this.winch.to!.x - tp.x, this.winch.to!.z - tp.z);
       if (flat < this.winchBest - 0.3) {
         this.winchBest = flat;
         this.winchFor = 0;
@@ -454,28 +467,47 @@ export class Vehicle {
       this.winchFor = 0;
     }
     if (this.winch?.to) {
-      // Off the track, it hauls the car straight back to the track beside
-      // where it slid off, at a steady crawl, upright and facing the way it
-      // was: up over a lip or out of a ditch, never past the crux it slid
-      // off beside. (Tuned forces alone left it caught in some ditches or
-      // rolled it on the steepest banks.)
+      // Off the track, it hauls the car along its cable back to the track
+      // beside where it slid off, at a steady crawl: up over a lip, out of
+      // a ditch or over a boulder, wheels on the ground, never past the
+      // crux it slid off beside. The haul moves the car itself, sitting it
+      // on the ground under its four wheels (forces alone left it caught in
+      // some ditches, drifting off its cable's line, or rolled on the
+      // steepest banks).
       const p = this.body.translation();
-      const tx = this.winch.to.x - p.x;
-      const tz = this.winch.to.z - p.z;
+      // (From the tow point, so it goes the way its cable runs.)
+      const tx = this.winch.to.x - this.towPoint.x;
+      const tz = this.winch.to.z - this.towPoint.z;
       const d = Math.hypot(tx, tz) || 1;
-      const ux = tx / d;
-      const uz = tz / d;
-      const v = Math.min(TUNING.winchSpeed, d);
-      // (Rides up to the highest ground just ahead, so the nose clears a lip.)
-      let top = -Infinity;
-      for (let k = 0; k <= 3; k += 0.5) top = Math.max(top, this.course.heightAt(p.x + ux * k, p.z + uz * k));
-      const lv = this.body.linvel();
-      // (Caught on a rock or a stump, it lifts clear of it.)
-      const rise = clamp((top + TUNING.winchRide - p.y) * 2, -3, 2.5) + clamp(this.winchFor - 1, 0, 2);
-      this.body.setLinvel({ x: ux * v, y: Math.max(lv.y, rise), z: uz * v }, true);
-      const w = this.body.angvel();
-      const k = Math.min(1, 6 * dt);
-      this.body.setAngvel({ x: w.x * (1 - k), y: w.y * (1 - k), z: w.z * (1 - k) }, true);
+      const step = Math.min(TUNING.winchSpeed * dt, d);
+      const cx = p.x + (tx / d) * step;
+      const cz = p.z + (tz / d) * step;
+      const G = (x: number, z: number) => this.course.winchGround?.(x, z) ?? this.course.heightAt(x, z);
+      // Its heading, kept; the ground under its wheels gives its height and tilt.
+      const q0 = this.body.rotation();
+      const f0 = this.tmpV.set(1, 0, 0).applyQuaternion(this.tmpQ.set(q0.x, q0.y, q0.z, q0.w));
+      const fl = Math.hypot(f0.x, f0.z) || 1;
+      const fx = f0.x / fl;
+      const fz = f0.z / fl;
+      const L = 1.5;
+      const W = 0.85;
+      // (Left of its heading, x east and z south: (fz, -fx).)
+      const hFL = G(cx + fx * L + fz * W, cz + fz * L - fx * W);
+      const hFR = G(cx + fx * L - fz * W, cz + fz * L + fx * W);
+      const hRL = G(cx - fx * L + fz * W, cz - fz * L - fx * W);
+      const hRR = G(cx - fx * L - fz * W, cz - fz * L + fx * W);
+      const hMid = (hFL + hFR + hRL + hRR) / 4;
+      const forward = new THREE.Vector3(fx * 2 * L, (hFL + hFR - hRL - hRR) / 2, fz * 2 * L).normalize();
+      const left = new THREE.Vector3(fz * 2 * W, (hFL + hRL - hFR - hRR) / 2, -fx * 2 * W).normalize();
+      const up = new THREE.Vector3().crossVectors(forward, left).normalize();
+      // (Body axes: x forward, y up, z = forward x up, its right.)
+      const side = new THREE.Vector3().crossVectors(forward, up).normalize();
+      const want = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(forward, up, side));
+      const now = new THREE.Quaternion(q0.x, q0.y, q0.z, q0.w).slerp(want, Math.min(1, 8 * dt));
+      const y = hMid + TUNING.winchRide * up.y;
+      const ny = p.y + clamp(y - p.y, -3 * dt, 3 * dt);
+      this.body.setNextKinematicTranslation({ x: cx, y: ny, z: cz });
+      this.body.setNextKinematicRotation({ x: now.x, y: now.y, z: now.z, w: now.w });
     } else if (this.winch) {
       // On the track: a gentle pull along the cable that only helps the
       // wheels (never stands in for the kit, which the course asks for
