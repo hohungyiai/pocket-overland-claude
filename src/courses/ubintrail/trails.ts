@@ -80,11 +80,15 @@ export const PUAKA: TrailDef = {
 
 /**
  * Super hard: out to Chek Jawa. From the end of the lane on Jalan Durian,
- * the old track east along the south shore: a ford, tidal sand, an
- * off-camber stretch above the water and deep mud at the mangrove edge,
- * each one long, then through the coastal forest to the Chek Jawa shore.
- * No signs and no gate. A longer way exists, inland by Jalan Sam Heng and
- * the old track past Petai and Balai quarries, for whoever finds it.
+ * the old track east along the south shore to Punai Hut, then through the
+ * coastal forest to the Chek Jawa shore. Four long stretches, each mixing
+ * two or three kinds of ground, so the drive changes under you as you go:
+ * a ford with a soft sand bed straight into a loose, rocky climb and a
+ * scree descent; a long climb over loose gravel, rock and ledges; an
+ * off-camber bench above the sea with mud ruts along its high side; and
+ * mangrove mud running into tidal sand. No signs and no gate. A longer
+ * way exists, inland by Jalan Sam Heng and the old track past Petai and
+ * Balai quarries, for whoever finds it.
  */
 export const CHEK_JAWA: TrailDef = {
   id: 'chekjawa',
@@ -98,11 +102,59 @@ export const CHEK_JAWA: TrailDef = {
     [3934, 18], // the Chek Jawa shore, where the boardwalk starts
   ],
   obstacles: [
-    { kind: 'ford', label: 'Ford', at: [2930, -110], len: 50, needs: { low: true }, p: { depth: 0.9, bank: 3.4, out: 15 } },
-    { kind: 'sand', label: 'Tidal sand', at: [3120, -40], len: 140, needs: { speed: true }, p: { tidal: 1, duneH: 2.6, duneFace: 10, dip: 0.35 } },
-    // (A line, not kit: the high side, against the bank.)
-    { kind: 'camber', label: 'Off-camber shore', at: [3230, 172], len: 150, needs: {}, p: { deg: 30, bench: 5, edge: 1, width: 3.2, dir: 1 } },
-    { kind: 'mud', label: 'Mangrove mud', at: [3500, 90], len: 190, needs: { low: true, diff: true } },
+    {
+      kind: 'ford',
+      label: 'Ford and loose climb',
+      nice: 'Across the ford, up the loose climb and down the far side.',
+      at: [2770, -131],
+      len: 280,
+      needs: { low: true },
+      mix: [
+        { kind: 'sand', from: 0, to: 70, p: { dip: 0.3, duneH: 0 } },
+        { kind: 'ford', from: 0, to: 70, p: { depth: 0.9, bank: 3.4, out: 15 } },
+        { kind: 'rocks', from: 100, to: 190, p: { humpH: 0.15 } },
+        { kind: 'climb', from: 50, to: 200, p: { h: 9, up: 32, top: 35 } },
+        { kind: 'descent', from: 150, to: 280, p: { rut: 0.3 } },
+      ],
+    },
+    {
+      kind: 'summit',
+      label: 'Rock and ledges',
+      nice: 'Over the rock and the ledges. That was a proper climb.',
+      at: [3075, -60],
+      len: 280,
+      needs: { low: true, diff: true },
+      mix: [
+        { kind: 'climb', from: 0, to: 280, p: { h: 11, up: 45, top: 90 } },
+        { kind: 'rocks', from: 20, to: 160, p: { humpH: 0.5 } },
+        { kind: 'summit', from: 40, to: 150, p: { ledgeH: 0.3, every: 9 } },
+      ],
+    },
+    {
+      // (A line and kit: the high side, against the bank, through the ruts.)
+      kind: 'camber',
+      label: 'Muddy off-camber shore',
+      nice: 'Along the muddy shore without sliding off. Good line.',
+      at: [3253, 176],
+      len: 210,
+      needs: { diff: true },
+      mix: [
+        { kind: 'camber', from: 0, to: 210, p: { deg: 30, bench: 5, edge: 1, width: 3.2, dir: 1 } },
+        { kind: 'mud', from: 25, to: 185, p: { shift: 2.5, rut: 0.25, hole: 0.45 } },
+      ],
+    },
+    {
+      kind: 'mud',
+      label: 'Mangrove mud and tidal sand',
+      nice: 'Through the mangrove mud and over the tidal sand.',
+      at: [3501, 79],
+      len: 210,
+      needs: { low: true, diff: true },
+      mix: [
+        { kind: 'mud', from: 0, to: 120, p: { rut: 0.3, hole: 0.5 } },
+        { kind: 'sand', from: 100, to: 210, p: { tidal: 1, duneH: 2.6, duneFace: 10, dip: 0.35 } },
+      ],
+    },
   ],
   wayRound: 'hidden',
   detour: { waypoints: [[2586, -123], [2122, -210], [2636, -502], [3258, -240], [3688, -14]], skips: [0, 1, 2, 3] },

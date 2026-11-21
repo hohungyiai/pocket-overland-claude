@@ -99,6 +99,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     wetMud: new THREE.Color(0.17, 0.13, 0.08),
     puddle: new THREE.Color(0.1, 0.1, 0.08),
     rock: new THREE.Color(0.55, 0.53, 0.5),
+    gravel: new THREE.Color(0.4, 0.35, 0.28),
     bed: new THREE.Color(0.4, 0.38, 0.3),
     sea: new THREE.Color(0.42, 0.47, 0.4),
   };
@@ -128,7 +129,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         // Wet, dark mud, with darker puddles in the ruts.
         out.lerp(C.wetMud, 0.92);
         if (valueNoise(x / 2.2, z / 2.2, SEED + 11) > 0.62) out.lerp(C.puddle, 0.6);
-      } else out.lerp(/sand/i.test(o.name) ? C.sand : /rock|ledge|gravel/i.test(o.name) ? C.rock : C.dirt, 0.7);
+      } else out.lerp(/sand/i.test(o.name) ? C.sand : /rock|ledge|gravel/i.test(o.name) ? C.gravel : C.dirt, 0.75);
     }
     return out;
   }
@@ -673,9 +674,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   }
 
   // Fords: brown water across the track, level with the ground either side.
-  for (const o of trail.obstacles) {
+  for (const o of trail.obstacles.flatMap((ob) => ob.parts)) {
     if (o.kind !== 'ford') continue;
-    const len = o.s1 - o.s0;
+    const len = o.to - o.from;
     const a = o.line.at(0);
     const lvl = heightAt(a.x, a.z) - 0.3;
     // A pool across the track, rounded at both ends, its edges wobbling a
@@ -704,6 +705,78 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const ford = new THREE.Mesh(geo, waterMat(0x5b5a3e, 0.93, 2));
     ford.receiveShadow = true;
     scene.add(ford);
+  }
+
+  // ---------- The rough ground, to see ----------
+  // Rocks on the humps, slabs at the ledges, roots across the rocky track,
+  // loose stones on the gravel and scree, puddles in the mud holes. For
+  // looks only: what the car feels is the ground's own shape under them.
+  {
+    const props = trail.props();
+    const rockGeo = (() => {
+      const g = new THREE.IcosahedronGeometry(1, 1);
+      const pos = g.attributes.position;
+      const r = mulberry32(SEED + 77);
+      const bump = new Map<string, number>();
+      for (let i = 0; i < pos.count; i++) {
+        const key = `${pos.getX(i).toFixed(3)},${pos.getY(i).toFixed(3)},${pos.getZ(i).toFixed(3)}`;
+        if (!bump.has(key)) bump.set(key, 0.78 + 0.4 * r());
+        const k = bump.get(key)!;
+        pos.setXYZ(i, pos.getX(i) * k, Math.max(pos.getY(i) * k, -0.55), pos.getZ(i) * k);
+      }
+      g.computeVertexNormals();
+      return g;
+    })();
+    const kinds = {
+      rock: { geo: rockGeo, mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.08, 0.2], shadow: true },
+      pebble: { geo: new THREE.IcosahedronGeometry(1, 0), mat: new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }), hsl: [0.07, 0.1, 0.24], shadow: false },
+      ledge: { geo: (() => { const g = new THREE.BoxGeometry(1, 1, 1, 3, 1, 1); const pos = g.attributes.position; const r = mulberry32(SEED + 78); for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0) pos.setY(i, pos.getY(i) - 0.12 * r()); g.computeVertexNormals(); return g; })(), mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.07, 0.22], shadow: true },
+      root: { geo: new THREE.CylinderGeometry(1, 1, 1, 6).rotateX(Math.PI / 2), mat: new THREE.MeshStandardMaterial({ roughness: 0.9 }), hsl: [0.07, 0.4, 0.13], shadow: true },
+      puddle: { geo: new THREE.CircleGeometry(0.5, 14).rotateX(-Math.PI / 2), mat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.9 }), hsl: [0.13, 0.2, 0.2], shadow: false },
+    };
+    const dummy = new THREE.Object3D();
+    const c = new THREE.Color();
+    const rnd = mulberry32(SEED + 79);
+    for (const [name, k] of Object.entries(kinds)) {
+      const list = props.filter((p) => p.kind === name);
+      if (!list.length) continue;
+      const im = new THREE.InstancedMesh(k.geo, k.mat, list.length);
+      list.forEach((p, i) => {
+        const h = heightAt(p.x, p.z);
+        dummy.rotation.set(0, p.yaw, 0);
+        if (name === 'rock') {
+          // As tall as its hump, its top just proud of it.
+          dummy.position.set(p.x, h + 0.05 - p.sy, p.z);
+          dummy.scale.set(p.sx / 2, p.sy, p.sz / 2);
+        } else if (name === 'pebble') {
+          dummy.position.set(p.x, h + p.sy * 0.15, p.z);
+          dummy.rotation.set(rnd() * 3, p.yaw, rnd() * 3);
+          dummy.scale.set(p.sx, p.sy, p.sz);
+        } else if (name === 'ledge') {
+          // Its top flush with the step above.
+          dummy.position.set(p.x, h - p.sy / 2 + 0.03, p.z);
+          dummy.scale.set(p.sz, p.sy, p.sx);
+        } else if (name === 'root') {
+          dummy.position.set(p.x, h + p.sx * 0.25, p.z);
+          dummy.scale.set(p.sx, p.sx * 0.8, p.sz);
+        } else {
+          // Water fills the hole most of the way to its rim.
+          let rim = 0;
+          for (let k = 0; k < 6; k++) rim += heightAt(p.x + 1.6 * Math.cos(k), p.z + 1.6 * Math.sin(k)) / 6;
+          dummy.position.set(p.x, h + 0.7 * Math.max(0, rim - h) + 0.03, p.z);
+          dummy.scale.set(p.sz, 1, p.sx); // long along the track
+        }
+        dummy.updateMatrix();
+        im.setMatrixAt(i, dummy.matrix);
+        const [hh, ss, ll] = k.hsl;
+        c.setHSL(hh + (rnd() - 0.5) * 0.04, ss + (rnd() - 0.5) * 0.06, ll + (rnd() - 0.5) * 0.12);
+        im.setColorAt(i, c);
+      });
+      im.castShadow = k.shadow;
+      im.receiveShadow = true;
+      im.computeBoundingSphere();
+      scene.add(im);
+    }
   }
 
   // ---------- Ubin Jetty and the bumboats ----------
