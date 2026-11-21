@@ -181,4 +181,5 @@ export const CHEK_JAWA: TrailDef = {
   startSign: ['Chek Jawa', 'Old track → 2 km'],
   clean: 'Chek Jawa, the hard way: every obstacle on the hard line. The tide is out and the flats are yours.',
   finish: 'Chek Jawa. The tide is out and the flats are yours.',
+  winch: true,
 };

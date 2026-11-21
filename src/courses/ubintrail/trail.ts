@@ -54,7 +54,7 @@ export interface ObstacleDef {
 
 /** Something to see on an obstacle's ground (no collider: the ground's own shape is what the car feels). */
 export interface Prop {
-  kind: 'rock' | 'pebble' | 'ledge' | 'root' | 'puddle' | 'boulder';
+  kind: 'rock' | 'pebble' | 'ledge' | 'root' | 'puddle' | 'boulder' | 'anchor';
   x: number;
   z: number;
   /** Heading of its long side (radians, like the car's yaw). */
@@ -99,6 +99,8 @@ export interface TrailDef {
   /** Said at the end: after a clean run, and otherwise. */
   clean: string;
   finish: string;
+  /** Marked trees to winch to beside the obstacles, and a clean-run score. */
+  winch?: boolean;
 }
 export interface Obstacle {
   kind: ObstacleKind;
@@ -125,6 +127,10 @@ export interface Obstacle {
   // Per attempt.
   inside: boolean;
   counted: boolean;
+  /** Clean-run penalty points on this stretch so far (reverses, winch pulls, tries again). */
+  points: number;
+  /** Driving this stretch now (entered, not yet through). */
+  scoring: boolean;
   furthest: number;
   /** Seconds without headway on this try. */
   idle: number;
@@ -346,6 +352,14 @@ function stretch(line: Polyline, s0: number, s1: number): Polyline {
   return new Polyline(pts);
 }
 
+export interface Coaching {
+  tip?: string;
+  say?: string;
+  zone?: string;
+  /** A stretch just finished on a clean-run trail: its points and the best. */
+  scored?: { label: string; points: number; best: number };
+}
+
 export class UbinTrail {
   readonly route: Polyline;
   readonly obstacles: Obstacle[] = [];
@@ -421,6 +435,8 @@ export class UbinTrail {
         furthest: 0,
         idle: 0,
         tipFor: 0,
+        points: 0,
+        scoring: false,
       });
     }
     // The height profile: anchors in order along the route.
@@ -431,6 +447,148 @@ export class UbinTrail {
     }
     const end = R.at(L);
     this.camp = { x: end.x, z: end.z };
+    if (def.winch) this.placeAnchors();
+  }
+
+  // ---------------- The winch: marked trees beside the obstacles ----------------
+
+  /** Trees with an orange strap: the only ones the winch hooks onto. */
+  readonly anchors: { x: number; z: number }[] = [];
+  static readonly REACH = 30;
+
+  /**
+   * One marked tree every 22 m along each obstacle, sides taking turns,
+   * just off the track: on the edge of a ridge's crest or the valley floor,
+   * up the bank above a camber. So wherever the car is stuck, on the line
+   * or slid off it, one is close (the cable reaches 30 m).
+   */
+  private placeAnchors() {
+    for (const o of this.obstacles) {
+      const len = o.s1 - o.s0;
+      let side = 1;
+      // (And one or two past its end, for a car stuck at the very end.)
+      for (let s = 6; s < len + 20; s += 22, side = -side) {
+        let off = 3.6;
+        let sd = side;
+        for (const q of o.parts) {
+          if (s < q.from || s > q.to) continue;
+          if (q.kind === 'ridge') off = (q.p.w ?? 2.6) + 0.7;
+          // (A valley's on the very edge of its floor, clear of the ditch a car slides into.)
+          if (q.kind === 'valley') off = (q.p.w ?? 2.6) + 0.15;
+          if (q.kind === 'camber') {
+            // (Always up the bank: down the bank is where the car ends up.)
+            sd = q.p.dir ?? 1;
+            off = (q.p.edge ?? 1) + (q.p.width ?? 3.2) + 1.5;
+          }
+        }
+        // (Past the end, clear of the trail where it opens out again.)
+        if (s > len) off = Math.max(off, 4.5);
+        const a = s <= len ? o.line.at(s) : this.route.at(o.s0 + s);
+        this.anchors.push({ x: a.x + a.tz * sd * off, z: a.z - a.tx * sd * off });
+      }
+    }
+  }
+
+  /**
+   * The marked tree the winch hooks onto from (x, y, z), the car facing
+   * (fx, fz). Of those within the cable's reach whose line is not blocked by
+   * the ground (`ground` gives its height): off the track, the one that
+   * pulls the car back across it (a tree on the far edge lands it on the
+   * track); on it, the one furthest ahead. Null when there is none.
+   */
+  anchorFor(x: number, y: number, z: number, fx: number, fz: number, ground: (x: number, z: number) => number): { x: number; y: number; z: number } | null {
+    // Which way the track is, and how far.
+    let tx = 0;
+    let tz = 0;
+    let off = 0;
+    let side = 0;
+    let line: Polyline | null = null;
+    for (const o of this.obstacles) {
+      const n = o.line.nearest(x, z, 40);
+      if (n && (!off || n.d < off)) {
+        off = n.d;
+        tx = n.x - x;
+        tz = n.z - z;
+        side = Math.sign(n.sd);
+        line = o.line;
+      }
+    }
+    const tl = Math.hypot(tx, tz) || 1;
+    const fl = Math.hypot(fx, fz) || 1;
+    const across = off > 2 ? 1 : 0;
+    let best: { x: number; y: number; z: number } | null = null;
+    let score = -Infinity;
+    for (const a of this.anchors) {
+      const d = Math.hypot(a.x - x, a.z - z);
+      if (d >= UbinTrail.REACH || d < 3) continue;
+      const ay = ground(a.x, a.z) + 0.8;
+      let clear = true;
+      for (let k = 1; k < 10 && clear; k++) {
+        const t = k / 10;
+        // (Over a crest or a shoulder is fine, as a cable would go; not
+        // through a hill higher than both ends.)
+        const gh = ground(x + (a.x - x) * t, z + (a.z - z) * t);
+        if (gh > Math.max(y, ay) + 1) clear = false;
+      }
+      if (!clear) continue;
+      const ux = (a.x - x) / d;
+      const uz = (a.z - z) / d;
+      const ahead = (ux * fx + uz * fz) / fl;
+      const toTrack = (ux * tx + uz * tz) / tl;
+      // (Off it, a tree on the far edge first: pulled across, the car ends up on the track.)
+      const far = across && line ? Math.sign(line.nearest(a.x, a.z, 40)?.sd ?? side) !== side : false;
+      const sc = across ? (far ? 5 : 0) + ahead * 3 + toTrack : ahead * 3 + Math.min(d, 20) * 0.05;
+      if (sc > score) {
+        score = sc;
+        best = { x: a.x, y: ay, z: a.z };
+      }
+    }
+    this.pullFrom = best && across && line ? { line, side } : null;
+    return best;
+  }
+
+  /** Pulled in from off the track: which line, and which side of it the car was. */
+  private pullFrom: { line: Polyline; side: number } | null = null;
+  /** Winching back from off the track, is the car on it again (near its middle)? Then it unhooks. */
+  winchHome(x: number, z: number): boolean {
+    const f = this.pullFrom;
+    if (!f) return false;
+    const n = f.line.nearest(x, z, 40);
+    return !!n && n.sd * f.side < 1.6;
+  }
+
+  // ---------------- The clean-run score ----------------
+
+  /** Best (fewest) points per stretch, by label, from the save. */
+  best: Record<string, number> = {};
+  private revFor = 0;
+  private revLatched = false;
+
+  /** The stretch the car is on, or stuck beside (as retryAt finds it). */
+  private stretchAt(x: number, z: number): Obstacle | null {
+    let best: { o: Obstacle; d: number } | null = null;
+    for (const o of this.obstacles) {
+      const n = o.line.nearest(x, z, 60);
+      if (!n || n.d > 40 || n.s < 0 || n.s > o.s1 - o.s0) continue;
+      if (!best || n.d < best.d) best = { o, d: n.d };
+    }
+    return best?.o ?? null;
+  }
+
+  /** Penalty points: 5 for a winch pull, 10 for a try again. */
+  penalty(what: 'winch' | 'retry', x: number, z: number) {
+    if (!this.def.winch) return;
+    const o = this.obstacles.find((q) => q.scoring) ?? this.stretchAt(x, z);
+    if (!o || o.done) return;
+    o.scoring = true;
+    o.points += what === 'winch' ? 5 : 10;
+  }
+
+  /** What the score badge shows: the stretch and its points, while on one. */
+  score(): { label: string; points: number; best?: number } | null {
+    if (!this.def.winch) return null;
+    const o = this.obstacles.find((q) => q.scoring);
+    return o ? { label: o.label, points: o.points, best: this.best[o.label] } : null;
   }
 
   // The profile spread beside the route: route samples every 4 m in a
@@ -788,6 +946,8 @@ export class UbinTrail {
         }
       }
     }
+    // (Nothing solid on top of a marked tree.)
+    if (this.anchors.length) return out.filter((p) => (p.kind !== 'boulder' && p.kind !== 'rock') || this.anchors.every((a) => Math.hypot(a.x - p.x, a.z - p.z) > 1.8));
     return out;
   }
 
@@ -871,8 +1031,8 @@ export class UbinTrail {
    * now (after a stall), and a message to say once (the way round opening,
    * an obstacle passed).
    */
-  coach(c: { x: number; z: number; speed: number; low: boolean; diff: boolean; stuck: number }): { tip?: string; say?: string; zone?: string } | null {
-    let out: { tip?: string; say?: string; zone?: string } | null = null;
+  coach(c: { x: number; z: number; speed: number; low: boolean; diff: boolean; stuck: number }): Coaching | null {
+    let out: Coaching | null = null;
     for (const o of this.obstacles) {
       const n = o.line.nearest(c.x, c.z, 30);
       const len = o.s1 - o.s0;
@@ -884,13 +1044,27 @@ export class UbinTrail {
         o.done = 'hard';
         o.inside = false;
         const nice = o.nice ?? NICE[o.kind];
-        out = { ...(out ?? {}), say: nice };
+        if (this.def.winch) {
+          // The clean-run score: said at the end, the best kept.
+          o.scoring = false;
+          const was = this.best[o.label];
+          const better = was === undefined || o.points < was;
+          if (better) this.best[o.label] = o.points;
+          const how = o.points === 0 ? 'Clean run!' : `Through with ${o.points} point${o.points === 1 ? '' : 's'}${better && was !== undefined ? ', your best yet' : was !== undefined ? ` (best ${was})` : ''}.`;
+          out = { ...(out ?? {}), say: `${how} ${nice}`, scored: { label: o.label, points: o.points, best: this.best[o.label] } };
+        } else out = { ...(out ?? {}), say: nice };
         continue;
+      }
+      // (On the clean-run trails: the score starts as the car enters a stretch.)
+      if (this.def.winch && n && n.d < 16 && n.s > 0 && n.s < len && !o.scoring) {
+        for (const q of this.obstacles) q.scoring = false;
+        o.scoring = true;
       }
       if (!o.done && o.bypass !== o.line && this.onBypass(o, c.x, c.z) && o.open) {
         const b = o.bypass.nearest(c.x, c.z, 10)!;
         if (b.s > o.bypass.length - 12) {
           o.done = 'round';
+          o.scoring = false;
           out = { ...(out ?? {}), say: 'Back on the trail.' };
         }
       }
@@ -934,6 +1108,19 @@ export class UbinTrail {
         out = { ...(out ?? {}), tip: this.tip(o, c) };
       }
     }
+    // Backing up on a stretch: a point each time (a metre or more, once per
+    // spell in reverse).
+    const on = this.obstacles.find((q) => q.scoring);
+    if (on && c.speed < -0.3) {
+      this.revFor += -c.speed * 0.1;
+      if (this.revFor > 1 && !this.revLatched) {
+        this.revLatched = true;
+        on.points += 1;
+      }
+    } else if (c.speed > 0.3) {
+      this.revFor = 0;
+      this.revLatched = false;
+    }
     // At camp, after the loop.
     if (!this.cleanSaid && this.obstacles.every((o) => o.done) && Math.hypot(c.x - this.camp.x, c.z - this.camp.z) < 40) {
       this.cleanSaid = true;
@@ -944,7 +1131,7 @@ export class UbinTrail {
   }
 
   private hinted = false;
-  private tried(o: Obstacle, out: { tip?: string; say?: string; zone?: string } | null) {
+  private tried(o: Obstacle, out: Coaching | null) {
     o.tries++;
     o.tipFor = 9;
     if (this.def.wayRound === 'hidden') {

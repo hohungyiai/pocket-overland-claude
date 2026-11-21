@@ -44,6 +44,8 @@ export interface Journey {
   /** Where the car was left on each drive, so trying another drive never
    * loses your place on this one (the fields above are the latest). */
   spots?: Record<string, Spot>;
+  /** Clean-run bests: fewest penalty points per trail stretch, by course then stretch. */
+  best?: Record<string, Record<string, number>>;
   /** When saved (ms since 1970). */
   savedAt: number;
   /** Distance and time at the last backup (save code made). */
@@ -78,6 +80,15 @@ export function normalise(s: unknown): Journey | null {
   if (typeof o.dust === 'number') j.dust = Math.min(1, Math.max(0, o.dust));
   if (typeof o.home === 'string') j.home = o.home;
   if (Array.isArray(o.garages)) j.garages = o.garages.filter((g): g is string => typeof g === 'string');
+  if (o.best && typeof o.best === 'object') {
+    j.best = {};
+    for (const [k, v] of Object.entries(o.best as Record<string, Record<string, unknown>>)) {
+      if (!v || typeof v !== 'object') continue;
+      const m: Record<string, number> = {};
+      for (const [l, n] of Object.entries(v)) if (typeof n === 'number' && Number.isFinite(n) && n >= 0) m[l] = Math.round(n);
+      j.best[k] = m;
+    }
+  }
   j.spots = {};
   if (o.spots && typeof o.spots === 'object')
     for (const [k, v] of Object.entries(o.spots as Record<string, Record<string, unknown>>)) {
@@ -230,6 +241,7 @@ export function encodeCode(j: Journey): string {
     Math.round(j.savedAt / 1000),
     j.y === undefined ? null : r1(j.y),
     Math.round((j.dust ?? 0) * 100) / 100,
+    j.best ?? {},
   ];
   const body = toB64(JSON.stringify(arr));
   return `${PREFIX}-${body}.${check(body)}`;
@@ -257,6 +269,7 @@ export function decodeCode(code: string): Journey | null {
       savedAt: a[11] * 1000,
       y: a[12] ?? undefined,
       dust: a[13] ?? 0,
+      best: a[14] ?? undefined,
     });
     if (j) {
       // A restored code counts as backed up where it was made.
