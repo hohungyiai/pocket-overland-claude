@@ -596,6 +596,71 @@ window.__checkLevelIslands = (all = false) => levelIslands(all, false);
 // grass a hand's width under. A count that may only go down.)
 window.__checkLevelIslandHoles = (all = false) => levelIslands(all, true);
 
+// (The reviewer's rule, 21 Nov: an island's grass stays inside its kerbs.
+// Two blades of lawn 2 m long fanned out over the road from an island's
+// point at -438.6,-1826.1, the sections round the point left uncut.)
+// Every lawn triangle facing up, each corner taken 5 cm in towards its
+// middle and the middle itself: no road's paving there at the lawn's own
+// height or up to 0.6 m under it.
+window.__checkLawnInIsland = (all = false) => {
+  const C = 2;
+  const R = [];
+  const grid = new Map();
+  window.__eachMesh(['road', 'deck'], (_k, _kind, pos, idx) => {
+    for (let q = 0; q < idx.length; q += 3) {
+      const t = [];
+      for (let c = 0; c < 3; c++) t.push(pos[idx[q + c] * 3], pos[idx[q + c] * 3 + 1], pos[idx[q + c] * 3 + 2]);
+      const det = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      if (Math.abs(det) < 1e-6) continue;
+      const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
+      const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
+      if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
+      const n = R.length;
+      R.push(t);
+      for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) (grid.get(i * 100003 + j) ?? grid.set(i * 100003 + j, []).get(i * 100003 + j)).push(n);
+    }
+  });
+  const paved = (x, z, y) => {
+    for (const q of grid.get(Math.floor(x / C) * 100003 + Math.floor(z / C)) ?? []) {
+      const t = R[q];
+      const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
+      const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
+      if (l1 < -1e-6 || l2 < -1e-6 || 1 - l1 - l2 < -1e-6) continue;
+      const h = l1 * t[1] + l2 * t[4] + (1 - l1 - l2) * t[7];
+      if (h <= y + 0.05 && h >= y - 0.6) return true;
+    }
+    return false;
+  };
+  const pts = [];
+  let n = 0;
+  window.__eachMesh(['lawn'], (_k, _kind, pos, idx) => {
+    for (let q = 0; q < idx.length; q += 3) {
+      const t = [];
+      for (let c = 0; c < 3; c++) t.push(pos[idx[q + c] * 3], pos[idx[q + c] * 3 + 1], pos[idx[q + c] * 3 + 2]);
+      const ny = (t[5] - t[2]) * (t[6] - t[0]) - (t[3] - t[0]) * (t[8] - t[2]);
+      const area = Math.abs((t[3] - t[0]) * (t[8] - t[2]) - (t[5] - t[2]) * (t[6] - t[0])) / 2;
+      if (ny <= 0 || area < 1e-4) continue;
+      n++;
+      const cx = (t[0] + t[3] + t[6]) / 3, cy = (t[1] + t[4] + t[7]) / 3, cz = (t[2] + t[5] + t[8]) / 3;
+      const S = [[cx, cy, cz]];
+      for (let c = 0; c < 9; c += 3) {
+        const l = Math.hypot(cx - t[c], cz - t[c + 2]);
+        if (l < 0.1) continue;
+        const f = 0.05 / l;
+        S.push([t[c] + (cx - t[c]) * f, t[c + 1] + (cy - t[c + 1]) * f, t[c + 2] + (cz - t[c + 2]) * f]);
+      }
+      for (const [x, y, z] of S)
+        if (paved(x, z, y)) {
+          pts.push({ x: +x.toFixed(1), z: +z.toFixed(1), y: +y.toFixed(2), value: 1 });
+          break;
+        }
+    }
+  });
+  const bad = window.__finishIndex().places(pts, 2);
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: '' };
+};
+
 // The user's rule (18 Nov): a bridge's parapets and walls begin where the
 // ground actually drops, never on an island at the junction. Every upright
 // sheet standing on a road's level (a parapet, its foot over the ground)

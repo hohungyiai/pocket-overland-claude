@@ -127,6 +127,8 @@ const CHECKS = [
   // at a count that may only go down (21 Nov), for a follow-up to fix.)
   ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0, { whole: 227, trial: 11 }],
   ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0, { whole: 402, trial: 20 }],
+  // (The reviewer's rule, 21 Nov.)
+  ['An island\'s grass stays inside its kerbs: no lawn more than 5 cm out over a road', 'outline.js', '__checkLawnInIsland', 0],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
   ['Every petrol station is a place: a paved, solid forecourt a road runs onto and its lanes end on, clear of public roads, and the pump works only on it', 'fuel.js', '__checkStations', 0],

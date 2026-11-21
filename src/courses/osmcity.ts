@@ -8328,6 +8328,7 @@ export async function buildPasirRisCourse(
   // for the whole 4 m to the next.)
   // (A generator, a pause every few sections: done in one go, a long
   // kerb's island top held a frame up for 150 ms.)
+  const ringBox = new WeakMap<OutRing, number[]>();
   const islandTop = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, side: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
     const Pd: XZ[] = [], cd: number[] = [], md: (OutMark | null)[] = [], td: number[] = [];
     if (v0 > 0) Pd.push(P[v0 - 1]), cd.push(cum[v0 - 1]), md.push(null), td.push(NaN);
@@ -8566,11 +8567,28 @@ export async function buildPasirRisCourse(
     // short in turn, the lawn beside the point had a hole a metre wide, the
     // ground 0.24 m down showing through it, and the kerb's side across the
     // way at -2118.7,3152.7.)
+    // (Only where both end inside the island's own outline:
+    // round a point's own round end, measured across the road to the next
+    // island's kerb, left uncut they ran on out over the road, two blades
+    // of grass 2 m long at -438.6,-1826.1.)
+    const near0 = w.rings.filter((r) => {
+      const b = ringBox.get(r) ?? ringBox.set(r, r.P.reduce((q, [x, z]) => [Math.min(q[0], x), Math.min(q[1], z), Math.max(q[2], x), Math.max(q[3], z)], [Infinity, Infinity, -Infinity, -Infinity])).get(r)!;
+      const [x, z] = P[v0];
+      return x > b[0] - 1 && x < b[2] + 1 && z > b[1] - 1 && z < b[3] + 1;
+    });
+    // (The level of the outline its kerb runs along: the ring nearest it.)
+    let lvl0 = NaN, d0 = Infinity;
+    for (const r of near0) for (const q of r.P) if ((q[0] - P[v0][0]) ** 2 + (q[1] - P[v0][1]) ** 2 < d0) (d0 = (q[0] - P[v0][0]) ** 2 + (q[1] - P[v0][1]) ** 2), (lvl0 = r.lvl);
+    const same = w.rings.filter((r) => r.lvl === lvl0);
+    const inIsle = W.map((wi, i) => {
+      const x = P[v0 + i][0] + out[i][0] * wi, z = P[v0 + i][1] + out[i][1] * wi;
+      return same.filter((r) => inRingXZ(r.P, x, z)).length % 2 === 0;
+    });
     const W0 = W.slice();
     for (let i = 0; i < n; i++) {
       if (i % 16 === 15) yield;
       near(i, 24, (j) => {
-        if (j === i || W[i] <= 0 || (flatL[i] && flatL[j])) return;
+        if (j === i || W[i] <= 0 || (flatL[i] && flatL[j] && inIsle[i] && inIsle[j])) return;
         const [ax, az] = out[i], [bx, bz] = out[j];
         const den = ax * bz - az * bx;
         if (Math.abs(den) < 1e-6) return;
@@ -8868,6 +8886,10 @@ export async function buildPasirRisCourse(
         if (Math.hypot(ox, oz) > 1e-6) cap(s, ox, oz, level[i]);
       }
     }
+    // (A turned-down end's face on points of its own, at the same spots: on
+    // the lawn's own edge points, the light's slope down it bent the flat
+    // grass's light along the edge, a dark crease down the middle of a
+    // level island seen from above at -2123.9,3149.9 and -417.1,-101.7.)
     // (A turned-down end's face on points of its own, at the same spots: on
     // the lawn's own edge points, the light's slope down it bent the flat
     // grass's light along the edge, a dark crease down the middle of a
