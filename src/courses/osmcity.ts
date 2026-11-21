@@ -8868,12 +8868,28 @@ export async function buildPasirRisCourse(
         if (Math.hypot(ox, oz) > 1e-6) cap(s, ox, oz, level[i]);
       }
     }
+    // (A turned-down end's face on points of its own, at the same spots: on
+    // the lawn's own edge points, the light's slope down it bent the flat
+    // grass's light along the edge, a dark crease down the middle of a
+    // level island seen from above at -2123.9,3149.9 and -417.1,-101.7.)
+    const own = new Map<number, number>();
+    const ownOf = (q: number) => own.get(q) ?? own.set(q, put(lawn.pos[3 * q], lawn.pos[3 * q + 1], lawn.pos[3 * q + 2])).get(q)!;
+    const lit = (u: number, v: number, w: number) => {
+      const p = lawn.pos;
+      const ax = p[3 * v] - p[3 * u], ay = p[3 * v + 1] - p[3 * u + 1], az = p[3 * v + 2] - p[3 * u + 2];
+      const bx = p[3 * w] - p[3 * u], by = p[3 * w + 1] - p[3 * u + 1], bz = p[3 * w + 2] - p[3 * u + 2];
+      const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+      if (Math.abs(ny) >= 0.5 * Math.hypot(nx, ny, nz)) faceUp(lawn, u, v, w);
+      else faceUp(lawn, ownOf(u), ownOf(v), ownOf(w));
+    };
     for (let i = 0; i + 1 < n; i++) {
       const a = secs[i], b = secs[i + 1];
       if (!a || !b) continue;
       for (let c = 0; c + 1 < Math.min(a.length, b.length); c++) {
-        if (a[c] !== a[c + 1] && a[c] !== b[c]) faceUp(lawn, a[c], b[c], a[c + 1]);
-        if (b[c] !== b[c + 1] && a[c + 1] !== b[c] && a[c + 1] !== b[c + 1]) faceUp(lawn, a[c + 1], b[c], b[c + 1]);
+        const down = c + 2 === a.length || c + 2 === b.length;
+        const f = down ? lit : (u: number, v: number, w: number) => faceUp(lawn, u, v, w);
+        if (a[c] !== a[c + 1] && a[c] !== b[c]) f(a[c], b[c], a[c + 1]);
+        if (b[c] !== b[c + 1] && a[c + 1] !== b[c] && a[c + 1] !== b[c + 1]) f(a[c + 1], b[c], b[c + 1]);
       }
     }
   };
