@@ -40,15 +40,13 @@ const TUNING = {
   roughFull: 10,
   roughBase: 0.12,
   roughSteer: 0.9,
-  // The winch: reels in at winchSpeed (m/s), pulling with up to winchPull
-  // (m/s^2, a share of the car's weight), from the front bumper.
+  // The winch reels in at winchSpeed (m/s). On the track it pulls with up
+  // to winchHelp (m/s^2): it only helps the wheels, the right kit is still
+  // needed. Off it, it hauls the car back to the track at that speed,
+  // riding winchRide (m, the body's height at rest) over the ground ahead.
   winchSpeed: 1,
-  winchPull: 26,
-  // On the track the pull only helps the wheels (the right kit is still
-  // needed); the full pull is for hauling a car back onto the track.
   winchHelp: 3,
-  // Weight the cable takes off a car caught on a lip off the track (m/s²).
-  winchLift: 8,
+  winchRide: 0.92,
 };
 
 const DUST = new THREE.Color(0x8a7458);
@@ -77,7 +75,7 @@ export class Vehicle {
   speed = 0;
   surface: Surface = SURFACES.gravel;
   /** The winch cable's far end (a marked tree), while winching; null otherwise. `help`: only helping the wheels (on the track). */
-  winch: { x: number; y: number; z: number; help?: boolean } | null = null;
+  winch: { x: number; y: number; z: number; help?: boolean; to?: { x: number; z: number } } | null = null;
   /** Why the winch last let go by itself: at the tree, driven off, or it could not shift the car. */
   winchEnded: 'tree' | 'free' | 'stalled' | null = null;
   /** The same, kept after the HUD has reported it (for the checks). */
@@ -368,13 +366,9 @@ export class Vehicle {
     let rough = 0;
     const lv0 = this.body.linvel();
     const sp0 = Math.hypot(lv0.x, lv0.z);
-    // (Hauled back across from off the track, the tyres scrub sideways
-    // rather than digging in against the cable.)
-    const scrub = this.winch && !this.winch.help ? 0.3 : 1;
     for (let i = 0; i < 4; i++) {
       off[i] = false;
       grips[i] = 0;
-      c.setWheelSideFrictionStiffness(i, scrub);
       if (c.wheelIsInContact(i)) {
         onGround++;
         const cp = c.wheelContactPoint(i);
@@ -427,29 +421,28 @@ export class Vehicle {
       }
     }
 
-    // The winch: the cable pulls the front of the car towards the tree, as
-    // fast as it reels in and no harder than winchPull allows. (A stuck car
-    // inches out; a free one is not yanked about.)
+    // The winch's tow point (where the cable leaves the car).
     {
       const t = this.body.translation();
       const q0 = this.body.rotation();
       this.towPoint.set(2.2, 0.25, 0).applyQuaternion(this.tmpQ.set(q0.x, q0.y, q0.z, q0.w)).add(this.tmpV.set(t.x, t.y, t.z));
     }
     if (this.winch) {
-      // It lets go by itself 4 m from the tree, once the car drives off on
-      // its own (over 4 m/s for 1.5 s), or when it has not gained 0.3 m in 10 s (it cannot shift it).
+      // It lets go by itself once the car drives off on its own (over 4 m/s
+      // for 1.5 s), or when it has not gained 0.3 m for a while (it cannot
+      // shift it). On the track (help) also 4 m from the tree; hauled back
+      // from off it, once at the track (the course unhooks it sooner, as
+      // soon as it is back on).
+      const help = !this.winch.to;
       const tp = this.towPoint;
-      const flat = Math.hypot(this.winch.x - tp.x, this.winch.z - tp.z);
+      const p0 = this.body.translation();
+      const flat = help ? Math.hypot(this.winch.x - tp.x, this.winch.z - tp.z) : Math.hypot(this.winch.to!.x - p0.x, this.winch.to!.z - p0.z);
       if (flat < this.winchBest - 0.3) {
         this.winchBest = flat;
         this.winchFor = 0;
       } else this.winchFor += dt;
       this.winchFast = absV > 4 ? this.winchFast + dt : 0;
-      // On the track (help) it lets go 4 m from the tree or after 5 s without
-      // gaining 0.3 m; getting back onto the track it keeps pulling right up
-      // to the tree (1.2 m) and longer (20 s), since the course unhooks it once home.
-      const help = !!this.winch.help;
-      const end = flat < (help ? 4 : 1.2) ? 'tree' : this.winchFast > 1.5 ? 'free' : this.winchFor > (help ? 5 : 20) ? 'stalled' : null;
+      const end = flat < (help ? 4 : 0.5) ? 'tree' : this.winchFast > 1.5 ? 'free' : this.winchFor > (help ? 5 : 8) ? 'stalled' : null;
       if (end) {
         if (end === 'stalled') this.winchStalledAt = { x: this.winch.x, z: this.winch.z };
         this.winch = null;
@@ -460,7 +453,33 @@ export class Vehicle {
       this.winchBest = Infinity;
       this.winchFor = 0;
     }
-    if (this.winch) {
+    if (this.winch?.to) {
+      // Off the track, it hauls the car straight back to the track beside
+      // where it slid off, at a steady crawl, upright and facing the way it
+      // was: up over a lip or out of a ditch, never past the crux it slid
+      // off beside. (Tuned forces alone left it caught in some ditches or
+      // rolled it on the steepest banks.)
+      const p = this.body.translation();
+      const tx = this.winch.to.x - p.x;
+      const tz = this.winch.to.z - p.z;
+      const d = Math.hypot(tx, tz) || 1;
+      const ux = tx / d;
+      const uz = tz / d;
+      const v = Math.min(TUNING.winchSpeed, d);
+      // (Rides up to the highest ground just ahead, so the nose clears a lip.)
+      let top = -Infinity;
+      for (let k = 0; k <= 3; k += 0.5) top = Math.max(top, this.course.heightAt(p.x + ux * k, p.z + uz * k));
+      const lv = this.body.linvel();
+      // (Caught on a rock or a stump, it lifts clear of it.)
+      const rise = clamp((top + TUNING.winchRide - p.y) * 2, -3, 2.5) + clamp(this.winchFor - 1, 0, 2);
+      this.body.setLinvel({ x: ux * v, y: Math.max(lv.y, rise), z: uz * v }, true);
+      const w = this.body.angvel();
+      const k = Math.min(1, 6 * dt);
+      this.body.setAngvel({ x: w.x * (1 - k), y: w.y * (1 - k), z: w.z * (1 - k) }, true);
+    } else if (this.winch) {
+      // On the track: a gentle pull along the cable that only helps the
+      // wheels (never stands in for the kit, which the course asks for
+      // before it offers a tree).
       const tp = this.towPoint;
       const dx = this.winch.x - tp.x;
       const dy = this.winch.y - tp.y;
@@ -469,25 +488,14 @@ export class Vehicle {
       if (len > 0.5) {
         const lv = this.body.linvel();
         const along = (lv.x * dx + lv.y * dy + lv.z * dz) / len;
-        const dv = clamp(TUNING.winchSpeed - along, 0, (this.winch.help ? TUNING.winchHelp : TUNING.winchPull) * dt);
+        const dv = clamp(TUNING.winchSpeed - along, 0, TUNING.winchHelp * dt);
         if (dv > 0) {
-          // (Not from the bumper, so it never swings the car across a
-          // narrow track: it comes back facing the way it was, ready to
-          // drive on.)
-          // (Low down, near the axles: dragged sideways up a bank, the tyres
-          // catch at the ground, and a pull any higher would roll it over.)
+          // (Low down, through the body, so it never swings or rolls the car.)
           const m = this.body.mass() * dv;
           const t1 = this.body.translation();
           const q1 = this.body.rotation();
           const low = this.tmpV.set(0, -0.55, 0).applyQuaternion(this.tmpQ.set(q1.x, q1.y, q1.z, q1.w));
           this.body.applyImpulseAtPoint({ x: (dx / len) * m, y: (dy / len) * m, z: (dz / len) * m }, { x: t1.x + low.x, y: t1.y + low.y, z: t1.z + low.z }, true);
-        }
-        // Hauled off the track and caught on a lip (no headway for a
-        // second), the cable rising to the tree takes some of the weight
-        // so the car rides up over it rather than being dragged into it.
-        if (!this.winch.help && this.winchFor > 1 && dy > 0.3) {
-          const lift = this.body.mass() * TUNING.winchLift * dt * Math.min(1, dy / len + 0.3);
-          this.body.applyImpulse({ x: 0, y: lift, z: 0 }, true);
         }
       }
     }

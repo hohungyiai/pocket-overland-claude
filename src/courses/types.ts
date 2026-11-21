@@ -89,7 +89,7 @@ export interface Course {
    */
   coach?(c: { x: number; z: number; speed: number; low: boolean; diff: boolean; stuck: number }): { tip?: string; say?: string; zone?: string; scored?: { label: string; points: number; best: number } } | null;
   /** The marked tree the winch hooks onto from the car's tow point, the car facing (fx, fz), if any (trails with a winch). */
-  winchAt?(x: number, y: number, z: number, fx: number, fz: number, avoid?: { x: number; z: number } | null): { x: number; y: number; z: number; help?: boolean } | null;
+  winchAt?(x: number, y: number, z: number, fx: number, fz: number, avoid?: { x: number; z: number } | null, kit?: { low: boolean; diff: boolean }): { x: number; y: number; z: number; help?: boolean; to?: { x: number; z: number } } | null;
   /** Winching back from off the track: the car is on it again, so the winch unhooks. */
   winchHome?(x: number, z: number): boolean;
   /** Clean-run score: a penalty (winch pull 5, try again 10) on the stretch at (x, z). */

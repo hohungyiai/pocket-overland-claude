@@ -733,7 +733,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
           say('Back on the track: unhooked.', 2);
         }
         const fw = car.mesh.position;
-        winchTo = !car.winch && Math.abs(car.speed) < 1.5 && !paused ? course.winchAt(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z, car.winchStalledAt) : null;
+        winchTo = !car.winch && Math.abs(car.speed) < 1.5 && !paused ? course.winchAt(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z, car.winchStalledAt, { low: car.lowRange, diff: car.diffLock }) : null;
         btnWinch.hidden = !(car.winch || winchTo) || !btnCamp.hidden;
         btnWinch.textContent = car.winch ? 'Stop winch' : 'Winch';
         const sc = course.score?.();

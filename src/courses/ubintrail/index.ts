@@ -1169,7 +1169,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     retryAt: (x, z) => trail.retryAt(x, z),
     ...(def.winch
       ? {
-          winchAt: (x: number, y: number, z: number, fx: number, fz: number, avoid?: { x: number; z: number } | null) => trail.anchorFor(x, y, z, fx, fz, heightAt, avoid ?? null),
+          winchAt: (x: number, y: number, z: number, fx: number, fz: number, avoid?: { x: number; z: number } | null, kit?: { low: boolean; diff: boolean }) => trail.anchorFor(x, y, z, fx, fz, heightAt, avoid ?? null, kit ?? null),
           winchHome: (x: number, z: number) => trail.winchHome(x, z),
           penalty: (what: 'winch' | 'retry', x: number, z: number) => trail.penalty(what, x, z),
           score: () => trail.score(),
