@@ -125,7 +125,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     }
     const o = trail.surface(x, z);
     if (o) {
-      if (/mud|ford|slick/i.test(o.name)) {
+      if (/mud|ford|slick|bog/i.test(o.name)) {
         // Wet, dark mud, with darker puddles in the ruts.
         out.lerp(C.wetMud, 0.92);
         if (valueNoise(x / 2.2, z / 2.2, SEED + 11) > 0.62) out.lerp(C.puddle, 0.6);
@@ -729,6 +729,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     })();
     const kinds = {
       rock: { geo: rockGeo, mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.08, 0.2], shadow: true },
+      boulder: { geo: rockGeo, mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.1, 0.1, 0.24], shadow: true },
       pebble: { geo: new THREE.IcosahedronGeometry(1, 0), mat: new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }), hsl: [0.07, 0.1, 0.24], shadow: false },
       ledge: { geo: (() => { const g = new THREE.BoxGeometry(1, 1, 1, 3, 1, 1); const pos = g.attributes.position; const r = mulberry32(SEED + 78); for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0) pos.setY(i, pos.getY(i) - 0.12 * r()); g.computeVertexNormals(); return g; })(), mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.07, 0.22], shadow: true },
       root: { geo: new THREE.CylinderGeometry(1, 1, 1, 6).rotateX(Math.PI / 2), mat: new THREE.MeshStandardMaterial({ roughness: 0.9 }), hsl: [0.07, 0.4, 0.13], shadow: true },
@@ -737,6 +738,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const dummy = new THREE.Object3D();
     const c = new THREE.Color();
     const rnd = mulberry32(SEED + 79);
+    const boulderBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     for (const [name, k] of Object.entries(kinds)) {
       const list = props.filter((p) => p.kind === name);
       if (!list.length) continue;
@@ -744,7 +746,12 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       list.forEach((p, i) => {
         const h = heightAt(p.x, p.z);
         dummy.rotation.set(0, p.yaw, 0);
-        if (name === 'rock') {
+        if (name === 'boulder') {
+          // Bedded in, and solid: the car cannot squeeze between them.
+          dummy.position.set(p.x, h - p.sy * 0.25, p.z);
+          dummy.scale.set(p.sx / 2, p.sy, p.sz / 2);
+          world.createCollider(RAPIER.ColliderDesc.cylinder(1.2, p.sx * 0.45).setTranslation(p.x, h + 0.6, p.z), boulderBody);
+        } else if (name === 'rock') {
           // As tall as its hump, its top just proud of it.
           dummy.position.set(p.x, h + 0.05 - p.sy, p.z);
           dummy.scale.set(p.sx / 2, p.sy, p.sz / 2);
