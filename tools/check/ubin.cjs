@@ -140,7 +140,7 @@ const kits = (o, room = 150) => {
           }
           return window.__ubinDrive(pts, { low: false, diff: false, cruise: 8, timeout: 900 });
         });
-        check('the hidden detour gets through with no kit', r.done, `(${Math.round(r.seconds)}s, lean ${r.maxLeanDeg}°)`);
+        check('the hidden detour gets through with no kit', r.done, `(${Math.round(r.seconds)}s, lean ${r.maxLeanDeg}°${r.done ? '' : `, stopped at ${r.at}/${r.total} ${JSON.stringify(r.pos)}`})`);
         await page.close();
         page = await fresh();
       }

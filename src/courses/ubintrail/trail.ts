@@ -780,7 +780,15 @@ export class UbinTrail {
       const inside = (q: Part) => n.s - q.from >= 2 && n.s - q.from <= q.to - q.from - 2;
       for (const q of o.parts) if (q.kind === 'camber' && inside(q) && n.d < 8 && (q.p.dir ?? 1) * n.sd < (q.p.edge ?? 1) + 0.2) return SLICK;
       // (Off the ridge: bog, down the slope and at the bottom.)
-      for (const q of o.parts) if (q.kind === 'ridge' && inside(q) && n.d > (q.p.w ?? 2.6) + 0.3 && n.d < (q.p.w ?? 2.6) + (q.p.run ?? 3) + 14) return BOG;
+      // (Only where the ground has dropped: not in the fade at its ends, nor
+      // out where it has risen back to the land around, where a track may cross.)
+      for (const q of o.parts) {
+        if (q.kind !== 'ridge') continue;
+        const s = n.s - q.from;
+        const e = q.p.ends ?? 8;
+        const w = q.p.w ?? 2.6;
+        if (s > e * 0.6 && s < q.to - q.from - e * 0.6 && n.d > w + 0.3 && n.d < w + (q.p.run ?? 3) + 9) return BOG;
+      }
       for (let i = o.parts.length - 1; i >= 0; i--) {
         const q = o.parts[i];
         if (!inside(q) || q.kind === 'ridge' || q.kind === 'thicket') continue;
