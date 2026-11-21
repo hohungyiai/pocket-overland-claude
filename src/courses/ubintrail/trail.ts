@@ -496,12 +496,13 @@ export class UbinTrail {
    * pulls the car back across it (a tree on the far edge lands it on the
    * track); on it, the one furthest ahead. Null when there is none.
    */
-  anchorFor(x: number, y: number, z: number, fx: number, fz: number, ground: (x: number, z: number) => number): { x: number; y: number; z: number } | null {
-    // Which way the track is, and how far.
+  anchorFor(x: number, y: number, z: number, fx: number, fz: number, ground: (x: number, z: number) => number, avoid: { x: number; z: number } | null = null): { x: number; y: number; z: number; help?: boolean } | null {
+    // Which way the track is, and how far; where along it the car is.
     let tx = 0;
     let tz = 0;
     let off = 0;
     let side = 0;
+    let at = 0;
     let line: Polyline | null = null;
     for (const o of this.obstacles) {
       const n = o.line.nearest(x, z, 40);
@@ -510,17 +511,23 @@ export class UbinTrail {
         tx = n.x - x;
         tz = n.z - z;
         side = Math.sign(n.sd);
+        at = this.route.nearest(n.x, n.z, 40)?.s ?? 0;
         line = o.line;
       }
     }
     const tl = Math.hypot(tx, tz) || 1;
     const fl = Math.hypot(fx, fz) || 1;
-    const across = off > 2 ? 1 : 0;
-    let best: { x: number; y: number; z: number } | null = null;
+    const across = off > 2.5;
+    let best: { x: number; y: number; z: number; help?: boolean } | null = null;
     let score = -Infinity;
     for (const a of this.anchors) {
       const d = Math.hypot(a.x - x, a.z - z);
-      if (d >= UbinTrail.REACH || d < 3) continue;
+      if (d >= UbinTrail.REACH || d < (across ? 3 : 5)) continue;
+      // (Not the tree it just could not shift the car from, if there is another.)
+      if (avoid && Math.hypot(a.x - avoid.x, a.z - avoid.z) < 0.5) continue;
+      // (Never back along the trail: only trees level with the car or ahead.)
+      const as = this.route.nearest(a.x, a.z, 40)?.s ?? 0;
+      if (as < at - (across ? 3 : -4)) continue;
       const ay = ground(a.x, a.z) + 0.8;
       let clear = true;
       for (let k = 1; k < 10 && clear; k++) {
@@ -535,14 +542,20 @@ export class UbinTrail {
       const uz = (a.z - z) / d;
       const ahead = (ux * fx + uz * fz) / fl;
       const toTrack = (ux * tx + uz * tz) / tl;
-      // (Off it, a tree on the far edge first: pulled across, the car ends up on the track.)
+      // Off the track, a tree on the far edge first: pulled across, the car
+      // ends up on the track. On it, the one furthest along.
       const far = across && line ? Math.sign(line.nearest(a.x, a.z, 40)?.sd ?? side) !== side : false;
-      const sc = across ? (far ? 5 : 0) + ahead * 3 + toTrack : ahead * 3 + Math.min(d, 20) * 0.05;
+      // (Off it, one ahead: a long slant up a bank is easier than straight
+      // up it. Never more than one tree's spacing along: hauled back, not
+      // hauled through.)
+      if (across && as > at + 24) continue;
+      const sc = across ? (far ? 5 : 0) + ahead * 3 + toTrack : (as - at) * 0.1 + ahead;
       if (sc > score) {
         score = sc;
-        best = { x: a.x, y: ay, z: a.z };
+        best = across ? { x: a.x, y: ay, z: a.z } : { x: a.x, y: ay, z: a.z, help: true };
       }
     }
+    if (!best && avoid) return this.anchorFor(x, y, z, fx, fz, ground);
     this.pullFrom = best && across && line ? { line, side } : null;
     return best;
   }

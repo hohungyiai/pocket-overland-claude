@@ -128,6 +128,16 @@ const kits = (o, room = 150) => {
           await page.close();
           page = await fresh();
         }
+        // The winch only helps the wheels: each thing it needs left out,
+        // hooking up whenever stuck still does not get it through.
+        if (want('winch') && (await page.evaluate(() => !!window.game.course.winchAt)))
+          for (const [what, kit] of K.wrong.filter(([w]) => !/charging/.test(w))) {
+            const r = await drive(page, from, to, kit, { timeout: 150, winch: true });
+            const sw = (await page.evaluate(() => window.__ubinObstacles()))[i];
+            check(`${o.label}: ${what}, even winching whenever stuck the bot does not get through`, !(r.done && sw.done === 'hard'), `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.winched ?? 0} winch pulls, credited: ${sw.done})`);
+            await page.close();
+            page = await fresh();
+          }
         const right = await drive(page, from, to, K.right, { timeout: 150 });
         const st = (await page.evaluate(() => window.__ubinObstacles()))[i];
         check(`${o.label}: with ${kitName(K.right)} the bot gets through on the hard line`, right.done && st.done === 'hard', `(${right.seconds}s, lean ${right.maxLeanDeg}°, ${st.done}) says: ${JSON.stringify(right.says.map((t) => t[1]))}`);
@@ -239,6 +249,7 @@ const kits = (o, room = 150) => {
                   g.course.prepareAt(x, z);
                   g.car.lowRange = true;
                   g.car.diffLock = true;
+                  g.car.winchStalledAt = null;
                   g.car.placeAt({ x, y: g.course.heightAt(x, z) + 0.2, z }, Math.atan2(-a.tz, a.tx));
                   g.controls.input.steer = 0;
                   g.controls.input.throttle = 0;
@@ -246,22 +257,34 @@ const kits = (o, room = 150) => {
                   const before = o.line.nearest(g.car.body.translation().x, g.car.body.translation().z, 60);
                   const tp = g.car.towPoint;
                   const fw = g.car.mesh.position;
-                  const tree = g.course.winchAt(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z);
+                  let tree = g.course.winchAt(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z);
+                  const hadTree = !!tree;
                   let secs = 0;
-                  if (tree) {
+                  const ends = [];
+                  // As a player would: hook up, and if it lets go short of
+                  // the track, hook up again (up to three pulls).
+                  for (let pull = 0; pull < 3 && tree; pull++) {
                     g.car.winch = tree;
-                    for (; secs < 90 && g.car.winch; secs++) {
-                      await run(1);
-                      const q = g.car.towPoint;
+                    g.car.winchLastEnd = null;
+                    let home = false;
+                    // (Checked four times a second, as the game does every frame.)
+                    for (let q4 = 0; q4 < 360 && g.car.winch; q4++, secs += 0.25) {
+                      await run(0.25);
                       const c = g.car.body.translation();
-                      if (Math.hypot(tree.x - q.x, tree.z - q.z) < 2.5 || g.course.winchHome(c.x, c.z)) g.car.winch = null;
+                      if (g.course.winchHome(c.x, c.z)) { g.car.winch = null; home = true; }
                     }
+                    const tn = o.line.nearest(tree.x, tree.z, 60);
+                    ends.push((home ? 'home' : g.car.winchLastEnd ?? 'time') + '@' + (tn ? tn.sd.toFixed(1) : '?') + '/' + Math.round((tn?.s ?? 0) - s) + '/' + (tree.help ? 'h' : 'x'));
                     g.car.winch = null;
                     await run(2);
+                    if (home) break;
+                    const q = g.car.towPoint;
+                    const m = g.car.mesh.position;
+                    tree = g.course.winchAt(q.x, q.y, q.z, q.x - m.x, q.z - m.z, g.car.winchStalledAt);
                   }
                   const p = g.car.body.translation();
                   const n = o.line.nearest(p.x, p.z, 60);
-                  out.push({ i, label: o.label, s: Math.round(s), off, before: before ? +before.sd.toFixed(1) : null, tree: !!tree, secs, sd: n ? +n.sd.toFixed(1) : null, onTrack: !!n && Math.abs(n.sd) < w + 0.5 });
+                  out.push({ i, label: o.label, s: Math.round(s), off, before: before ? +before.sd.toFixed(1) : null, tree: hadTree, ends: ends.join(','), secs: Math.round(secs), sd: n ? +n.sd.toFixed(1) : null, onTrack: !!n && Math.abs(n.sd) < w + 0.5 });
                 }
             }
           } finally {

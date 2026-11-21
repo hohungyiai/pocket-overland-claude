@@ -354,7 +354,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   // tree in reach; tap to reel in, tap again to stop. It unhooks once the
   // car is up to the tree, or driving off under its own power.
   const btnWinch = $('btn-winch');
-  let winchTo: { x: number; y: number; z: number } | null = null;
+  let winchTo: { x: number; y: number; z: number; help?: boolean } | null = null;
   const cable = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0x1f1f1f }));
   cable.visible = false;
   cable.frustumCulled = false;
@@ -366,7 +366,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
     } else if (winchTo) {
       car.winch = winchTo;
       course.penalty?.('winch', car.mesh.position.x, car.mesh.position.z);
-      say('Winching to the marked tree. Steer, and ease on the throttle to help it.', 4);
+      say(winchTo.help ? 'Winching: it helps the wheels, so keep driving it.' : 'Winching back onto the track.', 4);
     }
     btnWinch.hidden = true;
   });
@@ -725,15 +725,15 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       btnRetry.hidden = !retrySpot || !btnCamp.hidden;
       if (course.winchAt) {
         const tp = car.towPoint;
-        if (car.winch && (Math.hypot(car.winch.x - tp.x, car.winch.z - tp.z) < 2.5 || car.speed > 4)) {
-          car.winch = null;
-          say('Unhooked: the winch is wound in.', 2);
+        if (car.winchEnded) {
+          say(car.winchEnded === 'stalled' ? 'The winch cannot shift it from here: try another tree, or try again.' : 'Unhooked: the winch is wound in.', 3);
+          car.winchEnded = null;
         } else if (car.winch && course.winchHome?.(p.x, p.z)) {
           car.winch = null;
           say('Back on the track: unhooked.', 2);
         }
         const fw = car.mesh.position;
-        winchTo = !car.winch && Math.abs(car.speed) < 1.5 && !paused ? course.winchAt(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z) : null;
+        winchTo = !car.winch && Math.abs(car.speed) < 1.5 && !paused ? course.winchAt(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z, car.winchStalledAt) : null;
         btnWinch.hidden = !(car.winch || winchTo) || !btnCamp.hidden;
         btnWinch.textContent = car.winch ? 'Stop winch' : 'Winch';
         const sc = course.score?.();

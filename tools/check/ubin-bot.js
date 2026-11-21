@@ -4,7 +4,7 @@
 // It also plays the part of the HUD: it calls the course's coach a few
 // times a second with the same "stuck" timer main.ts keeps, so the tries
 // at an obstacle and the way round opening happen as they would in play.
-window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeout = 240, place = true, giveUp = 6, reverseAfterStall = 0 } = {}) => {
+window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeout = 240, place = true, giveUp = 6, reverseAfterStall = 0, winch = false } = {}) => {
   const g = window.game;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const total = pts.length - 1;
@@ -76,6 +76,7 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
     let bestStep = steps;
     let lean = 0;
     let stalls = 0;
+    let winched = 0;
     const lifted = [0, 0, 0, 0, 0];
     for (let idle = 0, seen = steps; ; ) {
       await after(6); // ten times a second
@@ -101,8 +102,21 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
         bestAt = at;
         bestStep = steps;
       }
-      const res = { at, total, seconds: +((steps - t0) / 60).toFixed(1), maxLeanDeg: +lean.toFixed(1), lifted, stalls, says, tips, pos: [+p.x.toFixed(1), +p.y.toFixed(2), +p.z.toFixed(1)] };
+      const res = { at, total, seconds: +((steps - t0) / 60).toFixed(1), maxLeanDeg: +lean.toFixed(1), lifted, stalls, winched, says, tips, pos: [+p.x.toFixed(1), +p.y.toFixed(2), +p.z.toFixed(1)] };
       if (at >= total - 2) return { done: true, ...res };
+      // With the winch: stuck, it hooks up to the best tree and keeps
+      // driving, as often as it likes.
+      if (winch && mode === 'drive' && stuck > 2 && !g.car.winch && winched < 30) {
+        const tp = g.car.towPoint;
+        const fw = g.car.mesh.position;
+        const tree = g.course.winchAt?.(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z, g.car.winchStalledAt);
+        if (tree) {
+          g.car.winch = tree;
+          winched++;
+          stuck = 0;
+          bestStep = steps;
+        }
+      }
       if (mode === 'drive' && steps - bestStep > giveUp * 60) {
         stalls++;
         if (stalls > reverseAfterStall) return { done: false, stuck: true, ...res };
