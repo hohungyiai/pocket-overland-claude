@@ -483,6 +483,119 @@ window.__checkIslandTops = (all = false) => {
   return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
 };
 
+// The reviewer's and feedback thread's rule, 20 Nov: an island whose two
+// kerbs stand at one level (within 5 cm) is one flat lawn from kerb to
+// kerb, as it was before the slip-road rules: no fold, no crease, no
+// trench, no hole. Read off the finished meshes: from every kerb, straight
+// across its island to the kerb on the far side (up to 6 m), every 0.2 m
+// there is lawn facing up within 3 cm of the two kerbs' tops (or a kerb).
+// Folded, the lawn faced down or dipped to the ground at -417.1,-101.7; a
+// hole by an island's point showed the ground and a kerb's side through it
+// at -2118.7,3152.7.
+const levelIslands = (all, holes) => {
+  const d = globalThis.__osm;
+  if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
+  const C = 2;
+  const S = { road: [], lawn: [], kerb: [], path: [], deck: [] };
+  const grid = { road: new Map(), lawn: new Map(), kerb: new Map(), path: new Map(), deck: new Map() };
+  const kerbs = [];
+  window.__eachMesh(['road', 'deck', 'lawn', 'kerb', 'foot', 'cycle'], (k, kind, pos, idx) => {
+    for (let q = 0; q < idx.length; q += 3) {
+      const t = [];
+      for (let c = 0; c < 3; c++) t.push(pos[idx[q + c] * 3], pos[idx[q + c] * 3 + 1], pos[idx[q + c] * 3 + 2]);
+      const det = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      if (Math.abs(det) < 1e-6) continue;
+      // (Which way it faces: up, or folded over and facing down.)
+      const ny = (t[5] - t[2]) * (t[6] - t[0]) - (t[3] - t[0]) * (t[8] - t[2]);
+      t.push(ny > 0 ? 1 : -1);
+      if (kind === 'kerb') kerbs.push(t);
+      const into = kind === 'lawn' || kind === 'kerb' || kind === 'deck' ? kind : kind === 'foot' || kind === 'cycle' ? 'path' : 'road';
+      const n = S[into].length;
+      S[into].push(t);
+      const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
+      const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
+      if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
+      for (let i = x0; i <= x1; i++)
+        for (let j = z0; j <= z1; j++) (grid[into].get(i * 100003 + j) ?? grid[into].set(i * 100003 + j, []).get(i * 100003 + j)).push(n);
+    }
+  });
+  /** The surfaces of a kind at (x, z) within `within` of y: [height, facing]. */
+  const tops = (kind, x, z, y, within = 0.5) => {
+    const r = [];
+    for (const q of grid[kind].get(Math.floor(x / C) * 100003 + Math.floor(z / C)) ?? []) {
+      const t = S[kind][q];
+      const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
+      const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
+      const l3 = 1 - l1 - l2;
+      if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
+      const h = l1 * t[1] + l2 * t[4] + l3 * t[7];
+      if (Math.abs(h - y) < within) r.push([h, t[9]]);
+    }
+    return r;
+  };
+  const top = (kind, x, z, y, within) => tops(kind, x, z, y, within).reduce((b, [h]) => Math.max(b, h), -Infinity);
+  const bad = [];
+  let n = 0;
+  for (const t of kerbs) {
+    // (Its along and across, and the road's side, as __checkIslandTops reads them.)
+    const sides = [[0, 3], [3, 6], [6, 0]].map(([a, b]) => ({ a, b, l: Math.hypot(t[b] - t[a], t[b + 2] - t[a + 2]) })).sort((p, q) => p.l - q.l);
+    const across = (e) => e.l > 0.37 && e.l < 0.6;
+    if (across(sides[0]) === across(sides[1])) continue;
+    const al = across(sides[0]) ? sides[1] : sides[0];
+    const ux = (t[al.b] - t[al.a]) / al.l, uz = (t[al.b + 2] - t[al.a + 2]) / al.l;
+    const cx = (t[0] + t[3] + t[6]) / 3, cy = (t[1] + t[4] + t[7]) / 3, cz = (t[2] + t[5] + t[8]) / 3;
+    const side = [1, -1].find((s) => top('road', cx - uz * s * 0.3, cz + ux * s * 0.3, cy) > -Infinity);
+    if (side === undefined) continue;
+    const nx = -uz * side, nz = ux * side;
+    const pv = [0, 3, 6].map((a) => (t[a] - cx) * nx + (t[a + 2] - cz) * nz);
+    const pout = Math.min(...pv);
+    if (Math.max(...pv) - pout < 0.3) continue;
+    // (Not on a deck, nor beside a raised road's own wall.)
+    if (top('deck', cx, cz, cy - 1.25, 1.2) > -Infinity) continue;
+    // (Across to the far kerb: past its own kerb's outer edge, the first
+    // kerb at its level within 6 m, no road or path between.)
+    const at = (s) => [cx + nx * (pout - s), cz + nz * (pout - s)];
+    let far = NaN, fs = 0, cross = false;
+    for (let s = 0.1; s <= 6 && !(far === far) && !cross; s += 0.1) {
+      const [x, z] = at(s);
+      if (top('road', x, z, cy, 1) > -Infinity || top('path', x, z, cy, 3) > -Infinity) cross = true;
+      else {
+        const k = top('kerb', x, z, cy, 0.5);
+        if (k > -Infinity && s > 0.2) (far = k), (fs = s);
+      }
+    }
+    if (cross || !(far === far) || Math.abs(far - cy) > 0.05) continue;
+    n++;
+    const lo = Math.min(cy, far) - 0.03, hi = Math.max(cy, far) + 0.03;
+    let worst = 0, what = '', wx = cx, wz = cz;
+    for (let s = 0.1; s < fs; s += 0.2) {
+      const [x, z] = at(s);
+      if (top('kerb', x, z, cy, 0.1) > -Infinity) continue;
+      const ls = tops('lawn', x, z, cy, 1.5);
+      const up = ls.filter(([, f]) => f > 0).map(([h]) => h);
+      let v = 0, w = '';
+      if (!up.length) (v = 1), (w = ls.length ? 'lawn folded over, facing down' : 'a hole in the lawn');
+      else {
+        const h = Math.max(...up);
+        if (h < lo) (v = lo - h), (w = `lawn ${(cy - h).toFixed(3)} under the kerbs' tops`);
+        else if (h > hi) (v = h - hi), (w = `lawn ${(h - cy).toFixed(3)} over the kerbs' tops`);
+      }
+      if (!w.startsWith('a hole') === holes) continue;
+      if (v > worst) (worst = v), (what = w), (wx = x), (wz = z);
+    }
+    if (worst > 0) bad.push({ x: +wx.toFixed(1), z: +wz.toFixed(1), value: +worst.toFixed(3), what });
+  }
+  const pl = window.__finishIndex().places(bad, 4);
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
+};
+
+window.__checkLevelIslands = (all = false) => levelIslands(all, false);
+// (Its holes apart: hundreds on main, round islands' points where the
+// sections across cut each other short, mostly hidden by the ground's own
+// grass a hand's width under. A count that may only go down.)
+window.__checkLevelIslandHoles = (all = false) => levelIslands(all, true);
+
 // The user's rule (18 Nov): a bridge's parapets and walls begin where the
 // ground actually drops, never on an island at the junction. Every upright
 // sheet standing on a road's level (a parapet, its foot over the ground)
