@@ -13,6 +13,13 @@ export interface Surface {
    * takes the axle's drive away. Locking the diff gives each wheel its own.
    */
   offroad?: boolean;
+  /**
+   * Off the road only: loose rock and gravel that knocks the front wheels
+   * about at speed (0..1). Above a walking pace the steering is jerked off
+   * line at random, harder the faster the car goes and the more it is
+   * already being steered; slow, it stays calm.
+   */
+  rough?: number;
   /** Soft ground the tyres sink into: rolling resistance as a share of the wheel's load. */
   sink?: number;
   /** Water to wade through: it holds the car back with the square of its speed (a bow wave), so charging it does not work. */

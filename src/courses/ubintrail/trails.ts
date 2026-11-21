@@ -116,19 +116,21 @@ export const CHEK_JAWA: TrailDef = {
   obstacles: [
     {
       kind: 'ford',
-      label: 'Ford and loose climb',
-      nice: 'Across the ford, up the loose climb and down the far side.',
+      label: 'Valley ford and loose climb',
+      nice: 'Through the valley ford, up the loose climb and out.',
       at: [2770, -131],
       len: 280,
       needs: { low: true },
       mix: [
-        // (On a causeway through the water and up a ridge: off it is deep water and bog.)
-        { kind: 'ridge', from: 0, to: 280, p: { w: 2.6, drop: 3 } },
-        { kind: 'sand', from: 0, to: 70, p: { dip: 0.3, duneH: 0 } },
-        { kind: 'ford', from: 0, to: 70, p: { depth: 0.9, bank: 3.4, out: 15 } },
-        { kind: 'rocks', from: 100, to: 190, p: { humpH: 0.15 } },
-        { kind: 'climb', from: 50, to: 200, p: { h: 9, up: 32, top: 35 } },
-        { kind: 'descent', from: 150, to: 280, p: { rut: 0.3 } },
+        // (Down in a narrow valley: the ford at the bottom, the loose climb up
+        // its floor, a boggy ditch at the foot of each wall, boulders on the rim.)
+        { kind: 'valley', from: 0, to: 280, p: { w: 2.6, depth: 4, ends: 25, endOut: 50 } },
+        { kind: 'thicket', from: 0, to: 280, p: { w: 8.6, rows: 4 } },
+        { kind: 'sand', from: 30, to: 100, p: { dip: 0.3, duneH: 0 } },
+        { kind: 'ford', from: 30, to: 100, p: { depth: 0.9, bank: 3.4, out: 15 } },
+        { kind: 'rocks', from: 130, to: 220, p: { humpH: 0.15 } },
+        { kind: 'climb', from: 80, to: 230, p: { h: 9, up: 32, top: 35 } },
+        { kind: 'descent', from: 170, to: 240, p: { rut: 0.3 } },
       ],
     },
     {

@@ -17,7 +17,9 @@ export type ObstacleKind = 'climb' | 'washout' | 'sand' | 'rocks' | 'descent' | 
   // The sides of a stretch, closing it in: 'ridge', the track on a crest
   // with soft bog below either side (slide off and you are stuck); 'thicket',
   // boulders either side, too close together to drive between.
-  | 'ridge' | 'thicket';
+  // 'valley', the track down in a narrow valley, a boggy ditch at the foot
+  // of each steep, slick wall.
+  | 'ridge' | 'thicket' | 'valley';
 
 /** What an obstacle needs to get through (for the hints and the checks). */
 export interface Needs {
@@ -154,19 +156,21 @@ const TUNE = {
   ...((globalThis as { __ubinTune?: object }).__ubinTune ?? {}),
 };
 const SOFT_SAND: Surface = { name: 'Soft sand', grip: TUNE.sandGrip, drag: TUNE.sandDrag, offroad: true, sink: TUNE.sandSink };
-const LOOSE: Surface = { name: 'Loose gravel', grip: TUNE.looseGrip, drag: TUNE.looseDrag, offroad: true, wade: TUNE.looseWade, wadeFrom: TUNE.looseFrom };
+const LOOSE: Surface = { name: 'Loose gravel', grip: TUNE.looseGrip, drag: TUNE.looseDrag, offroad: true, wade: TUNE.looseWade, wadeFrom: TUNE.looseFrom, rough: 0.8 };
 const RUTS: Surface = { name: 'Washout', grip: 0.78, drag: 1.5, offroad: true };
 // The harder trails' ground.
-const ROCKS: Surface = { name: 'Roots and rock', grip: 0.62, drag: 1.5, offroad: true };
-const SCREE: Surface = { name: 'Loose rock', grip: 0.5, drag: 1.2, offroad: true };
+const ROCKS: Surface = { name: 'Roots and rock', grip: 0.62, drag: 1.5, offroad: true, rough: 0.8 };
+const SCREE: Surface = { name: 'Loose rock', grip: 0.5, drag: 1.2, offroad: true, rough: 1 };
 const DEEP_MUD: Surface = { name: 'Deep mud', grip: 0.32, drag: 3, offroad: true, sink: 0.16 };
 const TIDAL: Surface = { name: 'Tidal sand', grip: 0.3, drag: 4, offroad: true, sink: 0.2 };
 const FORD: Surface = { name: 'Ford', grip: 0.72, drag: 3, offroad: true, sink: TUNE.fordSink, wade: TUNE.fordWade };
-const LEDGES: Surface = { name: 'Rock ledges', grip: 0.78, drag: 1.2, offroad: true };
+const LEDGES: Surface = { name: 'Rock ledges', grip: 0.78, drag: 1.2, offroad: true, rough: 0.6 };
 const CAMBER: Surface = { name: 'Off-camber shore', grip: 0.8, drag: 1.8, offroad: true };
 const SLICK: Surface = { name: 'Slick bank', grip: 0.25, drag: 1.2, offroad: true };
 // Below a ridge: soft, wet bog that holds the car (only the try-again button gets you out).
 const BOG: Surface = { name: 'Bog', grip: 0.2, drag: 6, offroad: true, sink: 0.6 };
+// A valley's walls: too steep and slick to climb out.
+const WALL: Surface = { name: 'Steep bank', grip: 0.25, drag: 1.2, offroad: true };
 const KIND_SURFACE: Record<ObstacleKind, Surface> = {
   climb: LOOSE,
   washout: RUTS,
@@ -179,6 +183,7 @@ const KIND_SURFACE: Record<ObstacleKind, Surface> = {
   camber: CAMBER,
   ridge: CAMBER,
   thicket: CAMBER,
+  valley: CAMBER,
 };
 
 const NICE: Record<ObstacleKind, string> = {
@@ -192,6 +197,7 @@ const NICE: Record<ObstacleKind, string> = {
   ford: 'Across the ford and up the bank.',
   camber: 'Along the shore without sliding off. Good line.',
   ridge: 'Along the ridge without slipping off. Nicely done.',
+  valley: 'Up and out of the valley. Nicely done.',
   thicket: 'Through. Nicely done.',
 };
 const TIP_WHY: Record<ObstacleKind, string> = {
@@ -205,6 +211,7 @@ const TIP_WHY: Record<ObstacleKind, string> = {
   ford: 'Soft bed and a slick bank out',
   camber: 'The track leans to the sea',
   ridge: 'A narrow ridge',
+  valley: 'A narrow valley',
   thicket: 'A tight squeeze',
 };
 const TIP_HOW: Record<ObstacleKind, string> = {
@@ -218,6 +225,7 @@ const TIP_HOW: Record<ObstacleKind, string> = {
   ford: 'A steady walking pace in, and keep the wheels turning up the bank.',
   camber: 'Keep to the high side of the track, and go slow.',
   ridge: 'Keep to the middle and go slow: off the edge is bog.',
+  valley: 'Keep to the middle of the floor: the ditches either side are bog.',
   thicket: 'Slow, and keep to the track.',
 };
 
@@ -643,6 +651,19 @@ export class UbinTrail {
       return -(P.drop ?? 3) * smoothstep(w, w + run, d) * (1 - smoothstep(w + run + 8, w + run + 16, d)) * fade(P.ends ?? 8);
     }
     if (kind === 'thicket') return 0;
+    if (kind === 'valley') {
+      // Down `depth` metres into a valley: a floor `w` either side of the
+      // line, then a boggy ditch, then a steep wall back up to the land.
+      const w = P.w ?? 2.6;
+      const ditch = P.ditch ?? 1.6;
+      const wall = P.wall ?? 3.5;
+      const floor = -(P.depth ?? 4) * (1 - smoothstep(w + ditch, w + ditch + wall, d));
+      const dip = -(P.ditchDepth ?? 0.6) * clamp(1 - Math.abs(d - (w + ditch / 2)) / (ditch / 2), 0, 1);
+      // (In over `ends` metres, out over `endOut`: gentle enough to climb out on loose ground.)
+      const ein = P.ends ?? 25;
+      const eout = P.endOut ?? ein;
+      return (floor + dip) * smoothstep(0, ein, s) * (1 - smoothstep(len - eout, len, s));
+    }
     if (kind === 'camber') {
       // The track is a narrow bench along the bank above the sea: level
       // enough on its high side (a car's width, against the bank), but from
@@ -737,9 +758,9 @@ export class UbinTrail {
           const w = P.w ?? 3.4;
           for (const side of [1, -1])
             for (let s = 1; s < len - 1; s += P.gap ?? 2.4) {
-              for (const row of [0, 1]) {
+              for (let row = 0; row < (P.rows ?? 2); row++) {
                 const r = 0.75 + 0.45 * rand();
-                const p = at(s + row * 1.2, side * (w + r * 0.8 + row * 1.6));
+                const p = at(s + (row % 2) * 1.2, side * (w + r * 0.8 + row * 1.6));
                 out.push({ kind: 'boulder', x: p.x, z: p.z, yaw: rand() * 6.28, sx: r * 2, sy: r * (0.9 + 0.4 * rand()), sz: r * 2 });
               }
             }
@@ -783,6 +804,16 @@ export class UbinTrail {
       // (Only where the ground has dropped: not in the fade at its ends, nor
       // out where it has risen back to the land around, where a track may cross.)
       for (const q of o.parts) {
+        if (q.kind !== 'valley') continue;
+        const s = n.s - q.from;
+        const e = q.p.ends ?? 25;
+        const w = q.p.w ?? 2.6;
+        const ditch = q.p.ditch ?? 1.6;
+        if (s < e * 0.6 || s > q.to - q.from - (q.p.endOut ?? e) * 0.6 || n.d < w + 0.3) continue;
+        if (n.d < w + ditch + 0.4) return BOG;
+        if (n.d < w + ditch + (q.p.wall ?? 3.5) + 0.5) return WALL;
+      }
+      for (const q of o.parts) {
         if (q.kind !== 'ridge') continue;
         const s = n.s - q.from;
         const e = q.p.ends ?? 8;
@@ -791,7 +822,7 @@ export class UbinTrail {
       }
       for (let i = o.parts.length - 1; i >= 0; i--) {
         const q = o.parts[i];
-        if (!inside(q) || q.kind === 'ridge' || q.kind === 'thicket') continue;
+        if (!inside(q) || q.kind === 'ridge' || q.kind === 'thicket' || q.kind === 'valley') continue;
         if (Math.abs(n.sd - (q.p.shift ?? 0)) > (q.kind === 'ford' || q.kind === 'camber' ? 8 : 3.6)) continue;
         const base = q.kind === 'sand' && q.p.tidal ? TIDAL : KIND_SURFACE[q.kind];
         // (A part may soften or firm its ground: p.sink, p.grip.)

@@ -690,7 +690,15 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       const t = (s - sa) / (sb - sa);
       const half = 9 * Math.sqrt(Math.max(0, Math.sin(Math.PI * t))) + 0.4;
       for (const side of [-1, 1]) {
-        const w = half * (1 + 0.12 * Math.sin(s * 0.7 + side * 2));
+        let w = half * (1 + 0.12 * Math.sin(s * 0.7 + side * 2));
+        // (Never out over ground that rises above the water: the edge stops
+        // just inside the bank, where the ground covers it. On a ridge or in
+        // a valley the banks are close.)
+        for (let r = 0.5; r < w; r += 0.25)
+          if (heightAt(p.x - p.tz * side * r, p.z + p.tx * side * r) > lvl + 0.12) {
+            w = r;
+            break;
+          }
         P.push(p.x - p.tz * side * w, lvl, p.z + p.tx * side * w);
       }
       const k = P.length / 3 - 2;
