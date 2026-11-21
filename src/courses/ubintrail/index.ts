@@ -674,28 +674,102 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   }
 
   // Fords: brown water across the track, level with the ground either side.
+  // The water fills the hollow as water would: every bit of ground below its
+  // level that joins up with the ford's line (a ditch beside it too), and its
+  // edge is where the ground comes up to meet it, so it never hangs over
+  // lower ground nor runs into the bank. (Worked out on a 0.25 m grid; each
+  // edge point slid to where the ground crosses the water level.)
+  const waterEdges: { x: number; z: number; y: number }[] = [];
+  const puddleRims: { x: number; z: number; y: number; lo: number }[] = [];
   for (const o of trail.obstacles.flatMap((ob) => ob.parts)) {
     if (o.kind !== 'ford') continue;
     const len = o.to - o.from;
     const a = o.line.at(0);
     const lvl = heightAt(a.x, a.z) - 0.3;
-    // A pool across the track, rounded at both ends, its edges wobbling a
-    // little, from the foot of the bank in to the foot of the bank out.
-    const sa = (o.p.inn ?? 8) * 0.35;
-    const sb = len - (o.p.out ?? 6) * 0.55;
+    const C = 0.25;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let s = 0; s <= len; s += 2) {
+      const p = o.line.at(s);
+      x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z);
+    }
+    x0 -= 30; x1 += 30; z0 -= 30; z1 += 30;
+    const nx = Math.ceil((x1 - x0) / C);
+    const nz = Math.ceil((z1 - z0) / C);
+    const W = nx + 1;
+    const g = new Float32Array(W * (nz + 1));
+    for (let j = 0; j <= nz; j++) for (let i = 0; i <= nx; i++) g[j * W + i] = heightAt(x0 + i * C, z0 + j * C);
+    // Wet cells: all four corners under the water (a hair over, at most),
+    // joined to the ford's line.
+    const wetOk = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < nz && g[j * W + i] < lvl + 0.04 && g[j * W + i + 1] < lvl + 0.04 && g[(j + 1) * W + i] < lvl + 0.04 && g[(j + 1) * W + i + 1] < lvl + 0.04;
+    const wet = new Uint8Array(nx * nz);
+    const stack: number[] = [];
+    for (let s = 0; s <= len; s += 0.5) {
+      const p = o.line.at(s);
+      const i = Math.floor((p.x - x0) / C);
+      const j = Math.floor((p.z - z0) / C);
+      if (wetOk(i, j) && !wet[j * nx + i]) {
+        wet[j * nx + i] = 1;
+        stack.push(i, j);
+      }
+    }
+    while (stack.length) {
+      const j = stack.pop()!;
+      const i = stack.pop()!;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const a2 = i + di;
+        const b2 = j + dj;
+        if (wetOk(a2, b2) && !wet[b2 * nx + a2]) {
+          wet[b2 * nx + a2] = 1;
+          stack.push(a2, b2);
+        }
+      }
+    }
+    // The mesh: a quad per wet cell, corners shared.
+    const vid = new Int32Array(W * (nz + 1)).fill(-1);
     const P: number[] = [];
     const I: number[] = [];
-    for (let s = sa; s <= sb + 0.01; s += 0.75) {
-      const p = o.line.at(s);
-      const t = (s - sa) / (sb - sa);
-      const half = 9 * Math.sqrt(Math.max(0, Math.sin(Math.PI * t))) + 0.4;
-      for (const side of [-1, 1]) {
-        const w = half * (1 + 0.12 * Math.sin(s * 0.7 + side * 2));
-        P.push(p.x - p.tz * side * w, lvl, p.z + p.tx * side * w);
+    const corner = (i: number, j: number) => {
+      const k = j * W + i;
+      if (vid[k] < 0) {
+        vid[k] = P.length / 3;
+        P.push(x0 + i * C, lvl, z0 + j * C);
       }
-      const k = P.length / 3 - 2;
-      if (k >= 2) I.push(k - 2, k - 1, k, k - 1, k + 1, k);
-    }
+      return vid[k];
+    };
+    const isWet = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < nz && wet[j * nx + i] === 1;
+    for (let j = 0; j < nz; j++)
+      for (let i = 0; i < nx; i++) {
+        if (!wet[j * nx + i]) continue;
+        const v00 = corner(i, j), v10 = corner(i + 1, j), v01 = corner(i, j + 1), v11 = corner(i + 1, j + 1);
+        I.push(v00, v01, v10, v10, v01, v11);
+      }
+    // The edge: corners not wholly inside the water, each slid out towards
+    // the higher ground next to it, to where the ground meets the water.
+    for (let j = 0; j <= nz; j++)
+      for (let i = 0; i <= nx; i++) {
+        const k = j * W + i;
+        if (vid[k] < 0) continue;
+        if (isWet(i - 1, j - 1) && isWet(i, j - 1) && isWet(i - 1, j) && isWet(i, j)) continue;
+        let bx = x0 + i * C;
+        let bz = z0 + j * C;
+        const gv = g[k];
+        let best = -Infinity;
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+          const a2 = i + di;
+          const b2 = j + dj;
+          if (a2 < 0 || b2 < 0 || a2 > nx || b2 > nz) continue;
+          const gn = g[b2 * W + a2];
+          if (gn <= lvl || gn <= best) continue;
+          best = gn;
+          const t = clamp((lvl - gv) / (gn - gv), 0, 0.95);
+          bx = x0 + (i + di * t) * C;
+          bz = z0 + (j + dj * t) * C;
+        }
+        const v = vid[k];
+        P[v * 3] = bx;
+        P[v * 3 + 2] = bz;
+        waterEdges.push({ x: bx, z: bz, y: lvl });
+      }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
     geo.setIndex(I);
@@ -713,6 +787,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   // looks only: what the car feels is the ground's own shape under them.
   {
     const props = trail.props();
+    // (Kept for the checks: each puddle's level and the lowest ground at its rim.)
     const rockGeo = (() => {
       const g = new THREE.IcosahedronGeometry(1, 1);
       const pos = g.attributes.position;
@@ -733,7 +808,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       pebble: { geo: new THREE.IcosahedronGeometry(1, 0), mat: new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }), hsl: [0.07, 0.1, 0.24], shadow: false },
       ledge: { geo: (() => { const g = new THREE.BoxGeometry(1, 1, 1, 3, 1, 1); const pos = g.attributes.position; const r = mulberry32(SEED + 78); for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0) pos.setY(i, pos.getY(i) - 0.12 * r()); g.computeVertexNormals(); return g; })(), mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.07, 0.22], shadow: true },
       root: { geo: new THREE.CylinderGeometry(1, 1, 1, 6).rotateX(Math.PI / 2), mat: new THREE.MeshStandardMaterial({ roughness: 0.9 }), hsl: [0.07, 0.4, 0.13], shadow: true },
-      puddle: { geo: new THREE.CircleGeometry(0.5, 14).rotateX(-Math.PI / 2), mat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.9 }), hsl: [0.13, 0.2, 0.2], shadow: false },
+      puddle: { geo: new THREE.CircleGeometry(0.5, 14).rotateX(-Math.PI / 2), mat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.9 }), hsl: [0.09, 0.3, 0.11], shadow: false },
     };
     const dummy = new THREE.Object3D();
     const c = new THREE.Color();
@@ -767,11 +842,38 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
           dummy.position.set(p.x, h + p.sx * 0.25, p.z);
           dummy.scale.set(p.sx, p.sx * 0.8, p.sz);
         } else {
-          // Water fills the hole most of the way to its rim.
+          // Water fills the hole most of the way to its rim, and never above
+          // the lowest point of the rim: on a slope there is no puddle (water
+          // would run off), where a level disc would hang in the air.
           let rim = 0;
-          for (let k = 0; k < 6; k++) rim += heightAt(p.x + 1.6 * Math.cos(k), p.z + 1.6 * Math.sin(k)) / 6;
-          dummy.position.set(p.x, h + 0.7 * Math.max(0, rim - h) + 0.03, p.z);
-          dummy.scale.set(p.sz, 1, p.sx); // long along the track
+          let lo = Infinity;
+          const cy = Math.cos(p.yaw);
+          const sy = Math.sin(p.yaw);
+          for (let k = 0; k < 12; k++) {
+            const lx = (Math.cos((k * Math.PI) / 6) * p.sz) / 2;
+            const lz = (Math.sin((k * Math.PI) / 6) * p.sx) / 2;
+            const rh = heightAt(p.x + lx * cy + lz * sy, p.z - lx * sy + lz * cy);
+            rim += rh / 12;
+            lo = Math.min(lo, rh);
+          }
+          const y = Math.max(h + 0.02, Math.min(h + 0.7 * Math.max(0, rim - h) + 0.03, lo + 0.04));
+          // (And none on sloping ground at all, over about 6 degrees across
+          // 4 m: the camber's mud holes sit on a bench beside a steep bank.)
+          let wlo = Infinity;
+          let whi = -Infinity;
+          for (let k = 0; k < 8; k++) {
+            const wh = heightAt(p.x + 2 * Math.cos((k * Math.PI) / 4), p.z + 2 * Math.sin((k * Math.PI) / 4));
+            wlo = Math.min(wlo, wh);
+            whi = Math.max(whi, wh);
+          }
+          if (y - lo > 0.1 || whi - wlo > 0.42) {
+            dummy.position.set(p.x, -1000, p.z);
+            dummy.scale.set(0.001, 0.001, 0.001);
+          } else {
+            dummy.position.set(p.x, y, p.z);
+            dummy.scale.set(p.sz, 1, p.sx); // long along the track
+            puddleRims.push({ x: p.x, z: p.z, y, lo });
+          }
         }
         dummy.updateMatrix();
         im.setMatrixAt(i, dummy.matrix);
@@ -1047,6 +1149,8 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         boats[i].rotation.z = 0.02 * Math.sin(time * 0.9 + i);
       }
     },
+    /** For the checks: the water's edge points and each puddle's level. */
+    water: () => ({ edges: waterEdges, puddles: puddleRims }),
     coach(c) {
       const out = trail.coach(c);
       syncGates();

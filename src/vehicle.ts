@@ -33,6 +33,13 @@ const TUNING = {
   steerCrawl: 0.62,
   steerFast: 0.14,
   steerRate: 2.6, // rad/s
+  // Rough ground (Surface.rough) knocking the steering: calm below roughFrom
+  // (m/s), full by roughFull; the knock is up to roughBase radians, plus
+  // roughSteer times how hard the car is being steered.
+  roughFrom: 5,
+  roughFull: 10,
+  roughBase: 0.12,
+  roughSteer: 0.9,
 };
 
 const DUST = new THREE.Color(0x8a7458);
@@ -60,6 +67,13 @@ export class Vehicle {
   /** Signed forward speed, m/s. */
   speed = 0;
   surface: Surface = SURFACES.gravel;
+  /** How rough the ground under the front wheels is (Surface.rough), from the last step. */
+  private rough = 0;
+  /** The rough ground's knock on the steering: where it is heading, and where it is. */
+  private knockTo = 0;
+  private knock = 0;
+  private knockFor = 0;
+  private knockSeed = 0x2545f491;
   private waterTime = 0;
   wheelsOnGround = 4;
   private steerAngle = 0;
@@ -276,8 +290,24 @@ export class Vehicle {
     const target = -input.steer * maxSteer; // positive rotation about +Y turns left
     const delta = clamp(target - this.steerAngle, -TUNING.steerRate * dt, TUNING.steerRate * dt);
     this.steerAngle += delta;
-    c.setWheelSteering(0, this.steerAngle);
-    c.setWheelSteering(1, this.steerAngle);
+    // Loose rock and gravel at speed: the front wheels get knocked off line,
+    // a new jolt every quarter second or so, more the harder the car is
+    // being steered. (Only off the road: no road surface is rough.)
+    let knock = 0;
+    if (this.rough > 0) {
+      const fast = clamp((absV - TUNING.roughFrom) / (TUNING.roughFull - TUNING.roughFrom), 0, 1);
+      this.knockFor -= dt;
+      if (this.knockFor <= 0) {
+        this.knockSeed = (Math.imul(this.knockSeed, 1664525) + 1013904223) >>> 0;
+        const r = this.knockSeed / 4294967296;
+        this.knockFor = 0.18 + 0.2 * r;
+        this.knockTo = (r * 2 - 1) * this.rough * fast * (TUNING.roughBase + TUNING.roughSteer * Math.abs(input.steer));
+      }
+      this.knock += (this.knockTo - this.knock) * Math.min(1, dt * 14);
+      knock = this.knock;
+    } else this.knock = this.knockTo = 0;
+    c.setWheelSteering(0, this.steerAngle + knock);
+    c.setWheelSteering(1, this.steerAngle + knock);
 
     // Engine: simple torque falloff toward top speed of the selected range.
     const low = this.lowRange;
@@ -309,6 +339,7 @@ export class Vehicle {
     const off = this.off;
     let sink = 0;
     let wade = 0;
+    let rough = 0;
     const lv0 = this.body.linvel();
     const sp0 = Math.hypot(lv0.x, lv0.z);
     for (let i = 0; i < 4; i++) {
@@ -324,6 +355,7 @@ export class Vehicle {
           c.setWheelBrake(i, brake + s.drag);
           if (s.offroad) {
             off[i] = true;
+            if (i < 2) rough = Math.max(rough, s.rough ?? 0);
             const load = Math.max(0, c.wheelSuspensionForce(i) ?? 0);
             grips[i] = s.grip * load;
             sink += (s.sink ?? 0) * load;
@@ -337,6 +369,7 @@ export class Vehicle {
       }
     }
     this.wheelsOnGround = onGround;
+    this.rough = rough;
     if (worst) this.surface = worst;
     for (let i = 0; i < 4; i++) {
       const axle = i < 2 ? 0 : 1;

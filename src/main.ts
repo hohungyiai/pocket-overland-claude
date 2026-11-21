@@ -389,6 +389,8 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   // hand off the wheel for it, or goes at once with a tap. The same words
   // stay in the menu.)
   const notice = $('notice');
+  // Called once, the first time the player touches the controls.
+  let noticeOnDrive: (() => void) | null = null;
   if (warning) {
     notice.innerHTML = '';
     const t = document.createElement('span');
@@ -412,11 +414,15 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       e.stopPropagation();
       hide();
     });
-    // (On the clock, driving or not, and even while the game waits on the
-    // stronger warning: a second's fade, then gone.)
-    const secs = warning.level === 'risk' ? 12 : 15;
-    setTimeout(() => !notice.hidden && notice.classList.add('fading'), (secs - 1) * 1000);
-    setTimeout(() => !notice.hidden && hide(), secs * 1000);
+    // (It stays up until the player first touches the controls, then fades
+    // two seconds later. The stronger warning holds the game, so nobody can
+    // drive: it goes after 15 s on the clock.)
+    const fadeIn = (secs: number) => {
+      setTimeout(() => !notice.hidden && notice.classList.add('fading'), (secs - 1) * 1000);
+      setTimeout(() => !notice.hidden && hide(), secs * 1000);
+    };
+    if (warning.level === 'none') fadeIn(15);
+    else noticeOnDrive = () => fadeIn(2);
   }
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
@@ -677,6 +683,10 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       // Saving: every 10 s while driving; a backup offer once stopped after a long drive.
       if (Math.abs(car.speed) > 1) {
         driveSecs += 0.1;
+      }
+      if (noticeOnDrive && (Math.abs(controls.input.throttle) > 0.05 || Math.abs(controls.input.steer) > 0.05)) {
+        noticeOnDrive();
+        noticeOnDrive = null;
       }
       saveTimer -= 0.1;
       if (saveTimer <= 0) {
