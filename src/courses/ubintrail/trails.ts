@@ -63,11 +63,23 @@ export const PUAKA: TrailDef = {
     [[452, 168], 34],
   ],
   obstacles: [
-    { kind: 'rocks', label: 'Roots and rock', at: [65, 24], len: 190, needs: { diff: true } },
+    // (Boulders close in either side of each stretch: no driving round on the grass.)
+    { kind: 'rocks', label: 'Roots and rock', at: [65, 24], len: 190, needs: { diff: true }, mix: [{ kind: 'rocks', from: 0, to: 190 }, { kind: 'thicket', from: 0, to: 190 }] },
     // (Control, not kit: low range makes it easier, but the brakes get you down too.)
-    { kind: 'descent', label: 'Loose descent', at: [480, -102], len: 110, needs: {} },
+    { kind: 'descent', label: 'Loose descent', at: [480, -102], len: 110, needs: {}, mix: [{ kind: 'descent', from: 0, to: 110 }, { kind: 'thicket', from: 0, to: 110 }] },
     // (No way round the last climb: the top is the point. The tips say what it needs.)
-    { kind: 'summit', label: 'Puaka Hill ledges', at: [369, 231], len: 85, needs: { low: true, diff: true }, round: false, p: { ledgeH: 0.3, humpH: 0.45 } },
+    {
+      kind: 'summit',
+      label: 'Puaka Hill ledges',
+      at: [369, 231],
+      len: 85,
+      needs: { low: true, diff: true },
+      round: false,
+      mix: [
+        { kind: 'summit', from: 0, to: 85, p: { ledgeH: 0.3, humpH: 0.45 } },
+        { kind: 'thicket', from: 0, to: 85 },
+      ],
+    },
   ],
   wayRound: 'gate',
   // (The ways round climb the hill too: low range, but no diff lock.)
@@ -110,6 +122,8 @@ export const CHEK_JAWA: TrailDef = {
       len: 280,
       needs: { low: true },
       mix: [
+        // (On a causeway through the water and up a ridge: off it is deep water and bog.)
+        { kind: 'ridge', from: 0, to: 280, p: { w: 2.6, drop: 3 } },
         { kind: 'sand', from: 0, to: 70, p: { dip: 0.3, duneH: 0 } },
         { kind: 'ford', from: 0, to: 70, p: { depth: 0.9, bank: 3.4, out: 15 } },
         { kind: 'rocks', from: 100, to: 190, p: { humpH: 0.15 } },
@@ -125,6 +139,7 @@ export const CHEK_JAWA: TrailDef = {
       len: 280,
       needs: { low: true, diff: true },
       mix: [
+        { kind: 'ridge', from: 0, to: 280, p: { w: 2.6, drop: 3.5 } },
         { kind: 'climb', from: 0, to: 280, p: { h: 11, up: 45, top: 90 } },
         { kind: 'rocks', from: 20, to: 160, p: { humpH: 0.5 } },
         { kind: 'summit', from: 40, to: 150, p: { ledgeH: 0.3, every: 9 } },
@@ -151,6 +166,8 @@ export const CHEK_JAWA: TrailDef = {
       len: 210,
       needs: { low: true, diff: true },
       mix: [
+        // (Soft bog either side of the ruts.)
+        { kind: 'ridge', from: 0, to: 210, p: { w: 2.5, drop: 1, run: 2 } },
         { kind: 'mud', from: 0, to: 120, p: { rut: 0.3, hole: 0.5 } },
         { kind: 'sand', from: 100, to: 210, p: { tidal: 1, duneH: 2.6, duneFace: 10, dip: 0.35 } },
       ],
