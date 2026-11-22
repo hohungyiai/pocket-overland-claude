@@ -712,36 +712,96 @@ export class UbinTrail {
    * The parts with ground finer than the solid 1 m ground resolves (deep
    * ruts, a V-notch's crack, cross-axle troughs, ledges): each is drawn and
    * made solid on its own 0.5 m strip, FINE_HALF either side of its line,
-   * and under its middle (FINE_CORE either side) the tiles' own ground is
+   * and under its middle (out to FINE_RIM short of its edges) the tiles' own ground is
    * sunk out of the way.
    */
-  fineParts(): { o: Obstacle; q: Part }[] {
-    const out: { o: Obstacle; q: Part }[] = [];
-    for (const o of this.obstacles) for (const q of o.parts) if (FINE_KINDS.has(q.kind)) out.push({ o, q });
+  /**
+   * Where the fine strips run: along each stretch, the fine parts' spans
+   * (a little past each end) joined into one wherever they meet or overlap,
+   * so no strip ends on top of another.
+   */
+  fineStrips(): { o: Obstacle; a: number; b: number }[] {
+    return (this.fine_ ??= this.makeFineStrips());
+  }
+  private makeFineStrips() {
+    const out: { o: Obstacle; a: number; b: number }[] = [];
+    for (const o of this.obstacles) {
+      const spans = o.parts
+        .filter((q) => FINE_KINDS.has(q.kind))
+        .map((q) => [q.from - UbinTrail.FINE_PAST, q.to + UbinTrail.FINE_PAST] as [number, number])
+        .sort((p, q) => p[0] - q[0]);
+      for (const [a, b] of spans) {
+        const last = out[out.length - 1];
+        if (last && last.o === o && a <= last.b + 2) last.b = Math.max(last.b, b);
+        else out.push({ o, a, b });
+      }
+    }
     return out;
   }
   static readonly FINE_HALF = 11;
-  static readonly FINE_CORE = 7.5;
-  static readonly FINE_PAST = 4;
+  /**
+   * The tiles' ground is sunk under a strip out to this short of its edge
+   * (and from 3 m in from each end): out there the strip is the tiles' own
+   * drawn ground, laid over it, and a sunk point's dip stays under it.
+   */
+  static readonly FINE_RIM = 4;
+  static readonly FINE_PAST = 6;
   /** Under a fine strip's middle, where the tiles' ground is sunk. */
   fineCore(x: number, z: number): boolean {
-    for (const { o, q } of this.fine) {
-      const n = o.line.nearest(x, z, UbinTrail.FINE_CORE + 1);
-      if (!n || n.d >= UbinTrail.FINE_CORE) continue;
+    for (const { o, a, b } of this.fineStrips()) {
+      const n = this.fineNear(o, x, z, UbinTrail.FINE_HALF);
+      if (!n || n.d >= this.fineHalf(o, n.s, Math.sign(n.sd) || 1) - UbinTrail.FINE_RIM) continue;
       // (3 m inside the strip's ends: the tiles' ground beside a sunk point
-      // lies under the strip.)
-      const [a, b] = this.fineSpan(o, q);
+      // lies under the strip, which is the tiles' own ground out there.)
       if (n.s >= a + 3 && n.s <= b - 3) return true;
     }
     return false;
   }
-  /** Where a fine part's strip runs along its stretch (metres in). */
-  fineSpan(o: Obstacle, q: Part): [number, number] {
-    return [Math.max(0, q.from - UbinTrail.FINE_PAST), Math.min(o.line.length, q.to + UbinTrail.FINE_PAST)];
+  private fine_: { o: Obstacle; a: number; b: number }[] | null = null;
+  /**
+   * A point on a strip, s metres along its stretch (before the start or
+   * past the end: straight on from there, as a strip may run a few metres
+   * beyond its stretch) and `off` to the left.
+   */
+  fineAt(o: Obstacle, s: number, off: number): { x: number; z: number } {
+    const L = o.line.length;
+    const a = o.line.at(clamp(s, 0, L));
+    const k = s < 0 ? s : s > L ? s - L : 0;
+    return { x: a.x + a.tx * k + a.tz * off, z: a.z + a.tz * k - a.tx * off };
   }
-  private fine_: { o: Obstacle; q: Part }[] | null = null;
-  private get fine() {
-    return (this.fine_ ??= this.fineParts());
+  /** Where a point is on a stretch's strip: s along (as fineAt) and its distance across. */
+  fineNear(o: Obstacle, x: number, z: number, maxR: number): { s: number; d: number; sd: number } | null {
+    const n = o.line.nearest(x, z, maxR + UbinTrail.FINE_PAST + 1);
+    if (!n) return null;
+    const L = o.line.length;
+    if (n.s > 1e-6 && n.s < L - 1e-6) return n.d < maxR ? n : null;
+    const a = o.line.at(n.s);
+    const along = (x - a.x) * a.tx + (z - a.z) * a.tz;
+    const s = n.s + along;
+    const sd = (x - a.x) * a.tz - (z - a.z) * a.tx;
+    return Math.abs(sd) < maxR ? { s, d: Math.abs(sd), sd } : null;
+  }
+  /**
+   * How far a strip reaches to one side (+1 left, -1 right) at s: the full
+   * FINE_HALF, but on the inside of a tight bend less, so that its rows
+   * never cross over each other there.
+   */
+  fineHalf(o: Obstacle, s: number, side: number): number {
+    const L = o.line.length;
+    // (At each point around: as far as reaches before the rows would cross
+    // on the inside of the bend there; then widening no faster than a third
+    // of a metre a metre from it, so the strip narrows and widens gently.)
+    let half = UbinTrail.FINE_HALF;
+    for (let c = s - 24; c <= s + 24; c += 1) {
+      const p = o.line.at(clamp(c - 3, 0, L));
+      const q = o.line.at(clamp(c + 3, 0, L));
+      // (Turning left, the cross product of the tangents is negative; near a
+      // full turn back, either side.)
+      const turn = Math.atan2(p.tx * q.tz - p.tz * q.tx, p.tx * q.tx + p.tz * q.tz);
+      const bend = Math.abs(turn) > 2.5 ? Math.abs(turn) : Math.max(0, -side * turn);
+      half = Math.min(half, (0.75 * 6) / Math.max(bend, 1e-6) + Math.max(0, Math.abs(c - s) - 3) / 3);
+    }
+    return clamp(half, 4, UbinTrail.FINE_HALF);
   }
 
   /** Where to stop and look before a drop: metres into the stretch (it may start before it). */

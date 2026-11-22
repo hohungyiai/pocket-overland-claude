@@ -270,9 +270,9 @@ export const CHEK_JAWA: TrailDef = {
       needs: { low: true, diff: true },
       mix: [
         { kind: 'thicket', from: 0, to: 240, p: { w: 4.2 } },
-        { kind: 'rutted', from: 0, to: 80, p: { depth: 0.85 } },
-        { kind: 'ditches', from: 78, to: 112, p: { depth: 0.6 } },
-        { kind: 'climb', from: 118, to: 240, p: { h: 7, up: 36, top: 25, wet: 1 } },
+        { kind: 'rutted', from: 0, to: 76, p: { depth: 0.85 } },
+        { kind: 'ditches', from: 74, to: 102, p: { depth: 0.6 } },
+        { kind: 'climb', from: 118, to: 240, p: { h: 8, up: 24, top: 25, wet: 1 } },
       ],
     },
   ],
