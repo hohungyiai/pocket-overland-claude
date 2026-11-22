@@ -216,7 +216,8 @@ const SLICK: Surface = { name: 'Slick bank', grip: 0.25, drag: 1.2, offroad: tru
 const BOG: Surface = { name: 'Bog', grip: 0.2, drag: 6, offroad: true, sink: 0.6 };
 // A valley's walls: too steep and slick to climb out.
 const WALL: Surface = { name: 'Steep bank', grip: 0.25, drag: 1.2, offroad: true };
-const LATERITE: Surface = { name: 'Laterite', grip: 0.6, drag: 1.6, offroad: true, sink: 0.03 };
+// (Soft clay: hit fast it ploughs in, like loose gravel, so charging the ditches does not work.)
+const LATERITE: Surface = { name: 'Laterite', grip: 0.6, drag: 1.6, offroad: true, sink: 0.03, wade: 0.5, wadeFrom: 6.5 };
 const GRANITE: Surface = { name: 'Granite', grip: 0.85, drag: 1.2, offroad: true, rough: 0.7 };
 const WET_GRANITE: Surface = { name: 'Wet granite', grip: 0.62, drag: 1.2, offroad: true, rough: 0.6 };
 const WET_LATERITE: Surface = { name: 'Wet laterite', grip: 0.45, drag: 2, offroad: true, sink: 0.06 };

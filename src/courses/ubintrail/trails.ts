@@ -77,7 +77,7 @@ export const PUAKA: TrailDef = {
       len: 65,
       needs: { diff: true },
       mix: [
-        { kind: 'ditches', from: 0, to: 65, p: { depth: 0.6, period: 6.5 } },
+        { kind: 'ditches', from: 0, to: 65, p: { depth: 0.55, period: 6.5 } },
         { kind: 'thicket', from: 0, to: 65 },
       ],
     },
