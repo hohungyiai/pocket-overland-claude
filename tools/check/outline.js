@@ -661,26 +661,140 @@ window.__checkLawnInIsland = (all = false) => {
   return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: '' };
 };
 
-// (The reviewer's ask, 22 Nov: one-level islands' lawn the same as main's.
-// An island's lawn is built a stretch of kerb at a time, each stretch by
-// main's builder or by the new one where its kerbs differ in height. Where
-// one island has both, the two lawns meet in a seam or crease: K3 at
-// -114.8,-31.9 and c1, L2, F4, k1 and k4 in round 4, all flat on main.
-// Every point where a main-lawn stretch meets a new-builder stretch of the
-// same island. Needs __lawnRuns filled as the map loads; run.cjs does it.)
+// The island lawn, one sheet (the user's pick, 22 Nov: "One-sheet lawn in
+// PR 74", in place of stretches laid by two builders, which met in seams
+// and creases: K3 at -114.8,-31.9, c1, L2, F4, k1, k4 in round 4, all
+// flat on main). Its seams now can only be where one tile's part meets the
+// next's: every open edge of a tile's lawn on the tile's own border must
+// meet the next tile's lawn there, at the same height (a tile reading the
+// kerbs differently would leave a step or a slot).
+const lawnTris = (k) => {
+  const r = globalThis.__osm.tileAccs(k).lawn;
+  if (!r) return [];
+  const { pos, idx } = r, T = [];
+  for (let q = 0; q < idx.length; q += 3) T.push([idx[q], idx[q + 1], idx[q + 2]].map((v) => [pos[3 * v], pos[3 * v + 1], pos[3 * v + 2]]));
+  return T;
+};
+const mmKey = (p) => `${Math.round(p[0] * 1000)},${Math.round(p[2] * 1000)}`;
 window.__checkLawnSeams = (all = false) => {
-  const R = globalThis.__lawnRuns;
-  if (!Array.isArray(R)) return { samples: 0, bad: 1, worst: [{ x: 0, z: 0, value: 1, over: 1, what: 'no lawn stretches recorded' }], unit: '' };
-  const by = new Map();
-  for (const r of R) (by.get(r.w) ?? by.set(r.w, []).get(r.w)).push(r);
+  const d = globalThis.__osm;
   const pts = [];
-  for (const L of by.values()) {
-    const m = L.filter((r) => r.main), o = L.filter((r) => !r.main);
-    for (const a of m) for (const b of o) for (const p of [a.a, a.b]) for (const q of [b.a, b.b])
-      if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.5) pts.push({ x: +p[0].toFixed(1), z: +p[1].toFixed(1), value: 1 });
+  const TILE = 200;
+  const tiles = new Set(d.farTiles());
+  // Each tile's lawn triangles, by 1 m square, to find the one over a point.
+  const idx = new Map();
+  // (Only those by the tile's border: the whole map's at once ran the
+  // browser out of memory.)
+  const index = (k) => {
+    if (idx.has(k)) return idx.get(k);
+    const [ti, tj] = k.split(',').map(Number);
+    const by = (v) => Math.min(v[0] - ti * TILE, (ti + 1) * TILE - v[0], v[2] - tj * TILE, (tj + 1) * TILE - v[2]) < 1.5;
+    const T = lawnTris(k).filter((t) => t.some(by)), g = new Map();
+    T.forEach((t, i) => {
+      const xs = t.map((v) => v[0]), zs = t.map((v) => v[2]);
+      for (let a = Math.floor(Math.min(...xs)); a <= Math.floor(Math.max(...xs)); a++)
+        for (let b = Math.floor(Math.min(...zs)); b <= Math.floor(Math.max(...zs)); b++) (g.get(a * 100003 + b) ?? g.set(a * 100003 + b, []).get(a * 100003 + b)).push(i);
+    });
+    const r = { T, g };
+    idx.set(k, r);
+    return r;
+  };
+  const yAt = (k, x, z) => {
+    const { T, g } = index(k);
+    for (const i of g.get(Math.floor(x) * 100003 + Math.floor(z)) ?? []) {
+      const [[x1, y1, z1], [x2, y2, z2], [x3, y3, z3]] = T[i];
+      const det = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3);
+      if (Math.abs(det) < 1e-12) continue;
+      const l1 = ((z2 - z3) * (x - x3) + (x3 - x2) * (z - z3)) / det, l2 = ((z3 - z1) * (x - x3) + (x1 - x3) * (z - z3)) / det, l3 = 1 - l1 - l2;
+      if (l1 >= -1e-4 && l2 >= -1e-4 && l3 >= -1e-4) return l1 * y1 + l2 * y2 + l3 * y3;
+    }
+    return NaN;
+  };
+  let n = 0;
+  for (const k of tiles) {
+    const [ti, tj] = k.split(',').map(Number);
+    const { T } = index(k);
+    const use = new Map();
+    for (const t of T)
+      for (let e = 0; e < 3; e++) {
+        const a = t[e], b = t[(e + 1) % 3];
+        const key = [mmKey(a), mmKey(b)].sort().join('|');
+        const u = use.get(key);
+        if (u) u.n++;
+        else use.set(key, { n: 1, a, b });
+      }
+    for (const { n: c, a, b } of use.values()) {
+      if (c !== 1) continue;
+      // (On the tile's own border: its middle, 2 cm over into the next
+      // tile, must have that tile's lawn under it at the same height.)
+      let ox = 0, oz = 0;
+      if (Math.abs(a[0] - ti * TILE) < 0.002 && Math.abs(b[0] - ti * TILE) < 0.002) ox = -0.02;
+      else if (Math.abs(a[0] - (ti + 1) * TILE) < 0.002 && Math.abs(b[0] - (ti + 1) * TILE) < 0.002) ox = 0.02;
+      else if (Math.abs(a[2] - tj * TILE) < 0.002 && Math.abs(b[2] - tj * TILE) < 0.002) oz = -0.02;
+      else if (Math.abs(a[2] - (tj + 1) * TILE) < 0.002 && Math.abs(b[2] - (tj + 1) * TILE) < 0.002) oz = 0.02;
+      else continue;
+      if (Math.hypot(b[0] - a[0], b[2] - a[2]) < 0.05) continue;
+      const nk = `${ti + Math.sign(ox)},${tj + Math.sign(oz)}`;
+      if (!tiles.has(nk)) continue;
+      n++;
+      const mx = (a[0] + b[0]) / 2, mz = (a[2] + b[2]) / 2, my = (a[1] + b[1]) / 2;
+      const y = yAt(nk, mx + ox, mz + oz);
+      if (y !== y) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: 1, what: 'lawn ends at the tile border, none beyond' });
+      else if (Math.abs(y - my) > 0.02) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: +Math.abs(y - my).toFixed(3), what: 'lawn steps at the tile border' });
+    }
   }
   const bad = window.__finishIndex().places(pts, 2);
-  return { samples: R.length, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: '' };
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm' };
+};
+
+// Its folds: no two lawn triangles side by side meet at a crease sharper
+// than 30 degrees (a 1 in 2 bank meets level lawn at 27), and none stands
+// steeper than 40 degrees (a lawn is never steeper than 1 in 2; its walls
+// are kerb sides, not lawn). (The round 3b feedback: folds, slits and
+// panels in one-level islands, E1 -2123.9,3149.9 and F3, F4, T2, k4; a
+// shard of grass 2 m tall at 1416,653 in the sheet's first try.) Slivers
+// under 50 cm square are left out: too small to see, and their slope is
+// any three nearby heights'.
+window.__checkLawnFolds = (all = false) => {
+  const d = globalThis.__osm;
+  const pts = [];
+  let n = 0;
+  const nrm = (t) => {
+    const [a, b, c] = t;
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    let x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx;
+    const l = Math.hypot(x, y, z);
+    if (y < 0) (x = -x), (y = -y), (z = -z);
+    return { n: [x / l, y / l, z / l], area: l / 2 };
+  };
+  for (const k of d.farTiles()) {
+    const T = lawnTris(k);
+    const N = T.map(nrm);
+    const use = new Map();
+    T.forEach((t, i) => {
+      if (N[i].area < 0.005) return;
+      n++;
+      const steep = (Math.acos(Math.min(1, N[i].n[1])) * 180) / Math.PI;
+      const mx = (t[0][0] + t[1][0] + t[2][0]) / 3, mz = (t[0][2] + t[1][2] + t[2][2]) / 3;
+      if (steep > 40) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: +steep.toFixed(0), what: `lawn ${steep.toFixed(0)} deg steep` });
+      for (let e = 0; e < 3; e++) {
+        const key = [mmKey(t[e]), mmKey(t[(e + 1) % 3])].sort().join('|');
+        const j = use.get(key);
+        if (j === undefined) {
+          use.set(key, i);
+          continue;
+        }
+        const a = N[i].n, b = N[j].n;
+        const ang = (Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 180) / Math.PI;
+        if (ang > 30) {
+          const p = t[e], q = t[(e + 1) % 3];
+          pts.push({ x: +((p[0] + q[0]) / 2).toFixed(1), z: +((p[2] + q[2]) / 2).toFixed(1), value: +ang.toFixed(0), what: `lawn creased ${ang.toFixed(0)} deg` });
+        }
+      }
+    });
+  }
+  const bad = window.__finishIndex().places(pts, 2);
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'deg' };
 };
 
 // The user's rule (18 Nov): a bridge's parapets and walls begin where the

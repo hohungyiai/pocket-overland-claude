@@ -137,9 +137,9 @@ const CHECKS = [
   ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0, { whole: 762, trial: 23 }],
   // (The reviewer's rule, 21 Nov. The user held its places at today's count,
   // 21 Nov, 11 of the whole map's 12 on main before it; may only go down.)
-  // (The reviewer's ask, 22 Nov: no island's lawn part main's, part the new
-  // builder's. TO BE SET: its count today is for the user's call.)
-  ['An island\'s lawn is built one way kerb to kerb: no seam where main\'s lawn meets the new builder\'s', 'outline.js', '__checkLawnSeams', 0],
+  // (The user's pick, 22 Nov: each island's lawn one sheet. Zero, on every map.)
+  ['An island\'s lawn is one sheet: it meets the next tile\'s lawn at the tile\'s border, at the same height', 'outline.js', '__checkLawnSeams', 0],
+  ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0],
   ['An island\'s grass stays inside its kerbs: no lawn more than 5 cm out over a road', 'outline.js', '__checkLawnInIsland', 0, { whole: 11, trial: 2 }],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
@@ -157,8 +157,6 @@ const CHECKS = [
     const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const p = await (await b.newContext({ viewport: { width: 640, height: 360 } })).newPage();
     p.on('pageerror', (e) => console.log('page error:', e.message));
-    // (Records each stretch of island lawn as it is built, for the lawn-seam check.)
-    await p.addInitScript('globalThis.__lawnRuns = []');
     const t0 = Date.now();
     await p.goto(`http://localhost:${PORT}/?course=${process.env.COURSE || 'pasirris'}&debug`);
     await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
