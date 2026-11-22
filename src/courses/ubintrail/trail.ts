@@ -912,8 +912,8 @@ export class UbinTrail {
       // them, one wheel on the crown and one on the bank (see lineAt).
       const D = (P.depth ?? 0.75) * (0.35 + 0.65 * smoothstep(0, len * 0.45, s));
       const u = sd - this.wander(P, s);
-      const W = P.rutW ?? 0.32;
-      const rut = (c: number) => smoothstep(W + 0.2, W, Math.abs(u - c));
+      const W = P.rutW ?? 0.25;
+      const rut = (c: number) => smoothstep(W + 0.15, W, Math.abs(u - c));
       return -D * (rut(0.86) + rut(-0.86)) * fade(6) * (1 - smoothstep(3, 6, d));
     }
     if (kind === 'notch') {
@@ -1201,7 +1201,7 @@ export class UbinTrail {
   }
   /** How far left deep ruts have wandered, u metres into their part. */
   wander(P: Record<string, number>, u: number): number {
-    return (P.wander ?? 0.4) * Math.sin((2 * Math.PI * u) / (P.period ?? 32)) * smoothstep(0, 10, u);
+    return (P.wander ?? 0.3) * Math.sin((2 * Math.PI * u) / (P.period ?? 32)) * smoothstep(0, 10, u);
   }
   /** A V-notch's bend: its middle, u metres into its part (one S, eased in and out). */
   weave(P: Record<string, number>, u: number, len = P.len ?? 0): number {

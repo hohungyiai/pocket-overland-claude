@@ -74,11 +74,11 @@ export const PUAKA: TrailDef = {
       kind: 'ditches',
       label: 'Cross-axle ditches',
       at: [599, 8],
-      len: 45,
+      len: 65,
       needs: { low: true, diff: true },
       mix: [
-        { kind: 'ditches', from: 0, to: 45, p: { depth: 0.55 } },
-        { kind: 'thicket', from: 0, to: 45 },
+        { kind: 'ditches', from: 0, to: 65, p: { depth: 0.65, period: 6 } },
+        { kind: 'thicket', from: 0, to: 65 },
       ],
     },
     {
@@ -95,9 +95,11 @@ export const PUAKA: TrailDef = {
     {
       kind: 'notch',
       label: 'Granite notch',
-      at: [596, 218],
+      at: [585, 256],
       len: 45,
       needs: {},
+      // (A line, not kit: nothing stops you in the middle, so no way round.)
+      round: false,
       mix: [
         { kind: 'notch', from: 0, to: 45, p: { bend: 0.5 } },
         { kind: 'thicket', from: 0, to: 45, p: { w: 5.4 } },
@@ -172,13 +174,13 @@ export const CHEK_JAWA: TrailDef = {
       label: 'Granite notch and waterfall',
       nice: 'Through the boulders, up the notch and the waterfall. Granite all the way.',
       at: [2641, -100],
-      len: 140,
+      len: 130,
       needs: { low: true, diff: true },
       mix: [
-        { kind: 'thicket', from: 0, to: 140, p: { w: 5.4 } },
+        { kind: 'thicket', from: 0, to: 130, p: { w: 5.4 } },
         { kind: 'rocks', from: 0, to: 40, p: { humpH: 0.55 } },
         { kind: 'notch', from: 36, to: 86, p: { bend: 0.45, ends: 12 } },
-        { kind: 'climb', from: 70, to: 140, p: { h: 6, up: 28, top: 14 } },
+        { kind: 'climb', from: 70, to: 130, p: { h: 6, up: 26, top: 12 } },
         { kind: 'falls', from: 78, to: 112, p: { ledgeH: 0.5, every: 3.5 } },
       ],
     },

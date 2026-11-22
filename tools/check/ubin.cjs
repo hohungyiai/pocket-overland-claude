@@ -27,7 +27,8 @@ const only = args.filter((a) => a !== 'all' && !COURSES.includes(a));
 const kitName = (k) =>
   ([k.low && 'low range', k.diff && 'the diff lock', k.cruise >= 9 && 'speed', k.off && Math.abs(k.off) < 4 && 'its line'].filter(Boolean).join(' and ') || 'no kit') +
   (k.change ? `, then ${[k.change.low === false && k.low && 'low range', k.change.diff === false && k.diff && 'the diff lock'].filter(Boolean).join(' and ')} out` : '');
-const pace = (o) => (o.needs.speed ? 10 : o.kind === 'climb' ? 5 : o.kind === 'washout' ? 3 : 4);
+// (Cross-axle ditches with the diff locked but in high range want a steady 6: crawling, the hanging wheels stop it.)
+const pace = (o) => (o.needs.speed ? 10 : o.kind === 'climb' ? 5 : o.kind === 'washout' ? 3 : o.kind === 'ditches' && !o.needs.low ? 6 : 4);
 const kits = (o, room = 150) => {
   const right = { low: !!o.needs.low, diff: !!o.needs.diff, cruise: pace(o) };
   const wrong = [];
@@ -157,7 +158,7 @@ const kits = (o, room = 150) => {
         }
         const right = await drive(page, from, to, K.right, { timeout: 150 });
         const st = (await page.evaluate(() => window.__ubinObstacles()))[i];
-        const level = info.obs[i].notch ? 25 : 90;
+        const level = o.kind === 'notch' ? 25 : 90;
         check(`${o.label}: with ${kitName(K.right)} the bot gets through on the hard line${level < 90 ? `, never leaning over ${level}°` : ''}`, right.done && st.done === 'hard' && right.maxLeanDeg < level, `(${right.seconds}s, lean ${right.maxLeanDeg}°, ${st.done}) says: ${JSON.stringify(right.says.map((t) => t[1]))}`);
         await page.close();
         page = await fresh();
