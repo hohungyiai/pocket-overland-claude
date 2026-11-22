@@ -24,7 +24,9 @@ const only = args.filter((a) => a !== 'all' && !COURSES.includes(a));
 
 // The kit for an obstacle, from what it needs: the right kit, and each
 // kit with one thing left out. (Cruise: how fast the bot drives at it.)
-const kitName = (k) => [k.low && 'low range', k.diff && 'the diff lock', k.cruise >= 9 && 'speed', k.off && Math.abs(k.off) < 4 && 'the high line'].filter(Boolean).join(' and ') || 'no kit';
+const kitName = (k) =>
+  ([k.low && 'low range', k.diff && 'the diff lock', k.cruise >= 9 && 'speed', k.off && Math.abs(k.off) < 4 && 'the high line'].filter(Boolean).join(' and ') || 'no kit') +
+  (k.change ? `, then ${[k.change.low === false && k.low && 'low range', k.change.diff === false && k.diff && 'the diff lock'].filter(Boolean).join(' and ')} out` : '');
 const pace = (o) => (o.needs.speed ? 10 : o.kind === 'climb' ? 5 : o.kind === 'washout' ? 3 : 4);
 const kits = (o, room = 150) => {
   const right = { low: !!o.needs.low, diff: !!o.needs.diff, cruise: pace(o) };
@@ -55,6 +57,18 @@ const kits = (o, room = 150) => {
     wrong.push([`round it on the ground ${off} m to its left`, { ...right, off }]);
     wrong.push([`round it on the ground ${off} m to its right`, { ...right, off: -off }]);
   }
+  if (o.then) {
+    // A clashing setup: part way along, kit has to come out (low range to
+    // carry speed up a dune, the diff lock for a tight turn round rocks).
+    // The right kit changes there; keeping it in all the way does not get
+    // through (with the winch neither: no tree is offered until it is out).
+    const lowOut = o.then.off.includes('low');
+    const pace = lowOut ? { cruise: 14 } : { cruise: 2.5, look: 3 };
+    const out = Object.fromEntries(o.then.off.map((k) => [k, false]));
+    right.change = { s: o.s0 + o.then.at, ...out, ...pace };
+    for (const [, kit] of wrong) kit.change = { ...right.change, ...Object.fromEntries(Object.keys(out).map((k) => [k, kit[k]])) };
+    wrong.push([`keeping ${o.then.off.map((k) => (k === 'low' ? 'low range' : 'the diff lock')).join(' and ')} in all the way`, { ...right, change: { s: right.change.s, ...pace } }]);
+  }
   return { right, wrong, none: { low: false, diff: false, cruise: o.needs.speed ? 4 : 6 } };
 };
 
@@ -83,7 +97,7 @@ const kits = (o, room = 150) => {
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
       // Water never hangs in the air: every edge point of the ford's water
@@ -108,8 +122,7 @@ const kits = (o, room = 150) => {
         });
         check('water and puddles sit on the ground, never in the air', w.badE === 0 && w.badP === 0, `(${w.badE} of ${w.n} water edge points over 0.15 m, worst ${w.worstE.toFixed(2)} m at ${w.at}; ${w.badP} of ${w.np} puddles over 0.12 m, worst ${w.worstP.toFixed(2)} m)`);
       }
-      const drive = (pg, s0, s1, kit, extra = {}) =>
-        pg.evaluate(([a, b, k]) => window.__ubinDrive(window.__ubinRouteOff(a - (k.runUp ?? 0), b, k.off ?? 0), k), [s0, s1, { ...kit, ...extra }]);
+      const drive = (pg, s0, s1, kit, extra = {}) => pg.evaluate(([a, b, k]) => window.__ubinKitDrive(a, b, k), [s0, s1, { ...kit, ...extra }]);
       for (let i = 0; i < info.obs.length; i++) {
         const o = info.obs[i];
         if (!want(o.kind) && !want(o.label)) continue;
@@ -137,8 +150,10 @@ const kits = (o, room = 150) => {
             const sc = await page.evaluate(() => window.game.course.score?.() ?? null);
             // (Every pull scored, as from the button.)
             // (Pulls made before it reached this stretch count against the one before.)
-            const scored = !r.winched || !sc || sc.label !== o.label || sc.points >= r.winched * 5;
-            check(`${o.label}: ${what}, even winching whenever stuck the bot does not get through`, !(r.done && sw.done === 'hard') && scored, `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.winched} winch pulls, ${r.refused} times no tree offered, score ${JSON.stringify(sc)}, credited: ${sw.done})`);
+            // (Pulls off every stretch, on the open trail between them, cost nothing.)
+            const mine = r.winchedOn?.[o.label] ?? 0;
+            const scored = !mine || !sc || sc.label !== o.label || sc.points >= mine * 5;
+            check(`${o.label}: ${what}, even winching whenever stuck the bot does not get through`, !(r.done && sw.done === 'hard') && scored, `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.winched} winch pulls (on stretches: ${JSON.stringify(r.winchedOn)}), ${r.refused} times no tree offered, score ${JSON.stringify(sc)}, credited: ${sw.done})`);
             await page.close();
             page = await fresh();
           }
@@ -199,7 +214,7 @@ const kits = (o, room = 150) => {
         const said = [];
         for (const [n, leg] of legs.entries()) {
           if (leg.s1 <= leg.s0) continue;
-          const r = await page.evaluate(([l, first]) => window.__ubinDrive(window.__ubinRouteOff(l.s0, l.s1, l.kit.off ?? 0), { ...l.kit, timeout: 900, place: first }), [leg, n === 0]);
+          const r = await page.evaluate(([l, first]) => window.__ubinKitDrive(l.s0, l.s1, { ...l.kit, timeout: 900, place: first }), [leg, n === 0]);
           secs += r.seconds;
           lean = Math.max(lean, r.maxLeanDeg);
           said.push(...r.says.map((x) => x[1]));
@@ -220,6 +235,168 @@ const kits = (o, room = 150) => {
       // The winch (trails with marked trees): slid off any stretch into the
       // bog or down the bank, stuck, the winch gets the car back onto the
       // track, and it costs points on the clean-run score.
+      if (want('drop') && (await page.evaluate(() => window.game.course.trail.obstacles.some((o) => o.drop)))) {
+        // Commitment points: past each drop, backing up with low range and
+        // the diff lock in does not get back up it; the look spot before it
+        // is flat and wide (under 8 degrees along and across, 3 m either
+        // side of the line), and the coach speaks there.
+        // Each lip is one piece of rock on the ground: its back edge on the
+        // ground (within 5 cm), its foot never more than 0.1 m above the
+        // ground below the face, its top never under the ground and never
+        // stepping more than 0.15 m from one point to the next (every 0.2 m
+        // across), and its ends tapered into the ground (within 5 cm).
+        const lp = await page.evaluate(() => {
+          const c = window.game.course;
+          const H = (p) => c.heightAt(p[0], p[1]);
+          return c.lips().map((L) => {
+            let back = 0, foot = -Infinity, under = 0, step = 0, ends = 0;
+            L.forEach((q, k) => {
+              back = Math.max(back, Math.abs(q.yBack - H(q.back)));
+              foot = Math.max(foot, q.yFoot - H(q.foot));
+              under = Math.max(under, H(q.top) - q.yTop);
+              // (How far it stands above the ground, point to point: the
+              // ground's own slope across a camber or a valley's edge is not a step.)
+              if (k) step = Math.max(step, Math.abs(q.yTop - H(q.top) - (L[k - 1].yTop - H(L[k - 1].top))));
+            });
+            ends = Math.max(Math.abs(L[0].yTop - H(L[0].top)), Math.abs(L[L.length - 1].yTop - H(L[L.length - 1].top)));
+            return { n: L.length, back: +back.toFixed(3), foot: +foot.toFixed(3), under: +under.toFixed(3), step: +step.toFixed(3), ends: +ends.toFixed(3) };
+          });
+        });
+        check('every drop has one rock lip on the ground: back and ends flush, foot buried, its height over the ground never stepping over 0.15 m', lp.length > 0 && lp.every((l) => l.back <= 0.05 && l.foot <= 0.1 && l.under <= 0.02 && l.step <= 0.15 && l.ends <= 0.05), `(${JSON.stringify(lp)})`);
+        const ds = await page.evaluate(() => window.game.course.trail.obstacles.map((o, i) => (o.drop ? { i, label: o.label } : null)).filter(Boolean));
+        for (const { i, label } of ds) {
+          await page.close();
+          page = await fresh();
+          const r = await page.evaluate(async (i) => {
+            const g = window.game;
+            const t = g.course.trail;
+            const o = t.obstacles[i];
+            const D = o.drop;
+            const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+            const run = async (secs) => {
+              const until = g.sim.steps + secs * 60;
+              for (let k = 0; g.sim.steps < until && k < 30000; k++) await wait(5);
+            };
+            // The look spot.
+            let worst = 0;
+            let where = null;
+            const [l0, l1] = t.constructor.LOOK;
+            for (let s = D.at + l0; s <= D.at + l1 - 1; s += 1)
+              for (let d = -3; d <= 2; d += 1) {
+                const p = t.route.at(o.s0 + s);
+                const at = (s2, d2) => {
+                  const q = t.route.at(o.s0 + s2);
+                  return g.course.heightAt(q.x + q.tz * d2, q.z - q.tx * d2);
+                };
+                const m = Math.max(Math.abs(at(s + 1, d) - at(s, d)), Math.abs(at(s, d + 1) - at(s, d)));
+                if (m > worst) {
+                  worst = m;
+                  where = [s - D.at, d];
+                }
+              }
+            // The coach, as the HUD asks it, walking up to the drop.
+            const says = [];
+            for (let s = D.at - 40; s < D.at + 3; s += 0.5) {
+              const p = t.route.at(o.s0 + s);
+              const c = g.course.coach({ x: p.x, z: p.z, speed: 3, low: false, diff: false, stuck: 0 });
+              if (c?.say) says.push([Math.round(s - D.at), c.say]);
+            }
+            // Backing up from just past it, all the kit in.
+            const own = g.controls.update;
+            const was = g.sim.fast;
+            g.sim.fast = 400;
+            g.controls.update = () => {};
+            // (On the hard line: an off-camber shore's high side.)
+            const cam = o.parts.find((q) => q.kind === 'camber')?.p;
+            const off = cam ? (cam.dir ?? 1) * ((cam.edge ?? 1) + 1.5) : 0;
+            const a0 = o.line.at(D.at + 5);
+            const a = { x: a0.x + a0.tz * off, z: a0.z - a0.tx * off };
+            g.course.prepareAt?.(a.x, a.z);
+            g.car.placeAt({ x: a.x, y: g.course.heightAt(a.x, a.z) + 0.3, z: a.z }, Math.atan2(-a0.tz, a0.tx));
+            g.controls.input.steer = g.controls.input.throttle = 0;
+            await run(2);
+            g.car.lowRange = g.car.diffLock = true;
+            g.controls.input.throttle = -1;
+            let least = Infinity;
+            let lastAt = null;
+            for (let k = 0; k < 40; k++) {
+              await run(0.5);
+              const p = g.car.body.translation();
+              const n = t.route.nearest(p.x, p.z, 20);
+              // (Back up on the track above it: slid off down a bank is not.)
+              if (n && Math.abs(n.sd) < 4 && n.s - o.s0 < least) {
+                least = n.s - o.s0;
+                lastAt = [+n.sd.toFixed(1), +p.y.toFixed(1)];
+              }
+            }
+            g.controls.input.throttle = 0;
+            g.controls.update = own;
+            g.sim.fast = was;
+            return { at: D.at, h: D.h, where, slope: +((Math.atan(worst) * 180) / Math.PI).toFixed(1), says, least: +least.toFixed(1), lastAt };
+          }, i);
+          const spoke = r.says.some(([s, x]) => s < -2 && /drop ahead/.test(x));
+          check(`${label}: past the drop (${r.h} m) backing up with all the kit in does not get back up it onto the track`, r.least > r.at, `(closest ${r.least} m in, the step at ${r.at} m${r.least > r.at ? '' : `, ${JSON.stringify(r.lastAt)} (across, up)`})`);
+          check(`${label}: the look spot before the drop is flat and the coach speaks there`, r.slope < 8 && spoke, `(steepest ${r.slope}° at ${JSON.stringify(r.where)} m from the step and the line; said ${JSON.stringify(r.says)})`);
+        }
+      }
+      if (want('ruts') && (await page.evaluate(() => !!window.game.course.dig))) {
+        // Ruts: spinning in the mangrove mud with no kit digs the ground
+        // under the wheels (slicker), not a car's width beside them; leaving
+        // it be, Try again smooths it back.
+        await page.close();
+        page = await fresh();
+        const r = await page.evaluate(async () => {
+          const g = window.game;
+          const t = g.course.trail;
+          const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+          const was = g.sim.fast;
+          const own = g.controls.update;
+          g.sim.fast = 400;
+          g.controls.update = () => {};
+          const run = async (secs) => {
+            const until = g.sim.steps + secs * 60;
+            for (let k = 0; g.sim.steps < until && k < 30000; k++) await wait(5);
+          };
+          try {
+            const o = t.obstacles.find((q) => /Mangrove/.test(q.label));
+            const a = o.line.at(40);
+            g.course.prepareAt(a.x, a.z);
+            g.car.lowRange = false;
+            g.car.diffLock = false;
+            g.car.placeAt({ x: a.x, y: g.course.heightAt(a.x, a.z) + 0.2, z: a.z }, Math.atan2(-a.tz, a.tx));
+            await run(2);
+            g.controls.input.throttle = 1;
+            g.controls.input.steer = 0;
+            await run(5);
+            g.controls.input.throttle = 0;
+            await run(2);
+            const p = g.car.body.translation();
+            // Under the wheels: the most worn square within the car's length.
+            let under = 0;
+            for (let dx = -2.5; dx <= 2.5; dx += 0.25) for (let dz = -1.2; dz <= 1.2; dz += 0.25) under = Math.max(under, g.course.rutAt(p.x + dx, p.z + dz));
+            // A car's width beside the line it was on.
+            const sx = p.x + a.tz * 3.2;
+            const sz = p.z - a.tx * 3.2;
+            let beside = 0;
+            for (let dx = -2; dx <= 2; dx += 0.25) for (let dz = -0.6; dz <= 0.6; dz += 0.25) beside = Math.max(beside, g.course.rutAt(sx + dx, sz + dz));
+            const cells = t.ruts.size;
+            const marks = g.scene?.children?.find?.((m) => m.isInstancedMesh && m.renderOrder === 2)?.count ?? null;
+            // Try again, as the button does (at normal speed: the HUD offers it).
+            g.sim.fast = was;
+            const btn = document.getElementById('btn-retry');
+            for (let k = 0; k < 300 && btn.hidden; k++) await wait(100);
+            const btnShown = !btn.hidden;
+            btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            await wait(300);
+            return { under: +under.toFixed(2), beside: +beside.toFixed(2), cells, marks, after: t.ruts.size, btnShown };
+          } finally {
+            g.sim.fast = was;
+            g.controls.update = own;
+            g.controls.input.throttle = 0;
+          }
+        });
+        check('ruts: spinning digs the ground under the wheels, not beside, and Try again smooths it', r.under >= 0.5 && r.beside === 0 && r.btnShown && r.after === 0, `(${JSON.stringify(r)})`);
+      }
       if (want('winch') && (await page.evaluate(() => !!window.game.course.winchAt))) {
         await page.close();
         page = await fresh();
@@ -241,7 +418,9 @@ const kits = (o, room = 150) => {
             for (let i = 0; i < t.obstacles.length; i++) {
               const o = t.obstacles[i];
               const len = o.s1 - o.s0;
-              const w = obs[i].closed.length ? Math.max(...obs[i].closed.filter((x) => x < 6)) : 3;
+              // (The narrow closures only: a wide thicket of rock spurs is not the track's edge.)
+              const narrow = obs[i].closed.filter((x) => x < 6);
+              const w = narrow.length ? Math.max(...narrow) : 3;
               const cam = obs[i].camber;
               // Off each side a few metres (a camber: only down its bank), at three places.
               const sides = cam ? [-(cam.dir ?? 1) * 5, -(cam.dir ?? 1) * 9] : [w + 1, -(w + 1), w + 4, -(w + 4)];

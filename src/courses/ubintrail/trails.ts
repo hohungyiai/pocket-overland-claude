@@ -121,6 +121,8 @@ export const CHEK_JAWA: TrailDef = {
       at: [2770, -131],
       len: 280,
       needs: { low: true },
+      // (Down a rock step into the valley, looked at from the rim.)
+      drop: { at: 16, h: 1.3, until: 130, back: 30 },
       mix: [
         // (Down in a narrow valley: the ford at the bottom, the loose climb up
         // its floor, a boggy ditch at the foot of each wall, boulders on the rim.)
@@ -140,6 +142,8 @@ export const CHEK_JAWA: TrailDef = {
       at: [3075, -60],
       len: 280,
       needs: { low: true, diff: true },
+      // (Off the top, a ledge down onto the ridge, seen from the flat shelf above it.)
+      drop: { at: 160, h: 1, until: 278, back: 30 },
       mix: [
         { kind: 'ridge', from: 0, to: 280, p: { w: 2.6, drop: 3.5 } },
         { kind: 'climb', from: 0, to: 280, p: { h: 11, up: 45, top: 90 } },
@@ -153,12 +157,17 @@ export const CHEK_JAWA: TrailDef = {
       label: 'Muddy off-camber shore',
       nice: 'Along the muddy shore without sliding off. Good line.',
       at: [3253, 176],
-      len: 210,
+      len: 236,
       needs: { diff: true },
+      // (Down off the top of the bank onto the bench.)
+      drop: { at: 16, h: 0.9, until: 232, back: 34 },
       mix: [
-        { kind: 'camber', from: 0, to: 210, p: { deg: 30, bench: 5, edge: 1, width: 3.2, dir: 1 } },
+        { kind: 'camber', from: 0, to: 192, p: { deg: 30, bench: 5, edge: 1, width: 3.2, dir: 1 } },
         { kind: 'mud', from: 25, to: 185, p: { shift: 2.5, rut: 0.25, hole: 0.45 } },
+        // (Then rock spurs off the bank: a tight left and right between them.)
+        { kind: 'thicket', from: 186, to: 236, p: { w: 4.6, rows: 2, jink: 2.6, period: 18, square: 1.6, in: 10 } },
       ],
+      then: { at: 186, off: ['diff'], say: 'Rocks and a tight turn ahead: DIFF off, or the front will not turn in.' },
     },
     {
       kind: 'mud',
@@ -167,12 +176,18 @@ export const CHEK_JAWA: TrailDef = {
       at: [3501, 79],
       len: 210,
       needs: { low: true, diff: true },
+      // (Off the firm sand, down into the mud channel.)
+      drop: { at: 16, h: 1, until: 128, back: 28 },
       mix: [
         // (Soft bog either side of the ruts.)
         { kind: 'ridge', from: 0, to: 210, p: { w: 2.5, drop: 1, run: 2 } },
-        { kind: 'mud', from: 0, to: 120, p: { rut: 0.3, hole: 0.5 } },
-        { kind: 'sand', from: 100, to: 210, p: { tidal: 1, duneH: 2.6, duneFace: 10, dip: 0.35 } },
+        { kind: 'mud', from: 0, to: 100, p: { rut: 0.3, hole: 0.5 } },
+        // (Then a firm run-up, and a tall, steep tidal dune: low range
+        // cannot carry the speed over it.)
+        { kind: 'sand', from: 96, to: 135, p: { firm: 1, grip: 0.75, drag: 1, sink: 0, duneH: 0, dip: 0.05 } },
+        { kind: 'sand', from: 130, to: 210, p: { tidal: 1, duneH: 4.5, duneFace: 9, dip: 0.2 } },
       ],
+      then: { at: 100, off: ['low'], say: 'Firm sand ahead: LOW off now, and build up speed for the dune.' },
     },
   ],
   wayRound: 'hidden',
@@ -182,4 +197,5 @@ export const CHEK_JAWA: TrailDef = {
   clean: 'Chek Jawa, the hard way: every obstacle on the hard line. The tide is out and the flats are yours.',
   finish: 'Chek Jawa. The tide is out and the flats are yours.',
   winch: true,
+  ruts: true,
 };

@@ -345,6 +345,7 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
     if (!retrySpot) return;
     const r = retrySpot;
     course.penalty?.('retry', car.mesh.position.x, car.mesh.position.z);
+    course.resetRuts?.();
     course.prepareAt?.(r.x, r.z);
     car.placeAt(new THREE.Vector3(r.x, course.heightAt(r.x, r.z) + 0.1, r.z), r.yaw);
     btnRetry.hidden = true;

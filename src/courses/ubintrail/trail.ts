@@ -50,11 +50,40 @@ export interface ObstacleDef {
   mix?: { kind: ObstacleKind; from: number; to: number; p?: Record<string, number> }[];
   /** Said when it is passed on the hard line (else the kind's own line). */
   nice?: string;
+  /** Clashing setups: from `at` metres in, the kit in `off` must come out (see Change). */
+  then?: Change;
+  /** A commitment point: a drop you cannot back up (see Drop). */
+  drop?: Drop;
+}
+
+/**
+ * A commitment point: `at` metres in, a step down of `h` metres too steep
+ * to climb back up, even in reverse with all the kit in. Before it, a
+ * marker post where you can stop and look, and a word about the kit; the
+ * ground comes back up gently, the way you are going, over the `back`
+ * metres before `until` (so the rest of the stretch sits h lower).
+ */
+export interface Drop {
+  at: number;
+  h: number;
+  until: number;
+  back: number;
+}
+
+/**
+ * A change of kit part way along a stretch: what got you this far stops
+ * you on what comes next (low range cannot carry the speed up a dune; a
+ * locked diff will not turn tight round rocks). Said as the car gets near.
+ */
+export interface Change {
+  at: number;
+  off: ('low' | 'diff')[];
+  say: string;
 }
 
 /** Something to see on an obstacle's ground (no collider: the ground's own shape is what the car feels). */
 export interface Prop {
-  kind: 'rock' | 'pebble' | 'ledge' | 'root' | 'puddle' | 'boulder' | 'anchor';
+  kind: 'rock' | 'pebble' | 'ledge' | 'root' | 'puddle' | 'boulder' | 'anchor' | 'post';
   x: number;
   z: number;
   /** Heading of its long side (radians, like the car's yaw). */
@@ -101,12 +130,20 @@ export interface TrailDef {
   finish: string;
   /** Marked trees to winch to beside the obstacles, and a clean-run score. */
   winch?: boolean;
+  /** Ground that remembers: spinning wheels dig ruts that lose grip (Chek Jawa). */
+  ruts?: boolean;
 }
 export interface Obstacle {
   kind: ObstacleKind;
   label: string;
   needs: Needs;
   nice?: string;
+  then?: Change;
+  /** The change's line said on this try (it is said once a try). */
+  thenSaid: boolean;
+  drop?: Drop;
+  /** The look spot's word said on this approach. */
+  dropSaid: boolean;
   p: Record<string, number>;
   /** Its kinds of ground (one, unless a mixed stretch). */
   parts: Part[];
@@ -419,6 +456,10 @@ export class UbinTrail {
         label: od.label,
         needs: od.needs,
         nice: od.nice,
+        then: od.then,
+        thenSaid: false,
+        drop: od.drop,
+        dropSaid: false,
         p: od.p ?? parts.find((q) => q.kind === od.kind)?.p ?? {},
         parts,
         s0,
@@ -481,6 +522,8 @@ export class UbinTrail {
           if (q.kind === 'ridge') off = (q.p.w ?? 2.6) + 0.7;
           // (A valley's on the very edge of its floor, clear of the ditch a car slides into.)
           if (q.kind === 'valley') off = (q.p.w ?? 2.6) + 0.15;
+          // (Through the rock spurs: in the rows of boulders either side, clear of the turns.)
+          if (q.kind === 'thicket' && q.p.jink) off = (q.p.w ?? 3.4) + 0.3;
           if (q.kind === 'camber') {
             // (Always up the bank: down the bank is where the car ends up.)
             sd = q.p.dir ?? 1;
@@ -540,9 +583,13 @@ export class UbinTrail {
     // On a stretch, the winch only helps the kit it needs, never stands in
     // for it: no tree until LOW and DIFF are in, as it asks.
     this.winchNeeds = [];
+    // (Past a change of kit: and none until what must come out is out.)
     if (!across && near && at > near.s0 - 10 && at < near.s1 + 5 && kit) {
-      if (near.needs.low && !kit.low) this.winchNeeds.push('LOW');
-      if (near.needs.diff && !kit.diff) this.winchNeeds.push('DIFF');
+      const nd = this.needsAt(near, ns);
+      if (nd.low && !kit.low) this.winchNeeds.push('LOW');
+      if (nd.diff && !kit.diff) this.winchNeeds.push('DIFF');
+      if (nd.noLow && kit.low) this.winchNeeds.push('LOW off');
+      if (nd.noDiff && kit.diff) this.winchNeeds.push('DIFF off');
       if (this.winchNeeds.length) return null;
     }
     // Hauled back from off the track: to its middle beside the car, or on
@@ -625,6 +672,48 @@ export class UbinTrail {
       if (d < b.r) best = Math.max(best, b.top * Math.sqrt(1 - (d / b.r) ** 2));
     }
     return best;
+  }
+
+  // ---------------- Ruts ----------------
+
+  /** Half-metre squares of soft ground worn by spinning wheels: 0 new, 1 dug right in. */
+  readonly ruts = new Map<number, number>();
+  /** Bumped whenever the ruts change (for the marks). */
+  rutVersion = 0;
+  static readonly RUT_CELL = 0.5;
+  private rutKey(x: number, z: number): number {
+    const c = UbinTrail.RUT_CELL;
+    return Math.floor(x / c) * 100003 + Math.floor(z / c);
+  }
+  /** How worn the ground is at (x, z), 0..1. */
+  rutAt(x: number, z: number): number {
+    return this.ruts.get(this.rutKey(x, z)) ?? 0;
+  }
+  /** A spinning wheel at (x, z) wears the ground there by `amount`. */
+  dig(x: number, z: number, amount: number) {
+    const k = this.rutKey(x, z);
+    const was = this.ruts.get(k) ?? 0;
+    const now = Math.min(1, was + amount);
+    if (now === was) return;
+    this.ruts.set(k, now);
+    if (Math.floor(now * 8) !== Math.floor(was * 8)) this.rutVersion++;
+  }
+  /** Fresh ground again (Try again, or leaving the trail). */
+  resetRuts() {
+    if (!this.ruts.size) return;
+    this.ruts.clear();
+    this.rutVersion++;
+  }
+  /** Each worn square: its middle and how worn, for the marks. */
+  rutCells(): { x: number; z: number; w: number }[] {
+    const c = UbinTrail.RUT_CELL;
+    const out: { x: number; z: number; w: number }[] = [];
+    for (const [k, w] of this.ruts) {
+      const ix = Math.round(k / 100003);
+      const iz = k - ix * 100003;
+      out.push({ x: (ix + 0.5) * c, z: (iz + 0.5) * c, w });
+    }
+    return out;
   }
 
   // ---------------- The clean-run score ----------------
@@ -756,18 +845,70 @@ export class UbinTrail {
     for (const o of this.obstacles) {
       const n = o.line.nearest(x, z, 40);
       if (!n) continue;
-      for (const part of o.parts) {
-        const s = n.s - part.from;
-        const len = part.to - part.from;
-        if (s < -20 || s > len + 20) continue;
-        // (shift: a part laid along a line beside the route, like mud ruts
-        // on the high side of an off-camber bench.)
-        const sd = n.sd - (part.p.shift ?? 0);
-        y += this.partShape(o, part.kind, part.p, s, Math.abs(sd), sd, len);
+      let h = this.stretchShape(o, n.s, n.sd);
+      if (o.drop) {
+        // The look spot: a flat shelf across the track, level with its
+        // middle (the ground there whatever the stretch's shape).
+        const D = o.drop;
+        const [l0, l1] = UbinTrail.LOOK;
+        const u = n.s - D.at;
+        const w = smoothstep(l0 - 4, l0, u) * (1 - smoothstep(l1, l1 + 2.5, u)) * (1 - smoothstep(3.5, 6.5, n.d));
+        if (w > 0) h += (this.stretchShape(o, D.at + (l0 + l1) / 2, 0) - h) * w;
       }
+      y += h;
     }
     return y;
   }
+
+  /** A stretch's own shape s metres in, sd metres left of its line (its drop's step too). */
+  private stretchShape(o: Obstacle, ns: number, nsd: number): number {
+    let y = 0;
+    for (const part of o.parts) {
+      const s = ns - part.from;
+      const len = part.to - part.from;
+      if (s < -20 || s > len + 20) continue;
+      // (shift: a part laid along a line beside the route, like mud ruts
+      // on the high side of an off-camber bench.)
+      const sd = nsd - (part.p.shift ?? 0);
+      y += this.partShape(o, part.kind, part.p, s, Math.abs(sd), sd, len);
+    }
+    if (o.drop) y += this.dropShape(o.drop, ns, Math.abs(nsd));
+    return y;
+  }
+
+  /** A commitment point's step, s metres into the stretch: a metre-wide face, down. */
+  dropShape(D: Drop, s: number, d: number): number {
+    const down = smoothstep(D.at - 0.5, D.at + 0.5, s);
+    const back = smoothstep(D.until - D.back, D.until, s);
+    return -D.h * down * (1 - back) * (1 - smoothstep(6, 14, d));
+  }
+  /**
+   * A drop's rock lip, across the track where a car can be (on a camber,
+   * its bench from the slick edge up to the bank), every 0.2 m: where its
+   * top sits (just above the face), where it meets the ground behind, the
+   * foot of its face below, and the upper ground its top follows.
+   */
+  lipLine(o: Obstacle): { off: number; back: XZ; top: XZ; upper: XZ; foot: XZ; lower: XZ }[] {
+    const D = o.drop;
+    if (!D) return [];
+    const camber = o.parts.find((q) => q.kind === 'camber');
+    const dir = camber ? (camber.p.dir ?? 1) : 1;
+    const [lo, hi] = camber ? [(camber.p.edge ?? 1) - 2.2, (camber.p.edge ?? 1) + (camber.p.width ?? 3.2) + 0.2] : [-2.9, 2.9];
+    const pt = (s: number, off: number): XZ => {
+      const a = o.line.at(s);
+      return [a.x + a.tz * off, a.z - a.tx * off];
+    };
+    const out: { off: number; back: XZ; top: XZ; upper: XZ; foot: XZ; lower: XZ }[] = [];
+    const n = Math.round((hi - lo) / 0.2);
+    for (let k = 0; k <= n; k++) {
+      const off = dir * (lo + ((hi - lo) * k) / n);
+      out.push({ off, back: pt(D.at - 1.6, off), top: pt(D.at - 0.05, off), upper: pt(D.at - 0.6, off), foot: pt(D.at + 0.2, off), lower: pt(D.at + 0.6, off) });
+    }
+    return out;
+  }
+
+  /** Where to stop and look before a drop: metres into the stretch (it may start before it). */
+  static readonly LOOK = [-12, -3];
 
   /** One kind of ground's shape, s metres into its part of the stretch. */
   private partShape(o: Obstacle, kind: ObstacleKind, P: Record<string, number>, s: number, d: number, sd: number, len: number): number {
@@ -918,6 +1059,16 @@ export class UbinTrail {
   props(): Prop[] {
     const out: Prop[] = [];
     for (const o of this.obstacles) {
+      if (o.drop) {
+        // The look spot's post on the high side (the drop's rock lip is one
+        // piece of its own: see lipLine()).
+        const D = o.drop;
+        const camber = o.parts.find((q) => q.kind === 'camber');
+        const side = camber ? (camber.p.dir ?? 1) : 1;
+        const lp = this.route.at(o.s0 + D.at + UbinTrail.LOOK[1] - 1);
+        const off = camber ? (camber.p.edge ?? 1) + (camber.p.width ?? 3.2) + 0.6 : 3.4;
+        out.push({ kind: 'post', x: lp.x + lp.tz * side * off, z: lp.z - lp.tx * side * off, yaw: 0, sx: 0.16, sy: 1.3, sz: 0.16 });
+      }
       const rand = mulberry32(Math.floor(o.s0 * 7) + 11);
       for (const q of o.parts) {
         const P = q.p;
@@ -980,6 +1131,27 @@ export class UbinTrail {
             rock(c + k / 2, -1, TUNE.humpH * 0.85, TUNE.humpLen * 0.9);
           }
           stones(1, 2.4);
+        }
+        if (q.kind === 'thicket' && P.jink) {
+          // Rock spurs: from each side in turn, a spur of boulders out
+          // across the track to just short of the line, where the weave
+          // swings the other way (three deep, so there is no slipping
+          // through between them).
+          const A = P.jink;
+          const s0 = (P.in ?? 12) + (P.period ?? 20) / 4;
+          const w = P.w ?? 3.4;
+          for (const [sc, side] of [[s0, -1], [s0 + (P.period ?? 20) / 2, 1]] as const)
+            for (const ds of P.deep ? [-1.3, 0, 1.3] : [0]) {
+              // (Out to `reach` short of the line: the middle row furthest.)
+              const tip = -(A - (P.reach ?? 1.95) - (ds ? 0.5 : 0));
+              const n = Math.ceil((w - tip) / 1.15);
+              for (let k = 0; k <= n; k++) {
+                const off = w - ((w - tip) * k) / n;
+                const r = 0.62 + 0.2 * rand();
+                const p = at(sc + ds, side * off);
+                out.push({ kind: 'boulder', x: p.x, z: p.z, yaw: rand() * 6.28, sx: r * 2, sy: r * (1 + 0.5 * rand()) + 0.3 * (off / w), sz: r * 2 });
+              }
+            }
         }
         if (q.kind === 'thicket') {
           // Two staggered rows of boulders either side, gaps narrower than the car.
@@ -1055,12 +1227,43 @@ export class UbinTrail {
         if (!inside(q) || q.kind === 'ridge' || q.kind === 'thicket' || q.kind === 'valley') continue;
         if (Math.abs(n.sd - (q.p.shift ?? 0)) > (q.kind === 'ford' || q.kind === 'camber' ? 8 : 3.6)) continue;
         const base = q.kind === 'sand' && q.p.tidal ? TIDAL : KIND_SURFACE[q.kind];
-        // (A part may soften or firm its ground: p.sink, p.grip.)
-        if (q.p.sink === undefined && q.p.grip === undefined) return base;
-        return (q.surf ??= { ...base, sink: q.p.sink ?? base.sink, grip: q.p.grip ?? base.grip });
+        // (A part may soften or firm its ground: p.sink, p.grip, p.drag.)
+        if (q.p.sink === undefined && q.p.grip === undefined && q.p.drag === undefined) return base;
+        return (q.surf ??= { ...base, name: q.p.firm ? 'Firm sand' : base.name, sink: q.p.sink ?? base.sink, grip: q.p.grip ?? base.grip, drag: q.p.drag ?? base.drag });
       }
     }
     return null;
+  }
+
+  /**
+   * Rock spurs (a thicket with p.jink): the way through weaves between
+   * them, a tight left and right. Where the line is at route distance s,
+   * for a driver keeping `off` metres left of the route before it (the
+   * high line of a camber): it eases over to the middle, then weaves.
+   */
+  lineAt(s: number, off: number): number {
+    for (const o of this.obstacles)
+      for (const q of o.parts) {
+        if (q.kind !== 'thicket' || !q.p.jink) continue;
+        const u = s - o.s0 - q.from;
+        if (u < 0 || s > o.s1 + 40) continue;
+        return off * (1 - smoothstep(0, q.p.in ?? 12, u)) + this.jink(q, u);
+      }
+    return off;
+  }
+  /** The weave through rock spurs, u metres into the part: one full left and right. */
+  private jink(q: Part, u: number): number {
+    const a = u - (q.p.in ?? 12);
+    const P = q.p.period ?? 20;
+    // (Flat-topped: held wide past each spur, a sharp swing between them.)
+    return a < 0 || a > P ? 0 : (q.p.jink ?? 0) * clamp((q.p.square ?? 1) * Math.sin((2 * Math.PI * a) / P), -1, 1);
+  }
+
+  /** What the stretch needs s metres in: kit in, and (past a change) kit out. */
+  needsAt(o: Obstacle, s: number): { low: boolean; diff: boolean; noLow: boolean; noDiff: boolean } {
+    const past = !!o.then && s >= o.then.at;
+    const out = (k: 'low' | 'diff') => past && o.then!.off.includes(k);
+    return { low: !!o.needs.low && !out('low'), diff: !!o.needs.diff && !out('diff'), noLow: out('low'), noDiff: out('diff') };
   }
 
   /** The part of an obstacle's stretch at s metres into it. */
@@ -1144,6 +1347,26 @@ export class UbinTrail {
       // out after getting some way in. Backing up for another run after a
       // stall starts the next try.
       const tick = 0.1; // the HUD calls this ten times a second
+      // A commitment point ahead: at the look spot, a word about the kit
+      // (once an approach).
+      if (o.drop) {
+        const rs = (this.route.nearest(c.x, c.z, 12)?.s ?? -1e9) - o.s0;
+        const [l0, l1] = UbinTrail.LOOK;
+        const at = o.drop.at;
+        if (!o.dropSaid && rs > at + l0 && rs < at + l1 + 2) {
+          o.dropSaid = true;
+          const nd = this.needsAt(o, at + 1);
+          const want = [nd.low && !c.low && 'LOW', nd.diff && !c.diff && 'DIFF'].filter(Boolean);
+          out = { ...(out ?? {}), say: `A drop ahead: past it there is no backing up. ${want.length ? `Tap ${want.join(' and ')} before you go over.` : 'Kit in: ease over it.'}` };
+        }
+        if (rs < at + l0 - 25 || rs > at + 15) o.dropSaid = false;
+      }
+      // A change of kit ahead: said once a try, as the car gets near.
+      if (o.then && onLine && !o.thenSaid && n!.s > o.then.at - 18 && n!.s < o.then.at + 5) {
+        o.thenSaid = true;
+        out = { ...(out ?? {}), say: o.then.say };
+      }
+      if (o.then && n && n.s < o.then.at - 40) o.thenSaid = false;
       if (onLine && n!.s > 1 && n!.s < len) {
         if (!o.inside) {
           o.inside = true;
@@ -1230,11 +1453,14 @@ export class UbinTrail {
     if (single && o.kind === 'sand') return 'Soft sand: back up and take a run at it, and keep your speed up over the dune.' + round;
     // The harder trails: what is missing first, then how to drive it.
     const want: string[] = [];
-    if (o.needs.low && !c.low) want.push('LOW for low range');
-    if (o.needs.diff && !c.diff) want.push('DIFF to lock the diff');
+    const nd = this.needsAt(o, o.furthest);
+    if (nd.low && !c.low) want.push('LOW for low range');
+    if (nd.diff && !c.diff) want.push('DIFF to lock the diff');
     // (On a mixed stretch, about the ground where the car got stuck.)
     const k = this.partAt(o, o.furthest).kind;
     if (want.length) return `${TIP_WHY[k]}: tap ${want.join(' and ')}.` + round;
+    // (Past a change of kit, with what had to come out still in.)
+    if ((nd.noLow && c.low) || (nd.noDiff && c.diff)) return o.then!.say + round;
     return TIP_HOW[k] + round;
   }
 
