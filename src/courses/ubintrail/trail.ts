@@ -220,7 +220,7 @@ const WALL: Surface = { name: 'Steep bank', grip: 0.25, drag: 1.2, offroad: true
 const LATERITE: Surface = { name: 'Laterite', grip: 0.6, drag: 1.6, offroad: true, sink: 0.03, wade: 0.5, wadeFrom: 6.5 };
 const GRANITE: Surface = { name: 'Granite', grip: 0.85, drag: 1.2, offroad: true, rough: 0.7 };
 const WET_GRANITE: Surface = { name: 'Wet granite', grip: 0.62, drag: 1.2, offroad: true, rough: 0.6 };
-const WET_LATERITE: Surface = { name: 'Wet laterite', grip: 0.45, drag: 2, offroad: true, sink: 0.06 };
+const WET_LATERITE: Surface = { name: 'Wet laterite', grip: 0.45, drag: 2, offroad: true, sink: 0.06, wade: 0.5, wadeFrom: 6.5 };
 const KIND_SURFACE: Record<ObstacleKind, Surface> = {
   ditches: LATERITE,
   rutted: LATERITE,
@@ -1002,7 +1002,8 @@ export class UbinTrail {
       return (y + st) * fade(P.ends ?? 8) * (1 - smoothstep(w + 4, w + 8, a));
     }
     if (kind === 'falls') {
-      // A rock waterfall: granite ledges stacked up a stream bed, each
+      // A rock waterfall: granite ledges stacked up a stream bed (or, with
+      // p.clay, steps the rain has cut in a clay climb), each
       // `ledgeH` up every `every` metres, each edge slanting across the
       // track (one side `slant` metres ahead of the other, the next the
       // other way) so the car climbs each one corner by corner.
@@ -1148,7 +1149,7 @@ export class UbinTrail {
             rock(s, side * (w + 0.4), 0.25 + 0.2 * rand(), 0.9);
           }
         }
-        if (q.kind === 'falls') {
+        if (q.kind === 'falls' && !P.clay) {
           // A granite slab at each ledge, its top flush with it, slanting
           // across the track as the ledge does; stones in the stream bed.
           const step = P.every ?? 3.5;
@@ -1225,7 +1226,7 @@ export class UbinTrail {
         const q = o.parts[i];
         if (!inside(q) || q.kind === 'ridge' || q.kind === 'thicket' || q.kind === 'valley') continue;
         if (Math.abs(n.sd - (q.p.shift ?? 0)) > (q.kind === 'ford' || q.kind === 'camber' || q.kind === 'notch' ? 8 : 3.6)) continue;
-        const base = q.kind === 'sand' && q.p.tidal ? TIDAL : q.kind === 'climb' && q.p.wet ? WET_LATERITE : KIND_SURFACE[q.kind];
+        const base = q.kind === 'sand' && q.p.tidal ? TIDAL : (q.kind === 'climb' && q.p.wet) || (q.kind === 'falls' && q.p.clay) ? WET_LATERITE : KIND_SURFACE[q.kind];
         // (A part may soften or firm its ground: p.sink, p.grip, p.drag.)
         if (q.p.sink === undefined && q.p.grip === undefined && q.p.drag === undefined) return base;
         return (q.surf ??= { ...base, name: q.p.firm ? 'Firm sand' : base.name, sink: q.p.sink ?? base.sink, grip: q.p.grip ?? base.grip, drag: q.p.drag ?? base.drag });

@@ -271,8 +271,10 @@ export const CHEK_JAWA: TrailDef = {
       mix: [
         { kind: 'thicket', from: 0, to: 240, p: { w: 4.2 } },
         { kind: 'rutted', from: 0, to: 76, p: { depth: 0.85 } },
-        { kind: 'ditches', from: 74, to: 102, p: { depth: 0.6 } },
+        { kind: 'ditches', from: 74, to: 102, p: { depth: 0.55, period: 6.5 } },
         { kind: 'climb', from: 118, to: 240, p: { h: 8, up: 24, top: 25, wet: 1 } },
+        // (Steps the rain has cut in the clay: crawled one corner at a time.)
+        { kind: 'falls', from: 122, to: 146, p: { ledgeH: 0.35, every: 4, clay: 1 } },
       ],
     },
   ],
