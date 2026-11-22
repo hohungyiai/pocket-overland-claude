@@ -122,7 +122,7 @@ export const CHEK_JAWA: TrailDef = {
       len: 280,
       needs: { low: true },
       // (Down a rock step into the valley, looked at from the rim.)
-      drop: { at: 12, h: 1, until: 130, back: 30 },
+      drop: { at: 16, h: 1, until: 130, back: 30 },
       mix: [
         // (Down in a narrow valley: the ford at the bottom, the loose climb up
         // its floor, a boggy ditch at the foot of each wall, boulders on the rim.)
@@ -160,7 +160,7 @@ export const CHEK_JAWA: TrailDef = {
       len: 236,
       needs: { diff: true },
       // (Down off the top of the bank onto the bench.)
-      drop: { at: 8, h: 0.9, until: 232, back: 34 },
+      drop: { at: 16, h: 0.9, until: 232, back: 34 },
       mix: [
         { kind: 'camber', from: 0, to: 192, p: { deg: 30, bench: 5, edge: 1, width: 3.2, dir: 1 } },
         { kind: 'mud', from: 25, to: 185, p: { shift: 2.5, rut: 0.25, hole: 0.45 } },
@@ -177,7 +177,7 @@ export const CHEK_JAWA: TrailDef = {
       len: 210,
       needs: { low: true, diff: true },
       // (Off the firm sand, down into the mud channel.)
-      drop: { at: 8, h: 1, until: 128, back: 28 },
+      drop: { at: 16, h: 1, until: 128, back: 28 },
       mix: [
         // (Soft bog either side of the ruts.)
         { kind: 'ridge', from: 0, to: 210, p: { w: 2.5, drop: 1, run: 2 } },

@@ -83,7 +83,7 @@ export interface Change {
 
 /** Something to see on an obstacle's ground (no collider: the ground's own shape is what the car feels). */
 export interface Prop {
-  kind: 'rock' | 'pebble' | 'ledge' | 'root' | 'puddle' | 'boulder' | 'anchor' | 'post';
+  kind: 'rock' | 'pebble' | 'ledge' | 'root' | 'puddle' | 'boulder' | 'anchor' | 'post' | 'lip';
   x: number;
   z: number;
   /** Heading of its long side (radians, like the car's yaw). */
@@ -845,17 +845,34 @@ export class UbinTrail {
     for (const o of this.obstacles) {
       const n = o.line.nearest(x, z, 40);
       if (!n) continue;
-      for (const part of o.parts) {
-        const s = n.s - part.from;
-        const len = part.to - part.from;
-        if (s < -20 || s > len + 20) continue;
-        // (shift: a part laid along a line beside the route, like mud ruts
-        // on the high side of an off-camber bench.)
-        const sd = n.sd - (part.p.shift ?? 0);
-        y += this.partShape(o, part.kind, part.p, s, Math.abs(sd), sd, len);
+      let h = this.stretchShape(o, n.s, n.sd);
+      if (o.drop) {
+        // The look spot: a flat shelf across the track, level with its
+        // middle (the ground there whatever the stretch's shape).
+        const D = o.drop;
+        const [l0, l1] = UbinTrail.LOOK;
+        const u = n.s - D.at;
+        const w = smoothstep(l0 - 4, l0, u) * (1 - smoothstep(l1, l1 + 2.5, u)) * (1 - smoothstep(3.5, 6.5, n.d));
+        if (w > 0) h += (this.stretchShape(o, D.at + (l0 + l1) / 2, 0) - h) * w;
       }
-      if (o.drop) y += this.dropShape(o.drop, n.s, n.d);
+      y += h;
     }
+    return y;
+  }
+
+  /** A stretch's own shape s metres in, sd metres left of its line (its drop's step too). */
+  private stretchShape(o: Obstacle, ns: number, nsd: number): number {
+    let y = 0;
+    for (const part of o.parts) {
+      const s = ns - part.from;
+      const len = part.to - part.from;
+      if (s < -20 || s > len + 20) continue;
+      // (shift: a part laid along a line beside the route, like mud ruts
+      // on the high side of an off-camber bench.)
+      const sd = nsd - (part.p.shift ?? 0);
+      y += this.partShape(o, part.kind, part.p, s, Math.abs(sd), sd, len);
+    }
+    if (o.drop) y += this.dropShape(o.drop, ns, Math.abs(nsd));
     return y;
   }
 
@@ -1021,8 +1038,13 @@ export class UbinTrail {
         // The drop's rock lip, its top flush with the ground above it, and
         // the look spot's post on the high side.
         const D = o.drop;
+        // (In pieces across, each flush with the ground where it sits: on a
+        // camber the ground falls away across the track.)
         const a = o.line.at(D.at - 0.7);
-        out.push({ kind: 'ledge', x: a.x, z: a.z, yaw: Math.atan2(-a.tz, a.tx), sx: 6.5, sy: D.h + 0.45, sz: 1.4 });
+        for (let k = -3.5; k <= 3.5; k++) {
+          const off = k * 1.4;
+          out.push({ kind: 'lip', x: a.x + a.tz * off, z: a.z - a.tx * off, yaw: Math.atan2(-a.tz, a.tx), sx: 1.5, sy: D.h + 0.45, sz: 1.4 });
+        }
         const camber = o.parts.find((q) => q.kind === 'camber');
         const side = camber ? (camber.p.dir ?? 1) : 1;
         const lp = this.route.at(o.s0 + D.at + UbinTrail.LOOK[1] - 1);

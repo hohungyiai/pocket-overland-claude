@@ -254,15 +254,20 @@ const kits = (o, room = 150) => {
             };
             // The look spot.
             let worst = 0;
+            let where = null;
             const [l0, l1] = t.constructor.LOOK;
-            for (let s = D.at + l0; s <= D.at + l1; s += 1)
-              for (let d = -3; d <= 3; d += 1) {
+            for (let s = D.at + l0; s <= D.at + l1 - 1; s += 1)
+              for (let d = -3; d <= 2; d += 1) {
                 const p = t.route.at(o.s0 + s);
                 const at = (s2, d2) => {
                   const q = t.route.at(o.s0 + s2);
                   return g.course.heightAt(q.x + q.tz * d2, q.z - q.tx * d2);
                 };
-                worst = Math.max(worst, Math.abs(at(s + 1, d) - at(s, d)), Math.abs(at(s, d + 1) - at(s, d)));
+                const m = Math.max(Math.abs(at(s + 1, d) - at(s, d)), Math.abs(at(s, d + 1) - at(s, d)));
+                if (m > worst) {
+                  worst = m;
+                  where = [s - D.at, d];
+                }
               }
             // The coach, as the HUD asks it, walking up to the drop.
             const says = [];
@@ -276,27 +281,37 @@ const kits = (o, room = 150) => {
             const was = g.sim.fast;
             g.sim.fast = 400;
             g.controls.update = () => {};
-            const a = o.line.at(D.at + 5);
+            // (On the hard line: an off-camber shore's high side.)
+            const cam = o.parts.find((q) => q.kind === 'camber')?.p;
+            const off = cam ? (cam.dir ?? 1) * ((cam.edge ?? 1) + 1.5) : 0;
+            const a0 = o.line.at(D.at + 5);
+            const a = { x: a0.x + a0.tz * off, z: a0.z - a0.tx * off };
             g.course.prepareAt?.(a.x, a.z);
-            g.car.placeAt({ x: a.x, y: g.course.heightAt(a.x, a.z) + 0.3, z: a.z }, Math.atan2(-a.tz, a.tx));
+            g.car.placeAt({ x: a.x, y: g.course.heightAt(a.x, a.z) + 0.3, z: a.z }, Math.atan2(-a0.tz, a0.tx));
             g.controls.input.steer = g.controls.input.throttle = 0;
             await run(2);
             g.car.lowRange = g.car.diffLock = true;
             g.controls.input.throttle = -1;
             let least = Infinity;
+            let lastAt = null;
             for (let k = 0; k < 40; k++) {
               await run(0.5);
               const p = g.car.body.translation();
-              least = Math.min(least, (t.route.nearest(p.x, p.z, 20)?.s ?? Infinity) - o.s0);
+              const n = t.route.nearest(p.x, p.z, 20);
+              // (Back up on the track above it: slid off down a bank is not.)
+              if (n && Math.abs(n.sd) < 4 && n.s - o.s0 < least) {
+                least = n.s - o.s0;
+                lastAt = [+n.sd.toFixed(1), +p.y.toFixed(1)];
+              }
             }
             g.controls.input.throttle = 0;
             g.controls.update = own;
             g.sim.fast = was;
-            return { at: D.at, h: D.h, slope: +((Math.atan(worst) * 180) / Math.PI).toFixed(1), says, least: +least.toFixed(1) };
+            return { at: D.at, h: D.h, where, slope: +((Math.atan(worst) * 180) / Math.PI).toFixed(1), says, least: +least.toFixed(1), lastAt };
           }, i);
           const spoke = r.says.some(([s, x]) => s < -2 && /drop ahead/.test(x));
-          check(`${label}: past the drop (${r.h} m) backing up with all the kit in does not get back up it`, r.least > r.at, `(closest ${r.least} m in, the step at ${r.at} m)`);
-          check(`${label}: the look spot before the drop is flat and the coach speaks there`, r.slope < 8 && spoke, `(steepest ${r.slope}°; said ${JSON.stringify(r.says)})`);
+          check(`${label}: past the drop (${r.h} m) backing up with all the kit in does not get back up it onto the track`, r.least > r.at, `(closest ${r.least} m in, the step at ${r.at} m${r.least > r.at ? '' : `, ${JSON.stringify(r.lastAt)} (across, up)`})`);
+          check(`${label}: the look spot before the drop is flat and the coach speaks there`, r.slope < 8 && spoke, `(steepest ${r.slope}° at ${JSON.stringify(r.where)} m from the step and the line; said ${JSON.stringify(r.says)})`);
         }
       }
       if (want('ruts') && (await page.evaluate(() => !!window.game.course.dig))) {
