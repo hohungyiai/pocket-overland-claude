@@ -8329,6 +8329,22 @@ export async function buildPasirRisCourse(
   // (A generator, a pause every few sections: done in one go, a long
   // kerb's island top held a frame up for 150 ms.)
   const ringBox = new WeakMap<OutRing, number[]>();
+  /**
+   * Where main's lawn (see islandTopMain) starts at a kerb's top, by 1 m
+   * square: [x, z, ...] of each section's first point. The kerb's own side
+   * down to the ground is not drawn there (see wallGaps): it is under that
+   * lawn. Drawn there, it showed grey through main's own small gaps in its
+   * lawn, where main showed the ground, at -2116,3153 by an island's point.
+   */
+  const mainLawnKerb = new Map<number, number[]>();
+  const underMainLawn = (x: number, z: number) => {
+    for (let a = -1; a <= 1; a++)
+      for (let b = -1; b <= 1; b++) {
+        const L = mainLawnKerb.get((Math.floor(x) + a) * 65536 + Math.floor(z) + b);
+        if (L) for (let q = 0; q < L.length; q += 2) if ((L[q] - x) ** 2 + (L[q + 1] - z) ** 2 < 0.75 * 0.75) return true;
+      }
+    return false;
+  };
   const islandTop = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, side: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
     const Pd: XZ[] = [], cd: number[] = [], md: (OutMark | null)[] = [], td: number[] = [];
     if (v0 > 0) Pd.push(P[v0 - 1]), cd.push(cum[v0 - 1]), md.push(null), td.push(NaN);
@@ -8346,6 +8362,216 @@ export async function buildPasirRisCourse(
     if (v1 + 1 < P.length) Pd.push(P[v1 + 1]), cd.push(cum[v1 + 1]), md.push(null), td.push(NaN);
     yield* islandTopIn(w, lawn, side, Pd, cd, d0, d1, (v) => md[v], (v) => td[v], farTop);
   };
+  // (An island with both kerbs at one level, as main built it before the
+  // user's rules B3 and S1-S6, which are for roads side by side at
+  // different heights: rebuilt by those rules, its lawn came out in panels
+  // at slightly different heights, with creases, slits and a dark step at
+  // its edge, at 1262.5,1902.9, -2123.9,3149.9 and -417.1,-101.7, where
+  // main's was one flat lawn. See islandTopIn.)
+  const islandTopMain = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
+    const segs = outSegs(w);
+    const n = v1 - v0 + 1;
+    const out: XZ[] = [], half: number[] = [], mid: number[] = [], apart: boolean[] = [], M: (OutMark | null)[] = [];
+    for (let v = v0; v <= v1; v++) {
+      if ((v - v0) % 8 === 7) yield;
+      const mm = mark(v);
+      M.push(mm);
+      const { nx, nz } = section(P, v, 0, P.length - 1, undefined, true);
+      // (Out of the paving: the kerb's outer side.)
+      out.push([-nx, -nz]);
+      let d = mm ? outRay(segs, P[v][0], P[v][1], -nx, -nz, mm.lvl, ISLE_W) : Infinity;
+      // (At a bend, square out from the pieces either side too: at a kerb's
+      // last point before a corner, out along the corner's bisector, the
+      // ray missed the far side, and the top, narrowed from its neighbour
+      // 4 m back, stopped a piece short, the ground showing there.)
+      if (mm && d === Infinity)
+        for (const w of [v - 1, v + 1]) {
+          if (w < 0 || w >= P.length) continue;
+          const ex = P[w][0] - P[v][0], ez = P[w][1] - P[v][1], el = Math.hypot(ex, ez);
+          if (el < 0.01) continue;
+          let px = -ez / el, pz = ex / el;
+          if (px * nx + pz * nz < 0) (px = -px), (pz = -pz);
+          if (px * nx + pz * nz < 0.5) continue;
+          d = Math.min(d, outRay(segs, P[v][0], P[v][1], -px, -pz, mm.lvl, ISLE_W));
+        }
+      half.push(d / 2);
+      // (Its middle as high as both sides' kerbs, the far one's from what is drawn there.)
+      let m = NaN, ap = false;
+      if (mm && d < Infinity) {
+        const f = farTop(mm, P[v][0] - nx * (d + 0.05), P[v][1] - nz * (d + 0.05));
+        const t0 = top(v);
+        ap = f === f && Math.abs(f + ROAD_LIFT + 0.03 - t0) >= 0.5;
+        // (Between kerbs half a metre or more apart in height, level with
+        // this one's: a bank from one kerb's top to the other's, on a verge
+        // between a road and one well above it, stood up as a wedge where
+        // the lawn ended, a dark notch at 1867.4,1818.2. An island between
+        // raised roads has its ground raised instead: see islandFill.)
+        m = f === f && !ap ? (t0 + f + ROAD_LIFT + 0.03) / 2 : t0;
+      }
+      mid.push(m);
+      apart.push(ap);
+    }
+    // (The sections within r along the kerb either side of i, cum rising
+    // along it: each against all, with sections a metre apart, a long kerb
+    // took 100 ms and more in one go and held a frame up.)
+    const near = (i: number, r: number, f: (j: number) => void) => {
+      const c = cum[v0 + i];
+      for (let j = i; j >= 0 && c - cum[v0 + j] <= r; j--) f(j);
+      for (let j = i + 1; j < n && cum[v0 + j] - c <= r; j++) f(j);
+    };
+    // (Where it widens past ISLE_W, narrowing away along the kerb.)
+    const W: number[] = half.map((h, i) => {
+      // (A narrow one, its two kerbs all but meeting, all the way across to
+      // the far kerb's outer edge: on to the far side's own edge, it lay
+      // over that kerb, the two fighting to show, a pale wedge in the lawn.)
+      // (But where the far kerb stands half a metre or more above or below
+      // this one, a wall between, across to the far side's edge after all:
+      // the higher side's lawn a level top over the wall, the lower kerb
+      // under it, and no fight. Stopped at the far kerb there, the strip
+      // between the two roads was two bare kerbs and a crack from above.)
+      if (h < 0.75) return apart[i] ? 2 * h : 2 * h - KERB_OUT;
+      if (h < Infinity) return h + 0.05;
+      let best = 0;
+      near(i, ISLE_TAPER, (j) => {
+        if (half[j] < Infinity) best = Math.max(best, Math.min(ISLE_W / 2, half[j]) - Math.abs(cum[v0 + i] - cum[v0 + j]) * ((ISLE_W / 2) / ISLE_TAPER));
+      });
+      return best;
+    });
+    // (Nor past where its cross-section meets its neighbours': round an
+    // island's point they all meet at its middle, and crossed past it the
+    // top folded over itself, leaving the ground showing.)
+    const W0 = W.slice();
+    for (let i = 0; i < n; i++) {
+      if (i % 16 === 15) yield;
+      near(i, 24, (j) => {
+        if (j === i || W[i] <= 0) return;
+        const [ax, az] = out[i], [bx, bz] = out[j];
+        const den = ax * bz - az * bx;
+        if (Math.abs(den) < 1e-6) return;
+        const rx = P[v0 + j][0] - P[v0 + i][0], rz = P[v0 + j][1] - P[v0 + i][1];
+        const t = (rx * bz - rz * bx) / den, u = (rx * az - rz * ax) / den;
+        // (Where both reach: a section far along a bend, crossing this one
+        // only long past its own island's middle, cut it to nothing.)
+        if (t > 0 && u > 0 && t < W[i] && u < W0[j]) W[i] = Math.max(t, KERB_OUT + 0.03);
+      });
+    }
+    const col = new THREE.Color();
+    const put = (x: number, y: number, z: number) => {
+      // (The ground's colour wants only what the bare ground's height leaves
+      // in probe, the same as heightAt leaves: the roads' search in heightAt,
+      // here at every point of every island, was 3 s of a start.)
+      rawHeight(x, z);
+      colorAt(x, z, y, col);
+      const s = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
+      lawn.pos.push(x, y, z);
+      lawn.uv.push(x / DETAIL_M, z / DETAIL_M);
+      lawn.col.push(col.r * s, col.g * s, col.b * s);
+      return lawn.pos.length / 3 - 1;
+    };
+    // (Each cross-section: the kerb's outer edge, the island's middle or
+    // its open edge, the bank's foot. Only on the ground: not where the
+    // ground beside the kerb stands above it, or more than ISLE_DEEP under it.)
+    const secs: (number[] | null)[] = [];
+    for (let i = 0; i < n; i++) {
+      if (i % 8 === 7) yield;
+      const v = v0 + i;
+      const mm = M[i];
+      if (!mm || W[i] <= KERB_OUT + 0.02) {
+        secs.push(null);
+        continue;
+      }
+      const [ox, oz] = out[i];
+      const t0 = top(v);
+      // (Not over a path: it lies on the ground, and would be buried. The
+      // top stops short of it, and falls to it.)
+      const onPath = (x: number, z: number) => {
+        const r = pathIdx.nearest(x, z, 4);
+        return !!r && r.d < PHALF[r.line] + 0.05;
+      };
+      let wi = W[i], cut = false;
+      for (let t = KERB_OUT; t <= wi + ISLE_BANK && !cut; t += 0.1)
+        if (onPath(P[v][0] + ox * t, P[v][1] + oz * t)) (cut = true), (wi = Math.min(wi, t - 0.05));
+      const x0 = P[v][0] + ox * KERB_OUT, z0 = P[v][1] + oz * KERB_OUT;
+      const x1 = P[v][0] + ox * wi, z1 = P[v][1] + oz * wi;
+      // (The ground just past the kerb within ISLE_DEEP under its top: past
+      // that the kerb stands at a drop, a wall's business.)
+      const g = heightAt(x0, z0);
+      if (!(t0 === t0) || g > t0 || g < t0 - ISLE_DEEP || wi <= KERB_OUT + 0.02) {
+        secs.push(null);
+        continue;
+      }
+      {
+        const c = Math.floor(x0) * 65536 + Math.floor(z0);
+        (mainLawnKerb.get(c) ?? mainLawnKerb.set(c, []).get(c)!).push(x0, z0);
+      }
+      const open = !(half[i] < Infinity) || cut;
+      // (On an island closed in by raised roads, on to its ground, raised
+      // to the roads round it (see islandFill), at the kerbs' height over
+      // it: the lawn and the ground one surface, no crease where it ends.)
+      const fill = islandFill(x1, z1, true);
+      const y1 = fill > -Infinity ? fill + 0.06 : !(half[i] < Infinity) ? t0 : lerp(t0, mid[i], Math.min(2, wi / half[i]));
+      // (Level with the kerb's top for its first 15 cm, then on to the
+      // middle: across a narrow island between two roads at different
+      // heights, sloping from the kerb's very edge, it lay 2-3 cm under the
+      // kerb's top a hand's width in. Only where it falls away from this
+      // kerb, and never more than half the way across: level on both sides,
+      // and near a point level to 1 cm short of its edge, the whole rise
+      // from one kerb's top to the other's came in a sliver of lawn, a face
+      // all but upright, a dark wedge at the island's tip.)
+      const fall = y1 < t0 - 0.005;
+      const sh = fall ? KERB_OUT + Math.min(0.15, (wi - KERB_OUT) / 2) : (KERB_OUT + wi) / 2;
+      // (On a filled island none: all its lawn past the kerb from the one
+      // ground. A narrow section's inner end landing on its neighbour's
+      // ledge, level with the kerb, 11 cm over that ground, stood a face
+      // upright between them, a dark sliver at 1800.3,2092.1.)
+      const sec = fill > -Infinity ? [put(x0, t0, z0), put(x1, y1, z1)] : [put(x0, t0, z0), put(P[v][0] + ox * sh, fall ? t0 : (t0 + y1) / 2, P[v][1] + oz * sh), put(x1, y1, z1)];
+      if (open) {
+        const bank = cut ? 0.25 : ISLE_BANK;
+        const x2 = P[v][0] + ox * (wi + bank), z2 = P[v][1] + oz * (wi + bank);
+        sec.push(put(x2, Math.min(y1, heightAt(x2, z2) + 0.02), z2));
+      }
+      secs.push(sec);
+    }
+    // (Points of different sections at one spot, one height, the highest:
+    // round a point, a section's inner end landing on a kerb's top across
+    // the way 11 cm under it stood a face upright between them, a dark
+    // sliver at 1800.3,2092.1. Only sections from kerbs apart: those fanned
+    // from one spot inside a tight bend are faced to each other already, and
+    // lifted to its kerb's top a lawn falling 10 cm in a hand's width there
+    // stood 2 cm under the kerb at 875,2061.5.)
+    const at = new Map<number, number[]>();
+    const of = new Map<number, number>();
+    const key = (i: number, j: number) => i * 1000003 + j;
+    const farKerb = (a: number, b: number) => Math.hypot(lawn.pos[3 * a] - lawn.pos[3 * b], lawn.pos[3 * a + 2] - lawn.pos[3 * b + 2]) > 0.3;
+    for (let si = 0; si < secs.length; si++)
+      for (const q of secs[si] ?? []) {
+        of.set(q, si);
+        const i = Math.round(lawn.pos[3 * q] / 0.05), j = Math.round(lawn.pos[3 * q + 2] / 0.05);
+        let hit: number[] | undefined;
+        for (let di = -1; di <= 1 && !hit; di++)
+          for (let dj = -1; dj <= 1 && !hit; dj++) {
+            for (const r of at.get(key(i + di, j + dj)) ?? [])
+              if (farKerb(secs[of.get(r)!]![0], secs[si]![0]) && Math.hypot(lawn.pos[3 * r] - lawn.pos[3 * q], lawn.pos[3 * r + 2] - lawn.pos[3 * q + 2]) < 0.03) {
+                const y = Math.max(lawn.pos[3 * r + 1], lawn.pos[3 * q + 1]);
+                lawn.pos[3 * r + 1] = lawn.pos[3 * q + 1] = y;
+                hit = [r];
+                break;
+              }
+          }
+        const l = at.get(key(i, j));
+        if (l) l.push(q);
+        else at.set(key(i, j), [q]);
+      }
+    for (let i = 0; i + 1 < n; i++) {
+      const a = secs[i], b = secs[i + 1];
+      if (!a || !b) continue;
+      for (let c = 0; c + 1 < Math.min(a.length, b.length); c++) {
+        faceUp(lawn, a[c], b[c], a[c + 1]);
+        faceUp(lawn, a[c + 1], b[c], b[c + 1]);
+      }
+    }
+  };
+
   const islandTopIn = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, side: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
     const segs = outSegs(w);
     const n = v1 - v0 + 1;
@@ -8526,6 +8752,33 @@ export async function buildPasirRisCourse(
     // its neighbours, cut the sections across the point short and left a
     // slit 2 m long by it at -2116.3,3153.2.)
     const flatL = level.map((l, i) => l && !(Math.abs(fvs[i] + ROAD_LIFT + 0.03 - top(v0 + i)) >= 0.15));
+    // (No kerb along it half a metre or more over or under the kerb across
+    // the way, the user's rules B3 and S1-S6 having nothing to change:
+    // main's lawn, one flat sheet kerb to kerb, or one even slope from one
+    // kerb's top to the other's. See islandTopMain. Only where the far kerb
+    // was found within 30 cm, a median whose two kerbs drifted 16 cm apart
+    // was rebuilt whole, with a hairline down it, at 1142,1927.2; a
+    // crossing island sloping 36 cm across, with hairlines across its
+    // lawn, at -922.3,1750; and an island's point whose ray across found no
+    // kerb, a grey wedge in its lawn, at -2123.9,3149.9.)
+    // (Nor where a kerb with no kerb found across from it stands more than
+    // 0.6 m over the ground within 3 m of it: main's lawn, level with the
+    // kerb, stood out over a lower road there with nothing under it, 0.94 m
+    // over its kerb at 1341.9,578.1, where the user's rule S5 wants none.
+    // See the steep-lawn rule below.)
+    const steepOpen = M.some((mm, i) => {
+      if (!mm || half[i] < Infinity) return false;
+      const v = v0 + i, t0 = top(v), [ox, oz] = out[i];
+      const g = groundY(P[v][0] + ox * KERB_OUT, P[v][1] + oz * KERB_OUT);
+      if (!(t0 === t0) || g > t0 || g < t0 - ISLE_DEEP) return false;
+      for (let d = 0.5; d <= 3; d += 0.5) if (t0 - groundY(P[v][0] + ox * d, P[v][1] + oz * d) > 0.6) return true;
+      return false;
+    });
+    const oneLevel = !apart.some(Boolean) && !steepOpen;
+    if (oneLevel) {
+      yield* islandTopMain(w, lawn, P, cum, v0, v1, mark, top, farTop);
+      return;
+    }
     const cramp0 = cramp.slice();
     for (let i = 0; i < n; i++)
       if (apart[i] && !cramp0[i]) {
@@ -9762,6 +10015,9 @@ export async function buildPasirRisCourse(
           // near the kerb, it was left out beside a slip road 0.8 m over the
           // expressway, its kerb 9 cm from the expressway's, at 1339.2,575.5,
           // where no lawn was laid.)
+          // (But not under main's lawn, on an island with its kerbs at one
+          // level: see mainLawnKerb.)
+          if (underMainLawn(ax, az) && underMainLawn(bx, bz)) continue;
           const v = kerb.pos.length / 3, sd = Math.hypot(ax - x0, az - z0);
           kerb.pos.push(ax, Math.min(fa, ya), az, ax, ya, az, bx, Math.min(fb, yb), bz, bx, yb, bz);
           kerb.uv.push(sd, 0, sd, 0.2, sd + Math.hypot(bx - ax, bz - az), 0, sd + Math.hypot(bx - ax, bz - az), 0.2);
