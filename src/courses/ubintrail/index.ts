@@ -150,7 +150,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     groundMat.bumpMap = tex;
     groundMat.bumpScale = 1.6;
     groundMat.color.setScalar(0.82);
-    D.patchGroundMaterial(groundMat);
+    D.patchGroundMaterial(groundMat, true);
   }
   // Tiles with an obstacle get a finer ground (the washout's humps).
   const fineTile = new Set<string>();
@@ -804,6 +804,10 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   const fineMeshes: THREE.Mesh[] = [];
   {
     const mat = groundMat.clone();
+    // (A clone keeps the textures but not the ground's shader patch, which
+    // blends them by the ground's colour: without it the detail texture
+    // shows raw, as stripes.)
+    if (detailed) D.patchGroundMaterial(mat, true);
     mat.polygonOffset = true;
     mat.polygonOffsetFactor = -1;
     mat.polygonOffsetUnits = -2;
