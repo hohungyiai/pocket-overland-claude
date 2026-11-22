@@ -4,7 +4,7 @@
 // It also plays the part of the HUD: it calls the course's coach a few
 // times a second with the same "stuck" timer main.ts keeps, so the tries
 // at an obstacle and the way round opening happen as they would in play.
-window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeout = 240, place = true, giveUp = 6, reverseAfterStall = 0, winch = false, change = null, look = 5 } = {}) => {
+window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeout = 240, place = true, giveUp = 6, reverseAfterStall = 0, change = null, look = 5 } = {}) => {
   // (change: { at, low, diff, cruise, look }: from point `at` on, that kit,
   // pace and how far ahead it steers for, in metres.)
   const g = window.game;
@@ -78,12 +78,7 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
     let bestStep = steps;
     let lean = 0;
     let stalls = 0;
-    let winched = 0;
-    let refused = 0;
-    let refusedAt = 0;
     let changedAt = 0;
-    // (Pulls made while on a stretch, by its name: what each one is scored for.)
-    const winchedOn = {};
     const lifted = [0, 0, 0, 0, 0];
     for (let idle = 0, seen = steps; ; ) {
       await after(6); // ten times a second
@@ -109,7 +104,7 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
         bestAt = at;
         bestStep = steps;
       }
-      const res = { at, total, seconds: +((steps - t0) / 60).toFixed(1), maxLeanDeg: +lean.toFixed(1), lifted, stalls, winched, winchedOn, refused, says, tips, pos: [+p.x.toFixed(1), +p.y.toFixed(2), +p.z.toFixed(1)] };
+      const res = { at, total, seconds: +((steps - t0) / 60).toFixed(1), maxLeanDeg: +lean.toFixed(1), lifted, stalls, says, tips, pos: [+p.x.toFixed(1), +p.y.toFixed(2), +p.z.toFixed(1)] };
       if (change && !changedAt && at >= change.at) {
         if (change.low !== undefined) g.car.lowRange = change.low;
         if (change.diff !== undefined) g.car.diffLock = change.diff;
@@ -119,27 +114,6 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
       }
       res.changed = changedAt;
       if (at >= total - 2) return { done: true, ...res };
-      // With the winch: stuck, it hooks up to the best tree and keeps
-      // driving, as often as it likes.
-      // (Through the button's path: the course is asked with the kit in,
-      // and the pull scores.)
-      if (winch && mode === 'drive' && stuck > 1 && !g.car.winch && winched < 40) {
-        const tp = g.car.towPoint;
-        const fw = g.car.mesh.position;
-        const tree = g.course.winchAt?.(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z, g.car.winchStalledAt, { low: g.car.lowRange, diff: g.car.diffLock });
-        if (tree) {
-          g.car.winch = tree;
-          const on = g.course.score?.();
-          if (on) winchedOn[on.label] = (winchedOn[on.label] ?? 0) + 1;
-          g.course.penalty?.('winch', p.x, p.z);
-          winched++;
-          stuck = 0;
-          bestStep = steps;
-        } else if (!refusedAt || steps - refusedAt > 60) {
-          refused++;
-          refusedAt = steps;
-        }
-      }
       if (mode === 'drive' && steps - bestStep > giveUp * 60) {
         stalls++;
         if (stalls > reverseAfterStall) return { done: false, stuck: true, ...res };

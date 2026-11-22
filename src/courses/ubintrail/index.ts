@@ -983,39 +983,6 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     }
   }
 
-  // ---------- Marked trees for the winch ----------
-  // A sturdy tree with a bright orange strap round its trunk at bumper
-  // height: the winch hooks onto these and no others.
-  if (trail.anchors.length) {
-    const n = trail.anchors.length;
-    const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.28, 0.4, 6, 7), new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.9 }), n);
-    const crown = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(2.6, 1), new THREE.MeshStandardMaterial({ color: 0x3d6b35, roughness: 0.9, flatShading: true }), n);
-    const strap = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.42, 0.42, 0.3, 10), new THREE.MeshStandardMaterial({ color: 0xff7a1a, roughness: 0.6, emissive: 0x3a1600 }), n);
-    const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-    const dm = new THREE.Object3D();
-    trail.anchors.forEach((a, i) => {
-      const h = heightAt(a.x, a.z);
-      dm.position.set(a.x, h + 2.6, a.z);
-      dm.updateMatrix();
-      trunk.setMatrixAt(i, dm.matrix);
-      dm.position.set(a.x, h + 6.2, a.z);
-      dm.scale.set(1, 0.8, 1);
-      dm.updateMatrix();
-      crown.setMatrixAt(i, dm.matrix);
-      dm.scale.set(1, 1, 1);
-      dm.position.set(a.x, h + 0.8, a.z);
-      dm.updateMatrix();
-      strap.setMatrixAt(i, dm.matrix);
-      world.createCollider(RAPIER.ColliderDesc.cylinder(1.5, 0.35).setTranslation(a.x, h + 1.2, a.z), body);
-    });
-    for (const m of [trunk, crown, strap]) {
-      m.castShadow = true;
-      m.receiveShadow = true;
-      m.computeBoundingSphere();
-      scene.add(m);
-    }
-  }
-
   // ---------- Ubin Jetty and the bumboats ----------
   const jetty = map.piers.find((p) => /public jetty/i.test(p.name)) ?? map.piers[0];
   const boats: THREE.Object3D[] = [];
@@ -1315,18 +1282,6 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     },
     prepareAt: (x, z) => streamer.prepare(x, z, 300),
     retryAt: (x, z) => trail.retryAt(x, z),
-    ...(def.winch
-      ? {
-          winchAt: (x: number, y: number, z: number, fx: number, fz: number, avoid?: { x: number; z: number } | null, kit?: { low: boolean; diff: boolean }) => trail.anchorFor(x, y, z, fx, fz, heightAt, avoid ?? null, kit ?? null),
-          winchHome: (x: number, z: number) => trail.winchHome(x, z),
-          winchGround: (x: number, z: number) => heightAt(x, z) + trail.boulderAt(x, z),
-          penalty: (what: 'winch' | 'retry', x: number, z: number) => trail.penalty(what, x, z),
-          score: () => trail.score(),
-          setBest: (b: Record<string, number>) => {
-            trail.best = { ...b };
-          },
-        }
-      : {}),
     ...(def.ruts
       ? {
           rutAt: (x: number, z: number) => trail.rutAt(x, z),
