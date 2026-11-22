@@ -25,7 +25,7 @@ const only = args.filter((a) => a !== 'all' && !COURSES.includes(a));
 // The kit for an obstacle, from what it needs: the right kit, and each
 // kit with one thing left out. (Cruise: how fast the bot drives at it.)
 const kitName = (k) =>
-  ([k.low && 'low range', k.diff && 'the diff lock', k.cruise >= 9 && 'speed', k.off && Math.abs(k.off) < 4 && 'the high line'].filter(Boolean).join(' and ') || 'no kit') +
+  ([k.low && 'low range', k.diff && 'the diff lock', k.cruise >= 9 && 'speed', k.off && Math.abs(k.off) < 4 && 'its line'].filter(Boolean).join(' and ') || 'no kit') +
   (k.change ? `, then ${[k.change.low === false && k.low && 'low range', k.change.diff === false && k.diff && 'the diff lock'].filter(Boolean).join(' and ')} out` : '');
 const pace = (o) => (o.needs.speed ? 10 : o.kind === 'climb' ? 5 : o.kind === 'washout' ? 3 : 4);
 const kits = (o, room = 150) => {
@@ -48,6 +48,19 @@ const kits = (o, room = 150) => {
     const up = o.camber.dir ?? 1;
     right.off = ((o.camber.edge ?? 1) + 1.5) * up;
     both('on the middle of the track', { ...right, off: 0 });
+  }
+  if (o.rutted) {
+    // Deep ruts: straddle them, wheels on the crown and the bank. In them
+    // the belly drags on the crown, slow or fast.
+    right.off = 0.86;
+    both('down in the ruts', { ...right, off: 0 });
+  }
+  if (o.notch) {
+    // A V-notch: square in its middle. A metre off it a wheel drops to the
+    // crack and the car leans hard on the face, over 35 degrees (or stops),
+    // even with all the kit in.
+    wrong.push(['a metre off the middle of the notch, all kit in', { ...right, low: true, diff: true, off: (right.off ?? 0) + 1, leans: 35 }]);
+    wrong.push(['a metre the other side of the middle of the notch, all kit in', { ...right, low: true, diff: true, off: (right.off ?? 0) - 1, leans: 35 }]);
   }
   for (const w of o.closed ?? []) {
     // Closed in: no way round it on the ground either side, even with the
@@ -97,7 +110,7 @@ const kits = (o, room = 150) => {
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
       // Water never hangs in the air: every edge point of the ford's water
@@ -137,13 +150,15 @@ const kits = (o, room = 150) => {
         for (const [what, kit] of K.wrong) {
           const r = await drive(page, from, to, kit, { timeout: 150, reverseAfterStall: 2 });
           const sw = (await page.evaluate(() => window.__ubinObstacles()))[i];
-          check(`${o.label}: ${what}, the bot does not get through`, !(r.done && sw.done === 'hard'), `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.stalls} stalls, credited: ${sw.done})`);
+          if (kit.leans) check(`${o.label}: ${what}, the car leans over ${kit.leans}° or does not get through`, !(r.done && sw.done === 'hard') || r.maxLeanDeg > kit.leans, `(reached ${r.at}/${r.total}, ${r.seconds}s, lean ${r.maxLeanDeg}°, credited: ${sw.done})`);
+          else check(`${o.label}: ${what}, the bot does not get through`, !(r.done && sw.done === 'hard'), `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.stalls} stalls, credited: ${sw.done})`);
           await page.close();
           page = await fresh();
         }
         const right = await drive(page, from, to, K.right, { timeout: 150 });
         const st = (await page.evaluate(() => window.__ubinObstacles()))[i];
-        check(`${o.label}: with ${kitName(K.right)} the bot gets through on the hard line`, right.done && st.done === 'hard', `(${right.seconds}s, lean ${right.maxLeanDeg}°, ${st.done}) says: ${JSON.stringify(right.says.map((t) => t[1]))}`);
+        const level = info.obs[i].notch ? 25 : 90;
+        check(`${o.label}: with ${kitName(K.right)} the bot gets through on the hard line${level < 90 ? `, never leaning over ${level}°` : ''}`, right.done && st.done === 'hard' && right.maxLeanDeg < level, `(${right.seconds}s, lean ${right.maxLeanDeg}°, ${st.done}) says: ${JSON.stringify(right.says.map((t) => t[1]))}`);
         await page.close();
         page = await fresh();
         if (!o.gate) continue;

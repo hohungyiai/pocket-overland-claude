@@ -67,6 +67,54 @@ export const PUAKA: TrailDef = {
     { kind: 'rocks', label: 'Roots and rock', at: [65, 24], len: 190, needs: { diff: true }, mix: [{ kind: 'rocks', from: 0, to: 190 }, { kind: 'thicket', from: 0, to: 190 }] },
     // (Control, not kit: low range makes it easier, but the brakes get you down too.)
     { kind: 'descent', label: 'Loose descent', at: [480, -102], len: 110, needs: {}, mix: [{ kind: 'descent', from: 0, to: 110 }, { kind: 'thicket', from: 0, to: 110 }] },
+    // Four short lessons on the way round to the hill path, one new kind of
+    // ground each, as Chek Jawa mixes them (boulders either side: no
+    // driving round them on the grass).
+    {
+      kind: 'ditches',
+      label: 'Cross-axle ditches',
+      at: [599, 8],
+      len: 45,
+      needs: { low: true, diff: true },
+      mix: [
+        { kind: 'ditches', from: 0, to: 45, p: { depth: 0.55 } },
+        { kind: 'thicket', from: 0, to: 45 },
+      ],
+    },
+    {
+      kind: 'rutted',
+      label: 'Deep ruts',
+      at: [605, 120],
+      len: 60,
+      needs: {},
+      mix: [
+        { kind: 'rutted', from: 0, to: 60, p: { depth: 0.75 } },
+        { kind: 'thicket', from: 0, to: 60 },
+      ],
+    },
+    {
+      kind: 'notch',
+      label: 'Granite notch',
+      at: [596, 218],
+      len: 45,
+      needs: {},
+      mix: [
+        { kind: 'notch', from: 0, to: 45, p: { bend: 0.5 } },
+        { kind: 'thicket', from: 0, to: 45, p: { w: 5.4 } },
+      ],
+    },
+    {
+      kind: 'falls',
+      label: 'Rock waterfall',
+      at: [566, 313],
+      len: 45,
+      needs: { low: true, diff: true },
+      mix: [
+        { kind: 'climb', from: 0, to: 45, p: { h: 5, up: 15, top: 6 } },
+        { kind: 'falls', from: 4, to: 26, p: { ledgeH: 0.5, every: 3.5 } },
+        { kind: 'thicket', from: 0, to: 45 },
+      ],
+    },
     // (No way round the last climb: the top is the point. The tips say what it needs.)
     {
       kind: 'summit',
@@ -93,14 +141,18 @@ export const PUAKA: TrailDef = {
 /**
  * Super hard: out to Chek Jawa. From the end of the lane on Jalan Durian,
  * the old track east along the south shore to Punai Hut, then through the
- * coastal forest to the Chek Jawa shore. Four long stretches, each mixing
+ * coastal forest to the Chek Jawa shore. Six long stretches, each mixing
  * two or three kinds of ground, so the drive changes under you as you go:
+ * granite first (a boulder garden, a bending V-notch, a rock waterfall);
  * a ford with a soft sand bed straight into a loose, rocky climb and a
  * scree descent; a long climb over loose gravel, rock and ledges; an
- * off-camber bench above the sea with mud ruts along its high side; and
- * mangrove mud running into tidal sand. No signs and no gate. A longer
- * way exists, inland by Jalan Sam Heng and the old track past Petai and
- * Balai quarries, for whoever finds it.
+ * off-camber bench above the sea with mud ruts along its high side;
+ * mangrove mud running into tidal sand; and past Punai Hut the old
+ * laterite track (deep ruts, cross-axle ditches, a slippery red climb).
+ * No signs and no gate. A longer way exists, inland by Jalan Sam Heng and
+ * the old track past Petai and Balai quarries to Punai Hut, for whoever
+ * finds it; the laterite track after it has no way round (it is the way
+ * to Chek Jawa).
  */
 export const CHEK_JAWA: TrailDef = {
   id: 'chekjawa',
@@ -114,6 +166,22 @@ export const CHEK_JAWA: TrailDef = {
     [3934, 18], // the Chek Jawa shore, where the boardwalk starts
   ],
   obstacles: [
+    {
+      // (Granite: a boulder garden, up a bending V-notch, then a rock waterfall.)
+      kind: 'falls',
+      label: 'Granite notch and waterfall',
+      nice: 'Through the boulders, up the notch and the waterfall. Granite all the way.',
+      at: [2641, -100],
+      len: 140,
+      needs: { low: true, diff: true },
+      mix: [
+        { kind: 'thicket', from: 0, to: 140, p: { w: 5.4 } },
+        { kind: 'rocks', from: 0, to: 40, p: { humpH: 0.55 } },
+        { kind: 'notch', from: 36, to: 86, p: { bend: 0.45, ends: 12 } },
+        { kind: 'climb', from: 70, to: 140, p: { h: 6, up: 28, top: 14 } },
+        { kind: 'falls', from: 78, to: 112, p: { ledgeH: 0.5, every: 3.5 } },
+      ],
+    },
     {
       kind: 'ford',
       label: 'Valley ford and loose climb',
@@ -189,9 +257,25 @@ export const CHEK_JAWA: TrailDef = {
       ],
       then: { at: 100, off: ['low'], say: 'Firm sand ahead: LOW off now, and build up speed for the dune.' },
     },
+    {
+      // (Past Punai Hut, the old laterite track: deep ruts, cross-axle
+      // ditches, then a slippery red climb.)
+      kind: 'ditches',
+      label: 'Laterite ruts and ditches',
+      nice: 'Over the ruts, across the ditches and up the red clay. Chek Jawa is close.',
+      at: [3698, -2],
+      len: 240,
+      needs: { low: true, diff: true },
+      mix: [
+        { kind: 'thicket', from: 0, to: 240, p: { w: 4.2 } },
+        { kind: 'rutted', from: 0, to: 80, p: { depth: 0.85 } },
+        { kind: 'ditches', from: 78, to: 112, p: { depth: 0.6 } },
+        { kind: 'climb', from: 118, to: 240, p: { h: 7, up: 36, top: 25, wet: 1 } },
+      ],
+    },
   ],
   wayRound: 'hidden',
-  detour: { waypoints: [[2586, -123], [2122, -210], [2636, -502], [3258, -240], [3688, -14]], skips: [0, 1, 2, 3] },
+  detour: { waypoints: [[2586, -123], [2122, -210], [2636, -502], [3258, -240], [3688, -14]], skips: [0, 1, 2, 3, 4] },
   end: { label: 'Chek Jawa', sign: ['Chek Jawa', 'Wetlands'] },
   startSign: ['Chek Jawa', 'Old track → 2 km'],
   hardWay: 'Chek Jawa, the hard way. The tide is out and the flats are yours.',
