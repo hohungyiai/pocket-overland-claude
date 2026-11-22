@@ -25,7 +25,7 @@ export const KETAM: TrailDef = {
   wayRound: 'gate',
   end: { label: 'Endut Senin camp site', sign: ['Endut Senin', 'Campsite'], camp: { id: 'ubin-endut-senin', label: 'Endut Senin camp site' } },
   startSign: ['Pulau Ubin', 'Ketam Trail → 7 km'],
-  clean: 'Clean run: every obstacle on the hard line. Make camp when you are ready.',
+  hardWay: 'Endut Senin, the hard way all through. Make camp when you are ready.',
   finish: 'Endut Senin camp. Make camp when you are ready.',
 };
 
@@ -86,7 +86,7 @@ export const PUAKA: TrailDef = {
   roundKit: { low: true },
   end: { label: 'Puaka Hill', sign: ['Puaka Hill', 'Lookout'] },
   startSign: ['Puaka Hill', 'Trail → 2 km'],
-  clean: 'Clean run over Puaka Hill: every obstacle on the hard line. The whole island is below you.',
+  hardWay: 'Over Puaka Hill the hard way. The whole island is below you.',
   finish: 'The top of Puaka Hill. The whole island is below you.',
 };
 
@@ -194,8 +194,7 @@ export const CHEK_JAWA: TrailDef = {
   detour: { waypoints: [[2586, -123], [2122, -210], [2636, -502], [3258, -240], [3688, -14]], skips: [0, 1, 2, 3] },
   end: { label: 'Chek Jawa', sign: ['Chek Jawa', 'Wetlands'] },
   startSign: ['Chek Jawa', 'Old track → 2 km'],
-  clean: 'Chek Jawa, the hard way: every obstacle on the hard line. The tide is out and the flats are yours.',
+  hardWay: 'Chek Jawa, the hard way. The tide is out and the flats are yours.',
   finish: 'Chek Jawa. The tide is out and the flats are yours.',
-  winch: true,
   ruts: true,
 };
