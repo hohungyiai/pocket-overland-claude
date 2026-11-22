@@ -122,7 +122,7 @@ export const CHEK_JAWA: TrailDef = {
       len: 280,
       needs: { low: true },
       // (Down a rock step into the valley, looked at from the rim.)
-      drop: { at: 16, h: 1, until: 130, back: 30 },
+      drop: { at: 16, h: 1.3, until: 130, back: 30 },
       mix: [
         // (Down in a narrow valley: the ford at the bottom, the loose climb up
         // its floor, a boggy ditch at the foot of each wall, boulders on the rim.)

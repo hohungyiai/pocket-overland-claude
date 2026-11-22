@@ -83,7 +83,7 @@ export interface Change {
 
 /** Something to see on an obstacle's ground (no collider: the ground's own shape is what the car feels). */
 export interface Prop {
-  kind: 'rock' | 'pebble' | 'ledge' | 'root' | 'puddle' | 'boulder' | 'anchor' | 'post' | 'lip';
+  kind: 'rock' | 'pebble' | 'ledge' | 'root' | 'puddle' | 'boulder' | 'anchor' | 'post';
   x: number;
   z: number;
   /** Heading of its long side (radians, like the car's yaw). */
@@ -882,6 +882,31 @@ export class UbinTrail {
     const back = smoothstep(D.until - D.back, D.until, s);
     return -D.h * down * (1 - back) * (1 - smoothstep(6, 14, d));
   }
+  /**
+   * A drop's rock lip, across the track where a car can be (on a camber,
+   * its bench from the slick edge up to the bank), every 0.2 m: where its
+   * top sits (just above the face), where it meets the ground behind, the
+   * foot of its face below, and the upper ground its top follows.
+   */
+  lipLine(o: Obstacle): { off: number; back: XZ; top: XZ; upper: XZ; foot: XZ; lower: XZ }[] {
+    const D = o.drop;
+    if (!D) return [];
+    const camber = o.parts.find((q) => q.kind === 'camber');
+    const dir = camber ? (camber.p.dir ?? 1) : 1;
+    const [lo, hi] = camber ? [(camber.p.edge ?? 1) - 2.2, (camber.p.edge ?? 1) + (camber.p.width ?? 3.2) + 0.2] : [-2.9, 2.9];
+    const pt = (s: number, off: number): XZ => {
+      const a = o.line.at(s);
+      return [a.x + a.tz * off, a.z - a.tx * off];
+    };
+    const out: { off: number; back: XZ; top: XZ; upper: XZ; foot: XZ; lower: XZ }[] = [];
+    const n = Math.round((hi - lo) / 0.2);
+    for (let k = 0; k <= n; k++) {
+      const off = dir * (lo + ((hi - lo) * k) / n);
+      out.push({ off, back: pt(D.at - 1.6, off), top: pt(D.at - 0.05, off), upper: pt(D.at - 0.6, off), foot: pt(D.at + 0.2, off), lower: pt(D.at + 0.6, off) });
+    }
+    return out;
+  }
+
   /** Where to stop and look before a drop: metres into the stretch (it may start before it). */
   static readonly LOOK = [-12, -3];
 
@@ -1035,22 +1060,9 @@ export class UbinTrail {
     const out: Prop[] = [];
     for (const o of this.obstacles) {
       if (o.drop) {
-        // The drop's rock lip, its top flush with the ground above it, and
-        // the look spot's post on the high side.
+        // The look spot's post on the high side (the drop's rock lip is one
+        // piece of its own: see lipLine()).
         const D = o.drop;
-        // (In pieces across, each flush with the ground where it sits: on a
-        // camber the ground falls away across the track.)
-        // (Across the track only, where the car can be: on a camber, its
-        // bench from the slick edge up to the bank.)
-        const a = o.line.at(D.at - 0.7);
-        const camber0 = o.parts.find((q) => q.kind === 'camber');
-        const dir = camber0 ? (camber0.p.dir ?? 1) : 1;
-        const [lo, hi] = camber0 ? [(camber0.p.edge ?? 1) - 2.2, (camber0.p.edge ?? 1) + (camber0.p.width ?? 3.2) + 0.2] : [-2.9, 2.9];
-        const n = Math.ceil((hi - lo) / 1.4);
-        for (let k = 0; k < n; k++) {
-          const off = dir * (lo + 0.7 + ((hi - lo - 1.4) * k) / Math.max(1, n - 1));
-          out.push({ kind: 'lip', x: a.x + a.tz * off, z: a.z - a.tx * off, yaw: Math.atan2(-a.tz, a.tx), sx: 1.5, sy: D.h + 0.45, sz: 1.4 });
-        }
         const camber = o.parts.find((q) => q.kind === 'camber');
         const side = camber ? (camber.p.dir ?? 1) : 1;
         const lp = this.route.at(o.s0 + D.at + UbinTrail.LOOK[1] - 1);

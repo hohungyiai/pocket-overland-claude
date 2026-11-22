@@ -781,6 +781,35 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     scene.add(ford);
   }
 
+  // ---------- The drops' rock lips (built with the props below) ----------
+  // Heights along each lip: its top on the ground above the drop, a few
+  // centimetres proud and uneven (a rough rock edge), tapering into the
+  // ground over its last 1.4 m at either end; its back on the ground; its
+  // foot just under the ground below.
+  type LipPoint = ReturnType<UbinTrail['lipLine']>[number] & { yBack: number; yTop: number; yUpper: number; yFoot: number; yLower: number };
+  const lips: LipPoint[][] = trail.obstacles
+    .filter((o) => o.drop)
+    .map((o) => {
+      const line = trail.lipLine(o);
+      const n = line.length;
+      return line.map((q, k) => {
+        const yUpper = heightAt(q.upper[0], q.upper[1]);
+        const yLower = heightAt(q.lower[0], q.lower[1]);
+        const end = Math.min(k, n - 1 - k) * 0.2; // metres from the nearer end
+        const t = Math.min(1, end / 1.4);
+        const rough = 0.09 + 0.045 * Math.sin(q.off * 2.3 + o.s0) + 0.03 * Math.sin(q.off * 5.1 + 1.3 * o.s0);
+        const ground = heightAt(q.top[0], q.top[1]);
+        return {
+          ...q,
+          yUpper,
+          yLower,
+          yBack: heightAt(q.back[0], q.back[1]),
+          yTop: ground + (yUpper + rough - ground) * t,
+          yFoot: Math.min(heightAt(q.foot[0], q.foot[1]), yLower) - 0.08,
+        };
+      });
+    });
+
   // ---------- The rough ground, to see ----------
   // Rocks on the humps, slabs at the ledges, roots across the rocky track,
   // loose stones on the gravel and scree, puddles in the mud holes. For
@@ -807,15 +836,11 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       boulder: { geo: rockGeo, mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.1, 0.1, 0.24], shadow: true },
       pebble: { geo: new THREE.IcosahedronGeometry(1, 0), mat: new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }), hsl: [0.07, 0.1, 0.24], shadow: false },
       ledge: { geo: (() => { const g = new THREE.BoxGeometry(1, 1, 1, 3, 1, 1); const pos = g.attributes.position; const r = mulberry32(SEED + 78); for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0) pos.setY(i, pos.getY(i) - 0.12 * r()); g.computeVertexNormals(); return g; })(), mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.07, 0.22], shadow: true },
-      lip: null as unknown as { geo: THREE.BufferGeometry; mat: THREE.Material; hsl: number[]; shadow: boolean },
       root: { geo: new THREE.CylinderGeometry(1, 1, 1, 6).rotateX(Math.PI / 2), mat: new THREE.MeshStandardMaterial({ roughness: 0.9 }), hsl: [0.07, 0.4, 0.13], shadow: true },
       // (A look spot's post: weathered wood, a yellow band at the top.)
       post: { geo: merge([tint(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), 0x6b5236), tint(new THREE.BoxGeometry(1.15, 0.16, 1.15).translate(0, 0.86, 0), 0xe8c020)]), mat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }), hsl: [0, 0, 0.93], shadow: true },
       puddle: { geo: new THREE.CircleGeometry(0.5, 14).rotateX(-Math.PI / 2), mat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.9 }), hsl: [0.09, 0.3, 0.11], shadow: false },
     };
-    // (A drop's lip: a ledge you can see, and solid: its face is a wall
-    // no wheel climbs back up.)
-    kinds.lip = { ...kinds.ledge, hsl: [0.08, 0.06, 0.2] };
     const dummy = new THREE.Object3D();
     const c = new THREE.Color();
     const rnd = mulberry32(SEED + 79);
@@ -840,12 +865,6 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
           dummy.position.set(p.x, h + p.sy * 0.15, p.z);
           dummy.rotation.set(rnd() * 3, p.yaw, rnd() * 3);
           dummy.scale.set(p.sx, p.sy, p.sz);
-        } else if (name === 'lip') {
-          // Its top flush with the ground above the drop.
-          dummy.position.set(p.x, h - p.sy / 2 + 0.03, p.z);
-          dummy.scale.set(p.sz, p.sy, p.sx);
-          const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), p.yaw);
-          world.createCollider(RAPIER.ColliderDesc.cuboid(p.sz / 2, p.sy / 2, p.sx / 2).setTranslation(p.x, h - p.sy / 2 + 0.03, p.z).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }).setFriction(0.9), boulderBody);
         } else if (name === 'ledge') {
           // Its top flush with the step above.
           dummy.position.set(p.x, h - p.sy / 2 + 0.03, p.z);
@@ -900,6 +919,64 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       im.receiveShadow = true;
       im.computeBoundingSphere();
       scene.add(im);
+    }
+    // Each drop's rock lip: one piece of rock across the track, its top
+    // following the ground above the drop with a rough, uneven edge, its
+    // face down to the ground below, and tapering into the ground at
+    // either end. Solid: the face is a wall no wheel climbs back up.
+    for (const L of lips) {
+      const n = L.length;
+      const pos: number[] = [];
+      const col: number[] = [];
+      const base = new THREE.Color().setHSL(0.08, 0.08, 0.22);
+      const tc = new THREE.Color();
+      const push = (x: number, y: number, z: number, k: number) => {
+        pos.push(x, y, z);
+        tc.copy(base).offsetHSL(0, 0, 0.05 * Math.sin(k * 1.7) + 0.03 * Math.sin(k * 4.3));
+        col.push(tc.r, tc.g, tc.b);
+      };
+      const idx: number[] = [];
+      L.forEach((q, k) => {
+        push(q.back[0], q.yBack, q.back[1], k);
+        push(q.top[0], q.yTop, q.top[1], k);
+        push(q.foot[0], q.yFoot, q.foot[1], k);
+        if (k < n - 1) {
+          const a = k * 3;
+          const b = a + 3;
+          // (Wound to face up and out, whichever way the drop runs.)
+          idx.push(a, b, a + 1, b, b + 1, a + 1, a + 1, b + 1, a + 2, b + 1, b + 2, a + 2);
+        }
+      });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      g.setIndex(idx);
+      const ng = g.toNonIndexed();
+      ng.computeVertexNormals();
+      const mesh = new THREE.Mesh(ng, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true, side: THREE.DoubleSide }));
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      // (The wall itself: narrow blocks, each no higher than the lowest
+      // of the lip's top over its width, so none stands above the rock.)
+      for (let k = 0; k + 3 < n; k += 3) {
+        const span = L.slice(k, k + 4);
+        const top = Math.min(...span.map((q) => q.yUpper));
+        const a = span[0];
+        const b = span[span.length - 1];
+        const cx = (a.upper[0] + b.upper[0]) / 2;
+        const cz = (a.upper[1] + b.upper[1]) / 2;
+        const ax = b.upper[0] - a.upper[0];
+        const az = b.upper[1] - a.upper[1];
+        const yaw = Math.atan2(-az, ax);
+        const hh = (top - Math.min(...span.map((q) => q.yLower)) + 0.3) / 2;
+        const qq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+        // (Across: the span's width; along the track: from the back edge to the face.)
+        // (Centred 0.15 m behind the upper point: 1.4 m deep, its face where the lip's is.)
+        const bx = (a.upper[0] - a.top[0]) / 0.55;
+        const bz = (a.upper[1] - a.top[1]) / 0.55;
+        world.createCollider(RAPIER.ColliderDesc.cuboid(Math.hypot(ax, az) / 2 + 0.05, hh, 0.7).setTranslation(cx + bx * 0.15, top - hh, cz + bz * 0.15).setRotation({ x: qq.x, y: qq.y, z: qq.z, w: qq.w }).setFriction(0.9), boulderBody);
+      }
     }
   }
 
@@ -1280,6 +1357,8 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     },
     /** For the checks: the water's edge points and each puddle's level. */
     water: () => ({ edges: waterEdges, puddles: puddleRims }),
+    /** For the checks: each drop's rock lip as built. */
+    lips: () => lips,
     coach(c) {
       const out = trail.coach(c);
       syncGates();

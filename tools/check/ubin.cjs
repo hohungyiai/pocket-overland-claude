@@ -240,6 +240,29 @@ const kits = (o, room = 150) => {
         // the diff lock in does not get back up it; the look spot before it
         // is flat and wide (under 8 degrees along and across, 3 m either
         // side of the line), and the coach speaks there.
+        // Each lip is one piece of rock on the ground: its back edge on the
+        // ground (within 5 cm), its foot never more than 0.1 m above the
+        // ground below the face, its top never under the ground and never
+        // stepping more than 0.15 m from one point to the next (every 0.2 m
+        // across), and its ends tapered into the ground (within 5 cm).
+        const lp = await page.evaluate(() => {
+          const c = window.game.course;
+          const H = (p) => c.heightAt(p[0], p[1]);
+          return c.lips().map((L) => {
+            let back = 0, foot = -Infinity, under = 0, step = 0, ends = 0;
+            L.forEach((q, k) => {
+              back = Math.max(back, Math.abs(q.yBack - H(q.back)));
+              foot = Math.max(foot, q.yFoot - H(q.foot));
+              under = Math.max(under, H(q.top) - q.yTop);
+              // (How far it stands above the ground, point to point: the
+              // ground's own slope across a camber or a valley's edge is not a step.)
+              if (k) step = Math.max(step, Math.abs(q.yTop - H(q.top) - (L[k - 1].yTop - H(L[k - 1].top))));
+            });
+            ends = Math.max(Math.abs(L[0].yTop - H(L[0].top)), Math.abs(L[L.length - 1].yTop - H(L[L.length - 1].top)));
+            return { n: L.length, back: +back.toFixed(3), foot: +foot.toFixed(3), under: +under.toFixed(3), step: +step.toFixed(3), ends: +ends.toFixed(3) };
+          });
+        });
+        check('every drop has one rock lip on the ground: back and ends flush, foot buried, its height over the ground never stepping over 0.15 m', lp.length > 0 && lp.every((l) => l.back <= 0.05 && l.foot <= 0.1 && l.under <= 0.02 && l.step <= 0.15 && l.ends <= 0.05), `(${JSON.stringify(lp)})`);
         const ds = await page.evaluate(() => window.game.course.trail.obstacles.map((o, i) => (o.drop ? { i, label: o.label } : null)).filter(Boolean));
         for (const { i, label } of ds) {
           await page.close();
