@@ -3254,6 +3254,28 @@ export async function buildPasirRisCourse(
     const k1 = Math.min(Math.round((hi - v0) / step), Math.floor((t1 - v0) / step));
     return k1 > k0 ? [k0, k1] : null;
   };
+  // The ground's height at each point of the STEP m lattice, worked out
+  // once and shared: the ground's mesh is drawn on these points, and the
+  // paths, walls and island edges that sit on the ground as drawn read
+  // them again (see groundY). In 64 x 64 blocks of the lattice, the 256
+  // newest kept. (Each was worked out twice, once for the mesh and once
+  // for what stands on it: about a second of the trial map's start.)
+  const LAT_B = 64;
+  const latB = new Map<number, Float64Array>();
+  const latAt = (i: number, j: number) => {
+    const bi = Math.floor(i / LAT_B), bj = Math.floor(j / LAT_B);
+    const k = bi * 100003 + bj;
+    let b = latB.get(k);
+    if (!b) {
+      b = new Float64Array(LAT_B * LAT_B).fill(NaN);
+      latB.set(k, b);
+      if (latB.size > 256) latB.delete(latB.keys().next().value!);
+    }
+    const q = (j - bj * LAT_B) * LAT_B + (i - bi * LAT_B);
+    let v = b[q];
+    if (v !== v) b[q] = v = heightAt(WB.minX + i * STEP, WB.minZ + j * STEP);
+    return v;
+  };
   type Patch = { w: number; h: number; pos: Float32Array; clr: Float32Array; uvs: Float32Array; idx: Uint32Array } | null;
   const patchCache = new Map<string, Patch>();
   const gridIndex = new Map<string, Uint32Array>();
@@ -3292,7 +3314,7 @@ export async function buildPasirRisCourse(
         for (let i = 0; i < w; i++) {
           const x = WB.minX + (cx[0] + i) * step;
           const z = WB.minZ + (cz[0] + j) * step;
-          const y = heightAt(x, z);
+          const y = step === STEP ? latAt(cx[0] + i, cz[0] + j) : heightAt(x, z);
           top = Math.max(top, y);
           const q = j * w + i;
           pos.set([x, y, z], q * 3);
@@ -11038,13 +11060,6 @@ export async function buildPasirRisCourse(
   // heightAt, each square cut corner to corner the same way. (On the
   // smooth ground below it, a path on a bank or a hump sinks under the
   // grass between the mesh's points, and shows only in shards.)
-  const latY = new Map<number, number>();
-  const latAt = (i: number, j: number) => {
-    const k = i * 100003 + j;
-    let v = latY.get(k);
-    if (v === undefined) latY.set(k, (v = heightAt(WB.minX + i * STEP, WB.minZ + j * STEP)));
-    return v;
-  };
   const groundY = (x: number, z: number) => {
     const fx = (x - WB.minX) / STEP, fz = (z - WB.minZ) / STEP;
     const i = Math.floor(fx), j = Math.floor(fz);
