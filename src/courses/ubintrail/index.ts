@@ -932,13 +932,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       const tc = new THREE.Color();
       const push = (x: number, y: number, z: number, k: number) => {
         pos.push(x, y, z);
-        tc.copy(base).offsetHSL(0, 0, 0.05 * Math.sin(k * 1.7) + 0.03 * Math.sin(k * 4.3));
+        // (Patchy, not striped: slow changes along it.)
+        tc.copy(base).offsetHSL(0, 0, 0.035 * Math.sin(k * 0.37) + 0.02 * Math.sin(k * 0.91 + 2));
         col.push(tc.r, tc.g, tc.b);
       };
       const idx: number[] = [];
       L.forEach((q, k) => {
         push(q.back[0], q.yBack, q.back[1], k);
-        push(q.top[0], q.yTop, q.top[1], k);
+        // (Its edge not ruler-straight: in and out a little along the track.)
+        const jig = 0.12 * Math.sin(k * 0.8) + 0.06 * Math.sin(k * 2.1 + 1);
+        push(q.top[0] + (q.upper[0] - q.top[0]) * jig, q.yTop, q.top[1] + (q.upper[1] - q.top[1]) * jig, k);
         push(q.foot[0], q.yFoot, q.foot[1], k);
         if (k < n - 1) {
           const a = k * 3;
