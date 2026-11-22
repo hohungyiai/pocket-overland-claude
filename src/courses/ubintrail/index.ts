@@ -1168,8 +1168,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   let rutShown = 0;
   const RUT_MAX = 4000;
   const rutMarks = new THREE.InstancedMesh(
-    new THREE.PlaneGeometry(UbinTrail.RUT_CELL, UbinTrail.RUT_CELL).rotateX(-Math.PI / 2),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, transparent: true, opacity: 0.85, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }),
+    // (A dug-in patch: a dark, wet hollow, round, a little bigger than its cell so they run together.)
+    new THREE.CircleGeometry(UbinTrail.RUT_CELL * 0.75, 10).rotateX(-Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, transparent: true, opacity: 0.8, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }),
     RUT_MAX,
   );
   rutMarks.count = 0;
@@ -1184,16 +1185,27 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const up = new THREE.Vector3(0, 1, 0);
     const nrm = new THREE.Vector3();
     const col = new THREE.Color();
-    const wet = new THREE.Color(0x2b2118);
-    const dry = new THREE.Color(0x5a4630);
+    const wet = new THREE.Color(0x140e08);
+    const dry = new THREE.Color(0x33261a);
     let n = 0;
+    // (On the ground as drawn: a metre between its points on the trail, so
+    // between them it is flatter than the bumps it was made from.)
+    const drawn = (x: number, z: number) => {
+      const x0 = Math.floor(x);
+      const z0 = Math.floor(z);
+      const fx = x - x0;
+      const fz = z - z0;
+      const a = heightAt(x0, z0) * (1 - fx) + heightAt(x0 + 1, z0) * fx;
+      const b = heightAt(x0, z0 + 1) * (1 - fx) + heightAt(x0 + 1, z0 + 1) * fx;
+      return a * (1 - fz) + b * fz;
+    };
     for (const c of cells) {
       if (n >= RUT_MAX || c.w < 0.12) continue;
-      const h = heightAt(c.x, c.z);
-      nrm.set(heightAt(c.x - 0.5, c.z) - heightAt(c.x + 0.5, c.z), 1, heightAt(c.x, c.z - 0.5) - heightAt(c.x, c.z + 0.5)).normalize();
+      const h = Math.max(drawn(c.x, c.z), heightAt(c.x, c.z));
+      nrm.set(drawn(c.x - 0.5, c.z) - drawn(c.x + 0.5, c.z), 1, drawn(c.x, c.z - 0.5) - drawn(c.x, c.z + 0.5)).normalize();
       q.setFromUnitVectors(up, nrm);
       const sc = 0.7 + 0.3 * c.w;
-      m.compose(new THREE.Vector3(c.x, h + 0.03, c.z), q, new THREE.Vector3(sc, 1, sc));
+      m.compose(new THREE.Vector3(c.x, h + 0.06, c.z), q, new THREE.Vector3(sc, 1, sc));
       rutMarks.setMatrixAt(n, m);
       rutMarks.setColorAt(n, col.copy(dry).lerp(wet, c.w));
       n++;

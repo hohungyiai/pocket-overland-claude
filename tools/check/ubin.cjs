@@ -150,8 +150,10 @@ const kits = (o, room = 150) => {
             const sc = await page.evaluate(() => window.game.course.score?.() ?? null);
             // (Every pull scored, as from the button.)
             // (Pulls made before it reached this stretch count against the one before.)
-            const scored = !r.winched || !sc || sc.label !== o.label || sc.points >= r.winched * 5;
-            check(`${o.label}: ${what}, even winching whenever stuck the bot does not get through`, !(r.done && sw.done === 'hard') && scored, `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.winched} winch pulls, ${r.refused} times no tree offered, score ${JSON.stringify(sc)}, credited: ${sw.done})`);
+            // (Pulls off every stretch, on the open trail between them, cost nothing.)
+            const mine = r.winchedOn?.[o.label] ?? 0;
+            const scored = !mine || !sc || sc.label !== o.label || sc.points >= mine * 5;
+            check(`${o.label}: ${what}, even winching whenever stuck the bot does not get through`, !(r.done && sw.done === 'hard') && scored, `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.winched} winch pulls (on stretches: ${JSON.stringify(r.winchedOn)}), ${r.refused} times no tree offered, score ${JSON.stringify(sc)}, credited: ${sw.done})`);
             await page.close();
             page = await fresh();
           }
@@ -393,7 +395,9 @@ const kits = (o, room = 150) => {
             for (let i = 0; i < t.obstacles.length; i++) {
               const o = t.obstacles[i];
               const len = o.s1 - o.s0;
-              const w = obs[i].closed.length ? Math.max(...obs[i].closed.filter((x) => x < 6)) : 3;
+              // (The narrow closures only: a wide thicket of rock spurs is not the track's edge.)
+              const narrow = obs[i].closed.filter((x) => x < 6);
+              const w = narrow.length ? Math.max(...narrow) : 3;
               const cam = obs[i].camber;
               // Off each side a few metres (a camber: only down its bank), at three places.
               const sides = cam ? [-(cam.dir ?? 1) * 5, -(cam.dir ?? 1) * 9] : [w + 1, -(w + 1), w + 4, -(w + 4)];

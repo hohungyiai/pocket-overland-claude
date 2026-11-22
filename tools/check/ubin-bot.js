@@ -82,6 +82,8 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
     let refused = 0;
     let refusedAt = 0;
     let changedAt = 0;
+    // (Pulls made while on a stretch, by its name: what each one is scored for.)
+    const winchedOn = {};
     const lifted = [0, 0, 0, 0, 0];
     for (let idle = 0, seen = steps; ; ) {
       await after(6); // ten times a second
@@ -107,7 +109,7 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
         bestAt = at;
         bestStep = steps;
       }
-      const res = { at, total, seconds: +((steps - t0) / 60).toFixed(1), maxLeanDeg: +lean.toFixed(1), lifted, stalls, winched, refused, says, tips, pos: [+p.x.toFixed(1), +p.y.toFixed(2), +p.z.toFixed(1)] };
+      const res = { at, total, seconds: +((steps - t0) / 60).toFixed(1), maxLeanDeg: +lean.toFixed(1), lifted, stalls, winched, winchedOn, refused, says, tips, pos: [+p.x.toFixed(1), +p.y.toFixed(2), +p.z.toFixed(1)] };
       if (change && !changedAt && at >= change.at) {
         if (change.low !== undefined) g.car.lowRange = change.low;
         if (change.diff !== undefined) g.car.diffLock = change.diff;
@@ -127,6 +129,8 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
         const tree = g.course.winchAt?.(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z, g.car.winchStalledAt, { low: g.car.lowRange, diff: g.car.diffLock });
         if (tree) {
           g.car.winch = tree;
+          const on = g.course.score?.();
+          if (on) winchedOn[on.label] = (winchedOn[on.label] ?? 0) + 1;
           g.course.penalty?.('winch', p.x, p.z);
           winched++;
           stuck = 0;

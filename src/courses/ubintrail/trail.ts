@@ -1040,9 +1040,15 @@ export class UbinTrail {
         const D = o.drop;
         // (In pieces across, each flush with the ground where it sits: on a
         // camber the ground falls away across the track.)
+        // (Across the track only, where the car can be: on a camber, its
+        // bench from the slick edge up to the bank.)
         const a = o.line.at(D.at - 0.7);
-        for (let k = -3.5; k <= 3.5; k++) {
-          const off = k * 1.4;
+        const camber0 = o.parts.find((q) => q.kind === 'camber');
+        const dir = camber0 ? (camber0.p.dir ?? 1) : 1;
+        const [lo, hi] = camber0 ? [(camber0.p.edge ?? 1) - 2.2, (camber0.p.edge ?? 1) + (camber0.p.width ?? 3.2) + 0.2] : [-2.9, 2.9];
+        const n = Math.ceil((hi - lo) / 1.4);
+        for (let k = 0; k < n; k++) {
+          const off = dir * (lo + 0.7 + ((hi - lo - 1.4) * k) / Math.max(1, n - 1));
           out.push({ kind: 'lip', x: a.x + a.tz * off, z: a.z - a.tx * off, yaw: Math.atan2(-a.tz, a.tx), sx: 1.5, sy: D.h + 0.45, sz: 1.4 });
         }
         const camber = o.parts.find((q) => q.kind === 'camber');
