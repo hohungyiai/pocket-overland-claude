@@ -47,6 +47,13 @@ const TUNING = {
   winchSpeed: 1,
   winchHelp: 3,
   winchRide: 0.92,
+  // Ruts: power on and the car under rutSlip m/s on soft ground, the
+  // wheels spin and wear it at up to rutDig a second; fully worn ground
+  // keeps 1 - rutGrip of its grip and sinks rutSink more.
+  rutSlip: 1.5,
+  rutDig: 0.3,
+  rutGrip: 0.45,
+  rutSink: 0.15,
 };
 
 const DUST = new THREE.Color(0x8a7458);
@@ -388,15 +395,25 @@ export class Vehicle {
         const cp = c.wheelContactPoint(i);
         if (cp) {
           const s = this.course.surfaceAt(cp.x, cp.z, cp.y);
-          c.setWheelFrictionSlip(i, s.grip);
+          // Soft ground remembers: where wheels have spun it is dug in,
+          // slicker and softer (trails with ruts; never a road).
+          const soft = s.offroad && (s.sink ?? 0) > 0;
+          const worn = soft ? (this.course.rutAt?.(cp.x, cp.z) ?? 0) : 0;
+          const grip = s.grip * (1 - TUNING.rutGrip * worn);
+          c.setWheelFrictionSlip(i, grip);
           if (!worst || s.drag > worst.drag) worst = s;
           c.setWheelBrake(i, brake + s.drag);
           if (s.offroad) {
             off[i] = true;
             if (i < 2) rough = Math.max(rough, s.rough ?? 0);
             const load = Math.max(0, c.wheelSuspensionForce(i) ?? 0);
-            grips[i] = s.grip * load;
-            sink += (s.sink ?? 0) * load;
+            grips[i] = grip * load;
+            sink += ((s.sink ?? 0) + TUNING.rutSink * worn) * load;
+            // Power on and going nowhere on soft ground, the wheels spin
+            // and dig in.
+            if (soft && this.course.dig && Math.abs(input.throttle) > 0.2 && absV < TUNING.rutSlip) {
+              this.course.dig(cp.x, cp.z, dt * TUNING.rutDig * Math.abs(input.throttle) * (1 - absV / TUNING.rutSlip));
+            }
             // (v-squared above the surface's wadeFrom speed; the ford's is 0.)
             if (s.wade) wade += (s.wade / 4) * Math.max(0, sp0 - (s.wadeFrom ?? 0)) ** 2;
           }
@@ -533,6 +550,7 @@ export class Vehicle {
     }
 
     c.updateVehicle(dt);
+
 
     // Hill-hold. The wheel brakes only slow the car in proportion to its
     // speed, so off the pedals on a hill it crept downhill at half a metre

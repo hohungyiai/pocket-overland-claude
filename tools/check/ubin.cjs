@@ -220,6 +220,64 @@ const kits = (o, room = 150) => {
       // The winch (trails with marked trees): slid off any stretch into the
       // bog or down the bank, stuck, the winch gets the car back onto the
       // track, and it costs points on the clean-run score.
+      if (want('ruts') && (await page.evaluate(() => !!window.game.course.dig))) {
+        // Ruts: spinning in the mangrove mud with no kit digs the ground
+        // under the wheels (slicker), not a car's width beside them; leaving
+        // it be, Try again smooths it back.
+        await page.close();
+        page = await fresh();
+        const r = await page.evaluate(async () => {
+          const g = window.game;
+          const t = g.course.trail;
+          const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+          const was = g.sim.fast;
+          const own = g.controls.update;
+          g.sim.fast = 400;
+          g.controls.update = () => {};
+          const run = async (secs) => {
+            const until = g.sim.steps + secs * 60;
+            for (let k = 0; g.sim.steps < until && k < 30000; k++) await wait(5);
+          };
+          try {
+            const o = t.obstacles.find((q) => /Mangrove/.test(q.label));
+            const a = o.line.at(40);
+            g.course.prepareAt(a.x, a.z);
+            g.car.lowRange = false;
+            g.car.diffLock = false;
+            g.car.placeAt({ x: a.x, y: g.course.heightAt(a.x, a.z) + 0.2, z: a.z }, Math.atan2(-a.tz, a.tx));
+            await run(2);
+            g.controls.input.throttle = 1;
+            g.controls.input.steer = 0;
+            await run(5);
+            g.controls.input.throttle = 0;
+            await run(2);
+            const p = g.car.body.translation();
+            // Under the wheels: the most worn square within the car's length.
+            let under = 0;
+            for (let dx = -2.5; dx <= 2.5; dx += 0.25) for (let dz = -1.2; dz <= 1.2; dz += 0.25) under = Math.max(under, g.course.rutAt(p.x + dx, p.z + dz));
+            // A car's width beside the line it was on.
+            const sx = p.x + a.tz * 3.2;
+            const sz = p.z - a.tx * 3.2;
+            let beside = 0;
+            for (let dx = -2; dx <= 2; dx += 0.25) for (let dz = -0.6; dz <= 0.6; dz += 0.25) beside = Math.max(beside, g.course.rutAt(sx + dx, sz + dz));
+            const cells = t.ruts.size;
+            const marks = g.scene?.children?.find?.((m) => m.isInstancedMesh && m.renderOrder === 2)?.count ?? null;
+            // Try again, as the button does (at normal speed: the HUD offers it).
+            g.sim.fast = was;
+            const btn = document.getElementById('btn-retry');
+            for (let k = 0; k < 300 && btn.hidden; k++) await wait(100);
+            const btnShown = !btn.hidden;
+            btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            await wait(300);
+            return { under: +under.toFixed(2), beside: +beside.toFixed(2), cells, marks, after: t.ruts.size, btnShown };
+          } finally {
+            g.sim.fast = was;
+            g.controls.update = own;
+            g.controls.input.throttle = 0;
+          }
+        });
+        check('ruts: spinning digs the ground under the wheels, not beside, and Try again smooths it', r.under >= 0.5 && r.beside === 0 && r.btnShown && r.after === 0, `(${JSON.stringify(r)})`);
+      }
       if (want('winch') && (await page.evaluate(() => !!window.game.course.winchAt))) {
         await page.close();
         page = await fresh();

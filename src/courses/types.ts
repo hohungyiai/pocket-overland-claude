@@ -94,6 +94,12 @@ export interface Course {
   winchHome?(x: number, z: number): boolean;
   /** The ground the winch's haul rides on: the ground, or a boulder's top. */
   winchGround?(x: number, z: number): number;
+  /** Ground that remembers: how worn by spinning wheels at (x, z), 0..1 (trails with ruts). */
+  rutAt?(x: number, z: number): number;
+  /** A wheel spinning on soft ground at (x, z) wears it by `amount`. */
+  dig?(x: number, z: number, amount: number): void;
+  /** Fresh ground again (on Try again). */
+  resetRuts?(): void;
   /** Clean-run score: a penalty (winch pull 5, try again 10) on the stretch at (x, z). */
   penalty?(what: 'winch' | 'retry', x: number, z: number): void;
   /** Clean-run score: the stretch being driven and its points so far. */

@@ -101,6 +101,8 @@ export interface TrailDef {
   finish: string;
   /** Marked trees to winch to beside the obstacles, and a clean-run score. */
   winch?: boolean;
+  /** Ground that remembers: spinning wheels dig ruts that lose grip (Chek Jawa). */
+  ruts?: boolean;
 }
 export interface Obstacle {
   kind: ObstacleKind;
@@ -625,6 +627,48 @@ export class UbinTrail {
       if (d < b.r) best = Math.max(best, b.top * Math.sqrt(1 - (d / b.r) ** 2));
     }
     return best;
+  }
+
+  // ---------------- Ruts ----------------
+
+  /** Half-metre squares of soft ground worn by spinning wheels: 0 new, 1 dug right in. */
+  readonly ruts = new Map<number, number>();
+  /** Bumped whenever the ruts change (for the marks). */
+  rutVersion = 0;
+  static readonly RUT_CELL = 0.5;
+  private rutKey(x: number, z: number): number {
+    const c = UbinTrail.RUT_CELL;
+    return Math.floor(x / c) * 100003 + Math.floor(z / c);
+  }
+  /** How worn the ground is at (x, z), 0..1. */
+  rutAt(x: number, z: number): number {
+    return this.ruts.get(this.rutKey(x, z)) ?? 0;
+  }
+  /** A spinning wheel at (x, z) wears the ground there by `amount`. */
+  dig(x: number, z: number, amount: number) {
+    const k = this.rutKey(x, z);
+    const was = this.ruts.get(k) ?? 0;
+    const now = Math.min(1, was + amount);
+    if (now === was) return;
+    this.ruts.set(k, now);
+    if (Math.floor(now * 8) !== Math.floor(was * 8)) this.rutVersion++;
+  }
+  /** Fresh ground again (Try again, or leaving the trail). */
+  resetRuts() {
+    if (!this.ruts.size) return;
+    this.ruts.clear();
+    this.rutVersion++;
+  }
+  /** Each worn square: its middle and how worn, for the marks. */
+  rutCells(): { x: number; z: number; w: number }[] {
+    const c = UbinTrail.RUT_CELL;
+    const out: { x: number; z: number; w: number }[] = [];
+    for (const [k, w] of this.ruts) {
+      const ix = Math.round(k / 100003);
+      const iz = k - ix * 100003;
+      out.push({ x: (ix + 0.5) * c, z: (iz + 0.5) * c, w });
+    }
+    return out;
   }
 
   // ---------------- The clean-run score ----------------

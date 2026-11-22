@@ -1147,6 +1147,47 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     return { pos: new THREE.Vector3(p.x, heightAt(p.x, p.z), p.z), yaw: Math.atan2(-p.tz, p.tx) };
   };
 
+  // Ruts: a dark, wet mark on each worn half-metre square, laid on the
+  // ground's slope, darker the deeper it is dug.
+  const lastDig = { x: 0, z: 0 };
+  let rutShown = 0;
+  const RUT_MAX = 4000;
+  const rutMarks = new THREE.InstancedMesh(
+    new THREE.PlaneGeometry(UbinTrail.RUT_CELL, UbinTrail.RUT_CELL).rotateX(-Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, transparent: true, opacity: 0.85, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }),
+    RUT_MAX,
+  );
+  rutMarks.count = 0;
+  rutMarks.frustumCulled = false;
+  rutMarks.renderOrder = 2;
+  if (def.ruts) scene.add(rutMarks);
+  const drawRuts = () => {
+    rutShown = trail.rutVersion;
+    const cells = trail.rutCells();
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    const nrm = new THREE.Vector3();
+    const col = new THREE.Color();
+    const wet = new THREE.Color(0x2b2118);
+    const dry = new THREE.Color(0x5a4630);
+    let n = 0;
+    for (const c of cells) {
+      if (n >= RUT_MAX || c.w < 0.12) continue;
+      const h = heightAt(c.x, c.z);
+      nrm.set(heightAt(c.x - 0.5, c.z) - heightAt(c.x + 0.5, c.z), 1, heightAt(c.x, c.z - 0.5) - heightAt(c.x, c.z + 0.5)).normalize();
+      q.setFromUnitVectors(up, nrm);
+      const sc = 0.7 + 0.3 * c.w;
+      m.compose(new THREE.Vector3(c.x, h + 0.03, c.z), q, new THREE.Vector3(sc, 1, sc));
+      rutMarks.setMatrixAt(n, m);
+      rutMarks.setColorAt(n, col.copy(dry).lerp(wet, c.w));
+      n++;
+    }
+    rutMarks.count = n;
+    rutMarks.instanceMatrix.needsUpdate = true;
+    if (rutMarks.instanceColor) rutMarks.instanceColor.needsUpdate = true;
+  };
+
   return {
     name: def.name,
     map: mapData,
@@ -1179,6 +1220,17 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
           },
         }
       : {}),
+    ...(def.ruts
+      ? {
+          rutAt: (x: number, z: number) => trail.rutAt(x, z),
+          dig: (x: number, z: number, amount: number) => {
+            trail.dig(x, z, amount);
+            lastDig.x = x;
+            lastDig.z = z;
+          },
+          resetRuts: () => trail.resetRuts(),
+        }
+      : {}),
     solidAt: (x, z) => streamer.solidAt(x, z),
     streamStats: () => ({ ...streamer.stats, horizon: streamer.stats.horizon }),
     camps: def.end.camp ? [camp] : [],
@@ -1188,6 +1240,11 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       if (at) {
         streamer.update(at.x, at.z);
         updateLods(at.x, at.z);
+      }
+      if (def.ruts) {
+        // (Left far behind, the trail's ruts settle: fresh ground next time.)
+        if (at && trail.ruts.size && Math.hypot(at.x - lastDig.x, at.z - lastDig.z) > 150) trail.resetRuts();
+        if (trail.rutVersion !== rutShown) drawRuts();
       }
       for (let i = 0; i < boats.length; i++) {
         boats[i].position.y = 0.05 * Math.sin(time * 1.1 + i * 2);
