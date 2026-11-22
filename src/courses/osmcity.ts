@@ -9728,7 +9728,7 @@ export async function buildPasirRisCourse(
       for (let q = 0, m = Math.max(1, Math.ceil(L / 0.5)); q < m; q++) {
         const [ax, az, ya] = P(q / m), [bx, bz, yb] = P((q + 1) / m);
         const mx = (ax + bx) / 2, mz = (az + bz) / 2, my = (ya + yb) / 2;
-        if (my - groundY(mx - nx * 0.6, mz - nz * 0.6) < JOINT_DECK_FROM || my - heightAt(mx - nx * 0.6, mz - nz * 0.6) < JOINT_DECK_FROM || hasUnder(mx - nx * 0.1, mz - nz * 0.1, my)) continue;
+        if (my - groundY(mx - nx * 0.6, mz - nz * 0.6) < JOINT_DECK_FROM || hasUnder(mx - nx * 0.1, mz - nz * 0.1, my)) continue;
         const foot = sheetAt(mx, mz, my - 0.05);
         if (!(foot === foot) || my - foot < 0.3 || my - foot > 2) continue;
         const w = underIn(mx, mz, my);
@@ -9737,6 +9737,10 @@ export async function buildPasirRisCourse(
         // a piece at the beam's foot under it stood out in steps, a saw along
         // a flyover's edge seen from below at 1777.1,1394.5.)
         if (!(w > 0.41)) continue;
+        // (The plan's ground asked last, once the rest hold: by a raised
+        // road heightAt is slow, and asked first it was most of a second of
+        // the trial map's start.)
+        if (my - heightAt(mx - nx * 0.6, mz - nz * 0.6) < JOINT_DECK_FROM) continue;
         // (Its inner edge up on the deck's own underside where it reaches
         // one: left at the beam's foot, 0.2 m under it, its inner edge was a
         // saw along a flyover's underside, seen from the road below at
