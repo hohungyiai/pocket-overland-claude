@@ -881,6 +881,10 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       geo.computeBoundingSphere();
       const mesh = new THREE.Mesh(geo, mat);
       mesh.receiveShadow = true;
+      // (The tiles it lies on.)
+      const tiles = new Set<string>();
+      for (let k = 0; k < pos.length; k += 3) tiles.add(`${Math.floor(pos[k] / TILE)},${Math.floor(pos[k + 2] / TILE)}`);
+      mesh.userData.tiles = [...tiles].map((t) => t.split(',').map(Number));
       scene.add(mesh);
       fineMeshes.push(mesh);
       world.createCollider(RAPIER.ColliderDesc.trimesh(solid, idx).setFriction(0.9), body);
@@ -1413,9 +1417,11 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         // (A strip shows only while all the tiles' ground around it is near
         // enough to be drawn in full: out on the horizon's coarser ground its
         // edges would not meet it.)
+        // (And only once those tiles are built: until then the horizon's
+        // coarse ground is drawn there.)
         for (const m of fineMeshes) {
           const b = m.geometry.boundingSphere!;
-          m.visible = Math.hypot(at.x - b.center.x, at.z - b.center.z) + b.radius < 410;
+          m.visible = Math.hypot(at.x - b.center.x, at.z - b.center.z) + b.radius < 410 && (m.userData.tiles as [number, number][]).every(([i, j]) => streamer.built('far', i, j));
         }
       }
       if (def.ruts) {

@@ -466,6 +466,8 @@ const kits = (o, room = 150) => {
             const mesh = fg.strips[m], { o, a, b } = strips[m];
             const mid = c.trail.fineAt(o, (a + b) / 2, 0);
             c.prepareAt(mid.x, mid.z);
+            // (No frames in between: the game's own update would stream the
+            // ground back around the car.)
             for (let k = 0; k < 300; k++) c.update(performance.now() / 1000, 0, undefined, { x: mid.x, y: c.heightAt(mid.x, mid.z), z: mid.z });
             const tiles = [];
             g.scene.traverse((t) => {
@@ -514,12 +516,12 @@ const kits = (o, room = 150) => {
                 for (let dx = -2; dx <= 4; dx += 2) for (let dz = -2; dz <= 4; dz += 2) ref = Math.min(ref, c.heightAt(X + dx, Z + dz));
                 if (top < ref - 0.3) { holes++; holeAt ??= [+x.toFixed(1), +z.toFixed(1), +(top - ref).toFixed(2)]; }
               }
-            out.push({ kind: o.kind, label: o.label, a: Math.round(a), b: Math.round(b), tiles: tiles.length, edges: 2 * (nu + nv) - 4, edgeOff, edgeWorst: +edgeWorst.toFixed(3), edgeAt, noTile, pts, holes, holeAt });
+            out.push({ shown: mesh.visible, kind: o.kind, label: o.label, a: Math.round(a), b: Math.round(b), tiles: tiles.length, edges: 2 * (nu + nv) - 4, edgeOff, edgeWorst: +edgeWorst.toFixed(3), edgeAt, noTile, pts, holes, holeAt });
           }
           return out;
         });
         for (const s of r)
-          check(`${s.label}: its fine strip (${s.a}-${s.b} m) meets the tiles' ground at every edge and end point within 2 cm, with no hole over or beside it`, s.tiles > 0 && !s.noTile && !s.edgeOff && !s.holes && s.pts > 0, `(${JSON.stringify(s)})`);
+          check(`${s.label}: its fine strip (${s.a}-${s.b} m) meets the tiles' ground at every edge and end point within 2 cm, with no hole over or beside it`, s.shown && s.tiles > 0 && !s.noTile && !s.edgeOff && !s.holes && s.pts > 0, `(${JSON.stringify(s)})`);
       }
       await page.close();
     }
