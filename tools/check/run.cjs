@@ -122,18 +122,24 @@ const CHECKS = [
   // An island with both kerbs at one level built as main builds it, two
   // halves of lawn meeting in its middle, their hidden gaps over a fall
   // held at main's count too, the user's call on 21 Nov (23:06 UTC), for
-  // the next change, one sheet of lawn kerb to kerb, to fix.)
-  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 181, trial: 18 }],
+  // the next change, one sheet of lawn kerb to kerb, to fix. Held again at
+  // 263 and 29, more islands on main's lawn, the user's call on 22 Nov
+  // (09:22 UTC).)
+  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 263, trial: 29 }],
   ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0, { pasirris: 4, whole: 1 }],
   ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, { whole: 21, trial: 6 }],
   // (The reviewer's and feedback thread's rule, 20 Nov. The user held today's
   // dips and holes, and the top-edge count's six small lips in those holes,
   // at a count that may only go down (21 Nov), for a follow-up to fix. Its
-  // holes at main's count once its lawn is main's again (23:06 UTC).)
+  // holes at main's count once its lawn is main's again (23:06 UTC), 762
+  // with more islands on main's lawn (22 Nov, 09:22 UTC).)
   ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0, { whole: 178, trial: 10 }],
-  ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0, { whole: 750, trial: 23 }],
+  ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0, { whole: 762, trial: 23 }],
   // (The reviewer's rule, 21 Nov. The user held its places at today's count,
   // 21 Nov, 11 of the whole map's 12 on main before it; may only go down.)
+  // (The reviewer's ask, 22 Nov: no island's lawn part main's, part the new
+  // builder's. TO BE SET: its count today is for the user's call.)
+  ['An island\'s lawn is built one way kerb to kerb: no seam where main\'s lawn meets the new builder\'s', 'outline.js', '__checkLawnSeams', 0],
   ['An island\'s grass stays inside its kerbs: no lawn more than 5 cm out over a road', 'outline.js', '__checkLawnInIsland', 0, { whole: 11, trial: 2 }],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
@@ -151,6 +157,8 @@ const CHECKS = [
     const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const p = await (await b.newContext({ viewport: { width: 640, height: 360 } })).newPage();
     p.on('pageerror', (e) => console.log('page error:', e.message));
+    // (Records each stretch of island lawn as it is built, for the lawn-seam check.)
+    await p.addInitScript('globalThis.__lawnRuns = []');
     const t0 = Date.now();
     await p.goto(`http://localhost:${PORT}/?course=${process.env.COURSE || 'pasirris'}&debug`);
     await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });

@@ -661,6 +661,28 @@ window.__checkLawnInIsland = (all = false) => {
   return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: '' };
 };
 
+// (The reviewer's ask, 22 Nov: one-level islands' lawn the same as main's.
+// An island's lawn is built a stretch of kerb at a time, each stretch by
+// main's builder or by the new one where its kerbs differ in height. Where
+// one island has both, the two lawns meet in a seam or crease: K3 at
+// -114.8,-31.9 and c1, L2, F4, k1 and k4 in round 4, all flat on main.
+// Every point where a main-lawn stretch meets a new-builder stretch of the
+// same island. Needs __lawnRuns filled as the map loads; run.cjs does it.)
+window.__checkLawnSeams = (all = false) => {
+  const R = globalThis.__lawnRuns;
+  if (!Array.isArray(R)) return { samples: 0, bad: 1, worst: [{ x: 0, z: 0, value: 1, over: 1, what: 'no lawn stretches recorded' }], unit: '' };
+  const by = new Map();
+  for (const r of R) (by.get(r.w) ?? by.set(r.w, []).get(r.w)).push(r);
+  const pts = [];
+  for (const L of by.values()) {
+    const m = L.filter((r) => r.main), o = L.filter((r) => !r.main);
+    for (const a of m) for (const b of o) for (const p of [a.a, a.b]) for (const q of [b.a, b.b])
+      if (Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.5) pts.push({ x: +p[0].toFixed(1), z: +p[1].toFixed(1), value: 1 });
+  }
+  const bad = window.__finishIndex().places(pts, 2);
+  return { samples: R.length, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: '' };
+};
+
 // The user's rule (18 Nov): a bridge's parapets and walls begin where the
 // ground actually drops, never on an island at the junction. Every upright
 // sheet standing on a road's level (a parapet, its foot over the ground)

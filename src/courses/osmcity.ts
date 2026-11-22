@@ -8572,10 +8572,12 @@ export async function buildPasirRisCourse(
     }
   };
 
+  const lawnIds = new WeakMap<object, number>();
+  let lawnIdN = 0;
   const islandTopIn = function* (w: { rings: OutRing[]; segs?: Map<number, number[][]> }, lawn: Acc, side: Acc, P: XZ[], cum: number[], v0: number, v1: number, mark: (v: number) => OutMark | null, top: (v: number) => number, farTop: (mm: OutMark, x: number, z: number) => number) {
     const segs = outSegs(w);
     const n = v1 - v0 + 1;
-    const out: XZ[] = [], half: number[] = [], mid: number[] = [], apart: boolean[] = [], over: boolean[] = [], even: boolean[] = [], cramp: boolean[] = [], hollow: boolean[] = [], level: boolean[] = [], farOn: boolean[] = [], fvs: number[] = [], even0: number[] = [], M: (OutMark | null)[] = [];
+    const out: XZ[] = [], half: number[] = [], mid: number[] = [], apart: boolean[] = [], over: boolean[] = [], even: boolean[] = [], cramp: boolean[] = [], hollow: boolean[] = [], level: boolean[] = [], farOn: boolean[] = [], fvs: number[] = [], even0: number[] = [], M: (OutMark | null)[] = [], bankNeed: boolean[] = [];
     for (let v = v0; v <= v1; v++) {
       if ((v - v0) % 8 === 7) yield;
       const mm = mark(v);
@@ -8684,6 +8686,15 @@ export async function buildPasirRisCourse(
       }
       mid.push(m);
       apart.push(ap);
+      // (Kerbs apart but within a metre of each other, with lawn on the far
+      // side and room for a bank 1 in 2 or gentler with 0.6 m to spare (the
+      // B3 plan): main's lawn, one even slope kerb top to kerb top, the
+      // grass bank rule B3 keeps where there is room. The new builder's two
+      // halves met in a seam down the island at -114.8,-31.9 where main's
+      // bank was smooth. Not over a metre: main's bank has no face down at
+      // its ends, and left gaps up to 5.4 m tall under a raised road's
+      // island at 1572.1,919.4, where B3 wants each road's own wall.)
+      bankNeed.push(ap && (!fo || Math.abs(fv + ROAD_LIFT + 0.03 - top(v)) > 1 || d < 2 * Math.abs(fv + ROAD_LIFT + 0.03 - top(v)) + 0.6));
       even.push(mm !== null && d < 3 && !ap && fv === fv);
       cramp.push(cr);
       hollow.push(ho);
@@ -8766,7 +8777,22 @@ export async function buildPasirRisCourse(
     // kerb, stood out over a lower road there with nothing under it, 0.94 m
     // over its kerb at 1341.9,578.1, where the user's rule S5 wants none.
     // See the steep-lawn rule below.)
-    const steepOpen = M.some((mm, i) => {
+    // (Over 2 m of kerb or more, not at one section alone: the ray across
+    // from a section at an island's point or a bend's corner runs on past
+    // the island and finds another road's kerb, at another height or none.
+    // One such section put its whole stretch of kerb on the new builder
+    // while the stretches either side kept main's lawn, and the two met in
+    // a crease across the lawn at -3078.6,-1122.6 and -121.9,-18.1.)
+    const along = (f: boolean[]) => {
+      for (let i = 0, s = -1; i <= n; i++)
+        if (i < n && f[i]) s < 0 && (s = i);
+        else if (s >= 0) {
+          if (cum[v0 + i - 1] - cum[v0 + s] >= 2) return true;
+          s = -1;
+        }
+      return false;
+    };
+    const steepAt = M.map((mm, i) => {
       if (!mm || half[i] < Infinity) return false;
       const v = v0 + i, t0 = top(v), [ox, oz] = out[i];
       const g = groundY(P[v][0] + ox * KERB_OUT, P[v][1] + oz * KERB_OUT);
@@ -8774,7 +8800,21 @@ export async function buildPasirRisCourse(
       for (let d = 0.5; d <= 3; d += 0.5) if (t0 - groundY(P[v][0] + ox * d, P[v][1] + oz * d) > 0.6) return true;
       return false;
     });
-    const oneLevel = !apart.some(Boolean) && !steepOpen;
+    const steepOpen = along(steepAt);
+    const oneLevel = !along(bankNeed) && !steepOpen;
+    // (For probes and the lawn-seam check: each stretch of kerb, its
+    // island, whether it kept main's lawn, and the sections that sent it
+    // to the new builder. Set __lawnRuns to an array before the map loads
+    // to fill it.)
+    {
+      const R = (globalThis as { __lawnRuns?: unknown[] }).__lawnRuns;
+      if (R) {
+        const ap: number[] = [];
+        bankNeed.forEach((a, i) => a && ap.push(P[v0 + i][0], P[v0 + i][1], top(v0 + i), fvs[i] + ROAD_LIFT + 0.03, half[i]));
+        if (!lawnIds.has(w)) lawnIds.set(w, lawnIdN++);
+        R.push({ w: lawnIds.get(w), a: P[v0], b: P[v1], n, main: oneLevel, steep: steepOpen, ap });
+      }
+    }
     if (oneLevel) {
       yield* islandTopMain(w, lawn, P, cum, v0, v1, mark, top, farTop);
       return;
