@@ -75,9 +75,9 @@ export const PUAKA: TrailDef = {
       label: 'Cross-axle ditches',
       at: [599, 8],
       len: 65,
-      needs: { low: true, diff: true },
+      needs: { diff: true },
       mix: [
-        { kind: 'ditches', from: 0, to: 65, p: { depth: 0.65, period: 6 } },
+        { kind: 'ditches', from: 0, to: 65, p: { depth: 0.6, period: 6.5 } },
         { kind: 'thicket', from: 0, to: 65 },
       ],
     },
