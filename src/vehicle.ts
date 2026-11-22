@@ -40,6 +40,13 @@ const TUNING = {
   roughFull: 10,
   roughBase: 0.12,
   roughSteer: 0.9,
+  // The winch reels in at winchSpeed (m/s). On the track it pulls with up
+  // to winchHelp (m/s^2): it only helps the wheels, the right kit is still
+  // needed. Off it, it hauls the car back to the track at that speed,
+  // riding winchRide (m, the body's height at rest) over the ground ahead.
+  winchSpeed: 1,
+  winchHelp: 3,
+  winchRide: 0.92,
 };
 
 const DUST = new THREE.Color(0x8a7458);
@@ -67,6 +74,19 @@ export class Vehicle {
   /** Signed forward speed, m/s. */
   speed = 0;
   surface: Surface = SURFACES.gravel;
+  /** The winch cable's far end (a marked tree), while winching; null otherwise. `help`: only helping the wheels (on the track). */
+  winch: { x: number; y: number; z: number; help?: boolean; to?: { x: number; z: number } } | null = null;
+  /** Why the winch last let go by itself: at the tree, driven off, or it could not shift the car. */
+  winchEnded: 'tree' | 'free' | 'stalled' | null = null;
+  /** The same, kept after the HUD has reported it (for the checks). */
+  winchLastEnd: 'tree' | 'free' | 'stalled' | null = null;
+  /** The tree it last could not shift the car from (so the next pull tries another). */
+  winchStalledAt: { x: number; z: number } | null = null;
+  private winchBest = Infinity;
+  private winchFor = 0;
+  private winchFast = 0;
+  /** Where the cable leaves the car (world), for drawing it. */
+  readonly towPoint = new THREE.Vector3();
   /** How rough the ground under the front wheels is (Surface.rough), from the last step. */
   private rough = 0;
   /** The rough ground's knock on the steering: where it is heading, and where it is. */
@@ -86,6 +106,9 @@ export class Vehicle {
   }
   private readonly tmpQ = new THREE.Quaternion();
   private readonly tmpV = new THREE.Vector3();
+  private readonly R: Rapier;
+  /** Being hauled back from off the track: the haul places the body itself. */
+  private hauled = false;
   private readonly grips = [0, 0, 0, 0];
   private readonly off = [false, false, false, false];
 
@@ -94,6 +117,7 @@ export class Vehicle {
     RAPIER: Rapier,
     private course: Course,
   ) {
+    this.R = RAPIER;
     const s = course.start;
     const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), course.startYaw);
     this.body = world.createRigidBody(
@@ -236,6 +260,8 @@ export class Vehicle {
 
   /** Place the car at a position and heading, at rest. */
   placeAt(pos: THREE.Vector3, yaw: number) {
+    this.winch = null;
+    this.winchStalledAt = null;
     const r = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
     this.body.setTranslation({ x: pos.x, y: pos.y + 1.4, z: pos.z }, true);
     this.body.setRotation({ x: r.x, y: r.y, z: r.z, w: r.w }, true);
@@ -250,6 +276,8 @@ export class Vehicle {
    * in the water, on the nearest road (the course's safe spot).
    */
   recover() {
+    this.winch = null;
+    this.winchStalledAt = null;
     const p = { ...this.body.translation() };
     const q = this.body.rotation();
     const fwd = this.tmpV.set(1, 0, 0).applyQuaternion(this.tmpQ.set(q.x, q.y, q.z, q.w));
@@ -280,6 +308,16 @@ export class Vehicle {
   }
 
   update(dt: number, input: DriveInput) {
+    // (Hauled back from off the track the body is placed, not pushed: no
+    // slope or wall moves it off its cable's line. Let go, it is a car again,
+    // at rest.)
+    const hauled = !!this.winch?.to;
+    if (hauled !== this.hauled) {
+      this.hauled = hauled;
+      this.body.setBodyType(hauled ? this.R.RigidBodyType.KinematicPositionBased : this.R.RigidBodyType.Dynamic, true);
+      this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    }
     const c = this.controller;
     const v = c.currentVehicleSpeed();
     this.speed = v;
@@ -322,8 +360,8 @@ export class Vehicle {
     } else if (input.throttle < -0.02) {
       if (v > 0.6) brake = TUNING.brakeMax * -input.throttle;
       else drive = input.throttle * TUNING.reverseForce * (low ? 1.8 : 1) * clamp(1 + v / 6, 0, 1);
-    } else if (absV < 1.2) {
-      brake = TUNING.holdBrake; // hill-hold when off the pedals
+    } else if (absV < 1.2 && !this.winch) {
+      brake = TUNING.holdBrake; // hill-hold when off the pedals (not while winching: it rolls free)
       hold = true;
     }
 
@@ -397,6 +435,103 @@ export class Vehicle {
       }
     }
 
+    // The winch's tow point (where the cable leaves the car).
+    {
+      const t = this.body.translation();
+      const q0 = this.body.rotation();
+      this.towPoint.set(2.2, 0.25, 0).applyQuaternion(this.tmpQ.set(q0.x, q0.y, q0.z, q0.w)).add(this.tmpV.set(t.x, t.y, t.z));
+    }
+    if (this.winch) {
+      // It lets go by itself once the car drives off on its own (over 4 m/s
+      // for 1.5 s), or when it has not gained 0.3 m for a while (it cannot
+      // shift it). On the track (help) also 4 m from the tree; hauled back
+      // from off it, once at the track (the course unhooks it sooner, as
+      // soon as it is back on).
+      const help = !this.winch.to;
+      const tp = this.towPoint;
+      const flat = help ? Math.hypot(this.winch.x - tp.x, this.winch.z - tp.z) : Math.hypot(this.winch.to!.x - tp.x, this.winch.to!.z - tp.z);
+      if (flat < this.winchBest - 0.3) {
+        this.winchBest = flat;
+        this.winchFor = 0;
+      } else this.winchFor += dt;
+      this.winchFast = absV > 4 ? this.winchFast + dt : 0;
+      const end = flat < (help ? 4 : 0.5) ? 'tree' : this.winchFast > 1.5 ? 'free' : this.winchFor > (help ? 5 : 8) ? 'stalled' : null;
+      if (end) {
+        if (end === 'stalled') this.winchStalledAt = { x: this.winch.x, z: this.winch.z };
+        this.winch = null;
+        this.winchEnded = end;
+        this.winchLastEnd = end;
+      }
+    } else {
+      this.winchBest = Infinity;
+      this.winchFor = 0;
+    }
+    if (this.winch?.to) {
+      // Off the track, it hauls the car along its cable back to the track
+      // beside where it slid off, at a steady crawl: up over a lip, out of
+      // a ditch or over a boulder, wheels on the ground, never past the
+      // crux it slid off beside. The haul moves the car itself, sitting it
+      // on the ground under its four wheels (forces alone left it caught in
+      // some ditches, drifting off its cable's line, or rolled on the
+      // steepest banks).
+      const p = this.body.translation();
+      // (From the tow point, so it goes the way its cable runs.)
+      const tx = this.winch.to.x - this.towPoint.x;
+      const tz = this.winch.to.z - this.towPoint.z;
+      const d = Math.hypot(tx, tz) || 1;
+      const step = Math.min(TUNING.winchSpeed * dt, d);
+      const cx = p.x + (tx / d) * step;
+      const cz = p.z + (tz / d) * step;
+      const G = (x: number, z: number) => this.course.winchGround?.(x, z) ?? this.course.heightAt(x, z);
+      // Its heading, kept; the ground under its wheels gives its height and tilt.
+      const q0 = this.body.rotation();
+      const f0 = this.tmpV.set(1, 0, 0).applyQuaternion(this.tmpQ.set(q0.x, q0.y, q0.z, q0.w));
+      const fl = Math.hypot(f0.x, f0.z) || 1;
+      const fx = f0.x / fl;
+      const fz = f0.z / fl;
+      const L = 1.5;
+      const W = 0.85;
+      // (Left of its heading, x east and z south: (fz, -fx).)
+      const hFL = G(cx + fx * L + fz * W, cz + fz * L - fx * W);
+      const hFR = G(cx + fx * L - fz * W, cz + fz * L + fx * W);
+      const hRL = G(cx - fx * L + fz * W, cz - fz * L - fx * W);
+      const hRR = G(cx - fx * L - fz * W, cz - fz * L + fx * W);
+      const hMid = (hFL + hFR + hRL + hRR) / 4;
+      const forward = new THREE.Vector3(fx * 2 * L, (hFL + hFR - hRL - hRR) / 2, fz * 2 * L).normalize();
+      const left = new THREE.Vector3(fz * 2 * W, (hFL + hRL - hFR - hRR) / 2, -fx * 2 * W).normalize();
+      const up = new THREE.Vector3().crossVectors(forward, left).normalize();
+      // (Body axes: x forward, y up, z = forward x up, its right.)
+      const side = new THREE.Vector3().crossVectors(forward, up).normalize();
+      const want = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(forward, up, side));
+      const now = new THREE.Quaternion(q0.x, q0.y, q0.z, q0.w).slerp(want, Math.min(1, 8 * dt));
+      const y = hMid + TUNING.winchRide * up.y;
+      const ny = p.y + clamp(y - p.y, -3 * dt, 3 * dt);
+      this.body.setNextKinematicTranslation({ x: cx, y: ny, z: cz });
+      this.body.setNextKinematicRotation({ x: now.x, y: now.y, z: now.z, w: now.w });
+    } else if (this.winch) {
+      // On the track: a gentle pull along the cable that only helps the
+      // wheels (never stands in for the kit, which the course asks for
+      // before it offers a tree).
+      const tp = this.towPoint;
+      const dx = this.winch.x - tp.x;
+      const dy = this.winch.y - tp.y;
+      const dz = this.winch.z - tp.z;
+      const len = Math.hypot(dx, dy, dz);
+      if (len > 0.5) {
+        const lv = this.body.linvel();
+        const along = (lv.x * dx + lv.y * dy + lv.z * dz) / len;
+        const dv = clamp(TUNING.winchSpeed - along, 0, TUNING.winchHelp * dt);
+        if (dv > 0) {
+          // (Low down, through the body, so it never swings or rolls the car.)
+          const m = this.body.mass() * dv;
+          const t1 = this.body.translation();
+          const q1 = this.body.rotation();
+          const low = this.tmpV.set(0, -0.55, 0).applyQuaternion(this.tmpQ.set(q1.x, q1.y, q1.z, q1.w));
+          this.body.applyImpulseAtPoint({ x: (dx / len) * m, y: (dy / len) * m, z: (dz / len) * m }, { x: t1.x + low.x, y: t1.y + low.y, z: t1.z + low.z }, true);
+        }
+      }
+    }
+
     c.updateVehicle(dt);
 
     // Hill-hold. The wheel brakes only slow the car in proportion to its
@@ -424,7 +559,7 @@ export class Vehicle {
     else this.upsideDownTime = 0;
     if (this.upsideDownTime > 2) this.recover();
     // Never stranded: sitting still in deep water for a few seconds tows the car back to a road.
-    if (/water/i.test(this.surface.name) && absV < 3) this.waterTime += dt;
+    if (/water/i.test(this.surface.name) && absV < 3 && !this.winch) this.waterTime += dt;
     else this.waterTime = 0;
     if (this.waterTime > 5) this.recover();
     // Fell out of the world somehow.

@@ -344,11 +344,34 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   tap(btnRetry, () => {
     if (!retrySpot) return;
     const r = retrySpot;
+    course.penalty?.('retry', car.mesh.position.x, car.mesh.position.z);
     course.prepareAt?.(r.x, r.z);
     car.placeAt(new THREE.Vector3(r.x, course.heightAt(r.x, r.z) + 0.1, r.z), r.yaw);
     btnRetry.hidden = true;
     say(`Back to the start of the ${r.label.toLowerCase()}.`, 3);
   });
+  // The winch (trails with marked trees): offered when slow with a marked
+  // tree in reach; tap to reel in, tap again to stop. It unhooks once the
+  // car is up to the tree, or driving off under its own power.
+  const btnWinch = $('btn-winch');
+  let winchTo: { x: number; y: number; z: number; help?: boolean } | null = null;
+  const cable = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0x1f1f1f }));
+  cable.visible = false;
+  cable.frustumCulled = false;
+  scene.add(cable);
+  tap(btnWinch, () => {
+    if (car.winch) {
+      car.winch = null;
+      say('Winch off.', 2);
+    } else if (winchTo) {
+      car.winch = winchTo;
+      course.penalty?.('winch', car.mesh.position.x, car.mesh.position.z);
+      say(winchTo.help ? 'Winching: it helps the wheels, so keep driving it.' : 'Winching back onto the track.', 4);
+    }
+    btnWinch.hidden = true;
+  });
+  const hudScore = $('hud-score');
+  course.setBest?.(journey.best?.[courseId] ?? {});
   const btnBackup = $('btn-backup');
   let paused = false;
   const pause = (on: boolean) => {
@@ -618,12 +641,16 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
     if (hudTimer <= 0) {
       hudTimer = 0.1;
       hudSpeed.textContent = `${Math.round(Math.abs(car.speed) * 3.6)}`;
-      hudSurface.textContent = car.wheelsOnGround ? car.surface.name : 'Airborne';
+      hudSurface.textContent = car.wheelsOnGround || car.winch ? car.surface.name : 'Airborne';
       // Never a fail state: if the car sits stuck under throttle, offer a tip.
       stuckTime = Math.abs(car.speed) < 0.4 && Math.abs(controls.input.throttle) > 0.3 ? stuckTime + 0.1 : 0;
       // A trail coaches its own obstacles (and opens a way round after a few tries).
       const coach = course.coach?.({ x: p.x, z: p.z, speed: car.speed, low: car.lowRange, diff: car.diffLock, stuck: stuckTime }) ?? null;
       if (coach?.say) say(coach.say, 6);
+      if (coach?.scored) {
+        ((journey.best ??= {})[courseId] ??= {})[coach.scored.label] = coach.scored.best;
+        autosave();
+      }
       const tip = coach?.tip ?? (stuckTime > 3 ? (car.lowRange && car.diffLock ? 'Tip: back up and take a run at it, or tap ↺' : 'Tip: try LOW range and DIFF lock') : null);
       toastTime -= 0.1;
       if (toastTime <= 0) toast = null;
@@ -696,6 +723,23 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       stoppedFor = Math.abs(car.speed) < 1 ? stoppedFor + 0.1 : 0;
       retrySpot = Math.abs(car.speed) < 1.5 && !paused ? (course.retryAt?.(p.x, p.z) ?? null) : null;
       btnRetry.hidden = !retrySpot || !btnCamp.hidden;
+      if (course.winchAt) {
+        const tp = car.towPoint;
+        if (car.winchEnded) {
+          say(car.winchEnded === 'stalled' ? 'The winch cannot shift it from here: try another tree, or try again.' : 'Unhooked: the winch is wound in.', 3);
+          car.winchEnded = null;
+        } else if (car.winch && course.winchHome?.(p.x, p.z)) {
+          car.winch = null;
+          say('Back on the track: unhooked.', 2);
+        }
+        const fw = car.mesh.position;
+        winchTo = !car.winch && Math.abs(car.speed) < 1.5 && !paused ? course.winchAt(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z, car.winchStalledAt, { low: car.lowRange, diff: car.diffLock }) : null;
+        btnWinch.hidden = !(car.winch || winchTo) || !btnCamp.hidden;
+        btnWinch.textContent = car.winch ? 'Stop winch' : 'Winch';
+        const sc = course.score?.();
+        hudScore.hidden = !sc;
+        if (sc) hudScore.textContent = `${sc.label}: ${sc.points === 0 ? 'clean so far' : `${sc.points} point${sc.points === 1 ? '' : 's'}`}${sc.best !== undefined ? ` · best ${sc.best}` : ''}`;
+      }
       if (retrySpot) btnRetry.textContent = `Try the ${retrySpot.label.toLowerCase()} again`;
       if (btnBackup.hidden && btnRetry.hidden && stoppedFor > 2 && btnCamp.hidden && btnFuel.hidden && btnGarage.hidden && backupDue()) btnBackup.hidden = false;
       else if (!btnBackup.hidden && stoppedFor === 0) {
@@ -713,6 +757,13 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       fpsTime = 0;
     }
     if (controls.used || now > 12000) hint.classList.add('hidden');
+    cable.visible = !!car.winch;
+    if (car.winch) {
+      const pos = cable.geometry.attributes.position as THREE.BufferAttribute;
+      pos.setXYZ(0, car.towPoint.x, car.towPoint.y, car.towPoint.z);
+      pos.setXYZ(1, car.winch.x, car.winch.y, car.winch.z);
+      pos.needsUpdate = true;
+    }
 
     renderer.render(scene, camera);
     requestAnimationFrame(frame);

@@ -15,7 +15,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { chromium } = require('playwright');
 
-const PORT = 4182;
+const PORT = +(process.env.PORT || 4182);
 const ROOT = path.join(__dirname, '..', '..');
 const COURSES = ['ubintrail', 'ubinpuaka', 'ubinchekjawa'];
 const args = process.argv.slice(2);
@@ -128,6 +128,20 @@ const kits = (o, room = 150) => {
           await page.close();
           page = await fresh();
         }
+        // The winch only helps the wheels: each thing it needs left out,
+        // hooking up whenever stuck still does not get it through.
+        if (want('winch') && (await page.evaluate(() => !!window.game.course.winchAt)))
+          for (const [what, kit] of K.wrong.filter(([w]) => !/charging/.test(w))) {
+            const r = await drive(page, from, to, kit, { timeout: 300, winch: true, giveUp: 12, reverseAfterStall: 3 });
+            const sw = (await page.evaluate(() => window.__ubinObstacles()))[i];
+            const sc = await page.evaluate(() => window.game.course.score?.() ?? null);
+            // (Every pull scored, as from the button.)
+            // (Pulls made before it reached this stretch count against the one before.)
+            const scored = !r.winched || !sc || sc.label !== o.label || sc.points >= r.winched * 5;
+            check(`${o.label}: ${what}, even winching whenever stuck the bot does not get through`, !(r.done && sw.done === 'hard') && scored, `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.winched} winch pulls, ${r.refused} times no tree offered, score ${JSON.stringify(sc)}, credited: ${sw.done})`);
+            await page.close();
+            page = await fresh();
+          }
         const right = await drive(page, from, to, K.right, { timeout: 150 });
         const st = (await page.evaluate(() => window.__ubinObstacles()))[i];
         check(`${o.label}: with ${kitName(K.right)} the bot gets through on the hard line`, right.done && st.done === 'hard', `(${right.seconds}s, lean ${right.maxLeanDeg}°, ${st.done}) says: ${JSON.stringify(right.says.map((t) => t[1]))}`);
@@ -202,6 +216,159 @@ const kits = (o, room = 150) => {
         });
         const clean = said.some((x) => /^Clean run|the hard way/.test(x));
         check('whole trail: start to end on the hard line, never stuck or tipped', ok && st.every((o) => o.done === 'hard') && clean && (!info.hasCamp || !!camp), `(${Math.round(secs / 60)} min of driving, max lean ${lean}°${info.hasCamp ? `, camp: ${camp}` : ''}, end: ${JSON.stringify(said[said.length - 1])})`);
+      }
+      // The winch (trails with marked trees): slid off any stretch into the
+      // bog or down the bank, stuck, the winch gets the car back onto the
+      // track, and it costs points on the clean-run score.
+      if (want('winch') && (await page.evaluate(() => !!window.game.course.winchAt))) {
+        await page.close();
+        page = await fresh();
+        const res = await page.evaluate(async (obs) => {
+          const g = window.game;
+          const t = g.course.trail;
+          const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+          const was = g.sim.fast;
+          const own = g.controls.update;
+          g.sim.fast = 400;
+          g.controls.update = () => {};
+          const run = async (secs) => {
+            const until = g.sim.steps + secs * 60;
+            for (let k = 0; g.sim.steps < until && k < 30000; k++) await wait(5);
+          };
+          const out = [];
+          const props = (t.props?.() ?? []).filter((r) => r.kind === 'boulder' || r.kind === 'rock');
+          try {
+            for (let i = 0; i < t.obstacles.length; i++) {
+              const o = t.obstacles[i];
+              const len = o.s1 - o.s0;
+              const w = obs[i].closed.length ? Math.max(...obs[i].closed.filter((x) => x < 6)) : 3;
+              const cam = obs[i].camber;
+              // Off each side a few metres (a camber: only down its bank), at three places.
+              const sides = cam ? [-(cam.dir ?? 1) * 5, -(cam.dir ?? 1) * 9] : [w + 1, -(w + 1), w + 4, -(w + 4)];
+              // (Just off the edge and further down, every 30 m along.)
+              const fs = [];
+              for (let sx = 12; sx < len - 6; sx += 30) fs.push(sx / len);
+              for (const f of fs)
+                for (const off of sides) {
+                  const s = len * f;
+                  const a = o.line.at(s);
+                  const x = a.x + a.tz * off;
+                  const z = a.z - a.tx * off;
+                  g.course.prepareAt(x, z);
+                  g.car.lowRange = true;
+                  g.car.diffLock = true;
+                  g.car.winchStalledAt = null;
+                  g.car.placeAt({ x, y: g.course.heightAt(x, z) + 0.2, z }, Math.atan2(-a.tz, a.tx));
+                  g.controls.input.steer = 0;
+                  g.controls.input.throttle = 0;
+                  await run(3);
+                  const before = o.line.nearest(g.car.body.translation().x, g.car.body.translation().z, 60);
+                  // (Where it was when it hooked up: it may have slid a little first.)
+                  const hookS = t.route.nearest(g.car.body.translation().x, g.car.body.translation().z, 60)?.s ?? 0;
+                  const tp = g.car.towPoint;
+                  const fw = g.car.mesh.position;
+                  let tree = g.course.winchAt(tp.x, tp.y, tp.z, tp.x - fw.x, tp.z - fw.z);
+                  const hadTree = !!tree;
+                  let secs = 0;
+                  const ends = [];
+                  const look = { ang: 0, tilt: 0, clear: 0 };
+                  // As a player would: hook up, and if it lets go short of
+                  // the track, hook up again (up to three pulls).
+                  for (let pull = 0; pull < 3 && tree; pull++) {
+                    g.car.winch = tree;
+                    g.car.winchLastEnd = null;
+                    let home = false;
+                    // (Checked four times a second, as the game does every frame.)
+                    let last = { x: g.car.body.translation().x, z: g.car.body.translation().z };
+                    for (let q4 = 0; q4 < 360 && g.car.winch; q4++, secs += 0.25) {
+                      await run(0.25);
+                      const c = g.car.body.translation();
+                      // How it looks while hauled back: going the way its
+                      // cable runs, wheels down, and on the ground (not over a rock).
+                      if (tree.to && g.car.winch) {
+                        // (The body's way, against its cable's.)
+                        const mx = c.x - last.x;
+                        const mz = c.z - last.z;
+                        const ml = Math.hypot(mx, mz);
+                        const tp2 = g.car.towPoint;
+                        if (ml > 0.1) {
+                          const cx = tree.x - tp2.x;
+                          const cz = tree.z - tp2.z;
+                          const ang = (Math.acos(Math.max(-1, Math.min(1, (mx * cx + mz * cz) / (ml * Math.hypot(cx, cz))))) * 180) / Math.PI;
+                          if (q4 >= 2) look.ang = Math.max(look.ang, ang);
+                        }
+                        last = { x: c.x, z: c.z };
+                        // (Wheels down: its up against the ground's, and its
+                        // height off the ground along that up.)
+                        const H = (x, z) => g.course.heightAt(x, z);
+                        const gx = (H(c.x + 1, c.z) - H(c.x - 1, c.z)) / 2;
+                        const gz = (H(c.x, c.z + 1) - H(c.x, c.z - 1)) / 2;
+                        const gl = Math.hypot(gx, 1, gz);
+                        const q = g.car.body.rotation();
+                        const ux2 = 2 * (q.x * q.y - q.w * q.z);
+                        const uy2 = 1 - 2 * (q.x * q.x + q.z * q.z);
+                        const uz2 = 2 * (q.y * q.z + q.w * q.x);
+                        const dot = (-gx * ux2 + uy2 - gz * uz2) / gl;
+                        if (q4 >= 4) look.tilt = Math.max(look.tilt, (Math.acos(Math.max(-1, Math.min(1, dot))) * 180) / Math.PI);
+                        // (On the ground: at least two of its wheels within
+                        // 0.3 m of the ground under them, or of a boulder it rides over.)
+                        const G = (x, z) => g.course.winchGround?.(x, z) ?? H(x, z);
+                        const gaps = [[1.5, 0.85], [1.5, -0.85], [-1.5, 0.85], [-1.5, -0.85]].map(([a, b]) => {
+                          const v = new g.car.mesh.position.constructor(a, -0.92, b).applyQuaternion(g.car.mesh.quaternion.clone().set(q.x, q.y, q.z, q.w));
+                          return c.y + v.y - G(c.x + v.x, c.z + v.z);
+                        }).sort((m, n) => m - n);
+                        if (q4 >= 4) look.clear = Math.max(look.clear, gaps[1]);
+                      }
+                      if (g.course.winchHome(c.x, c.z)) { g.car.winch = null; home = true; }
+                    }
+                    const tn = o.line.nearest(tree.x, tree.z, 60);
+                    ends.push((home ? 'home' : g.car.winchLastEnd ?? 'time') + '@' + (tn ? tn.sd.toFixed(1) : '?') + '/' + Math.round((tn?.s ?? 0) - s) + '/' + (tree.help ? 'h' : 'x'));
+                    g.car.winch = null;
+                    await run(2);
+                    if (home) break;
+                    // (Back on the track by itself as the pull ended: done.)
+                    const c2 = g.car.body.translation();
+                    const n2 = o.line.nearest(c2.x, c2.z, 60);
+                    if (n2 && Math.abs(n2.sd) < w + 0.5) break;
+                    const q = g.car.towPoint;
+                    const m = g.car.mesh.position;
+                    tree = g.course.winchAt(q.x, q.y, q.z, q.x - m.x, q.z - m.z, g.car.winchStalledAt);
+                  }
+                  const p = g.car.body.translation();
+                  const n = o.line.nearest(p.x, p.z, 60);
+                  const onTrackNow = (q) => Math.abs(o.line.nearest(q.x, q.z, 60)?.sd ?? 99) < w + 0.5;
+                  const gain = Math.round((t.route.nearest(p.x, p.z, 60)?.s ?? 0) - hookS);
+                  // (Wherever the winch cannot shift it at all, say set down
+                  // wedged among a closure's boulders, Try again must be
+                  // offered there, so it is never stranded.)
+                  const wedged = !onTrackNow(p) && before && Math.abs(n.sd - before.sd) < 0.3 && Math.abs(gain) < 1;
+                  const retry = wedged ? !!g.course.retryAt?.(p.x, p.z) : false;
+                  out.push({ ang: Math.round(look.ang), tilt: Math.round(look.tilt), clear: +look.clear.toFixed(2), wedged, retry, gain, i, label: o.label, s: Math.round(s), off, before: before ? +before.sd.toFixed(1) : null, tree: hadTree, ends: ends.join(','), secs: Math.round(secs), sd: n ? +n.sd.toFixed(1) : null, onTrack: !!n && Math.abs(n.sd) < w + 0.5 });
+                }
+            }
+          } finally {
+            g.sim.fast = was;
+            g.controls.update = own;
+          }
+          return out;
+        }, info.obs);
+        // Back on the track, and no further along than where it hooked up (never hauled past a crux).
+        // (A few metres' slack: one car length.)
+        const bad = res.filter((r) => (r.wedged ? !r.retry : !r.onTrack) || r.gain > 5 || r.ang > 30 || r.tilt > 35 || r.clear > 0.3);
+        check('stuck off any stretch, the winch hauls the car back onto the track along its cable, wheels down, no further along', bad.length === 0, `(${res.length - bad.length} of ${res.length} places${res.some((r) => r.wedged) ? `, of them not shifted at all but Try again offered: ${JSON.stringify(res.filter((r) => r.wedged).map((r) => [r.label, r.s, r.off]))}` : ''}; slowest ${Math.max(...res.map((r) => r.secs))} s; worst cable angle ${Math.max(...res.map((r) => r.ang))}°, tilt off the ground's ${Math.max(...res.map((r) => r.tilt))}°, second-lowest wheel ${Math.max(...res.map((r) => r.clear)).toFixed(2)} m off the ground${bad.length ? '; failed: ' + JSON.stringify(bad) : ''})`);
+        const sc = await page.evaluate(() => {
+          const g = window.game;
+          const t = g.course.trail;
+          const o = t.obstacles[1];
+          for (const q of t.obstacles) { q.scoring = false; q.points = 0; q.done = null; }
+          const a = o.line.at(20);
+          g.course.coach({ x: a.x, z: a.z, speed: 1, low: true, diff: true, stuck: 0 });
+          g.course.penalty('winch', a.x, a.z);
+          g.course.penalty('retry', a.x, a.z);
+          for (let k = 0; k < 20; k++) g.course.coach({ x: a.x, z: a.z, speed: -1, low: true, diff: true, stuck: 0 });
+          return g.course.score();
+        });
+        check('clean-run score: a winch pull 5, a try again 10, backing up 1', !!sc && sc.points === 16, `(${JSON.stringify(sc)})`);
       }
       await page.close();
     }
