@@ -8310,6 +8310,8 @@ export async function buildPasirRisCourse(
   type KerbRun = { lvl: number; I: XZ[]; E: XZ[]; N: XZ[]; T: number[] };
   /** How far from a kerb its top counts in the sheet's height (m), and how far past a tile's edge its kerbs are worked out for it. */
   const SHEET_R = ISLE_W, SHEET_M = SHEET_R + 1.5;
+  /** How far past its tile the island sheet's height rule is worked out (a half metre off the grid: see islandSheet). */
+  const SOLVE_M = 12.5;
   /**
    * The lawn of every island in a tile, one sheet to an island, on a 1 m
    * grid fixed to the world (the user's call, 22 Nov: built a stretch of
@@ -8332,11 +8334,36 @@ export async function buildPasirRisCourse(
    * meeting mid-island light it the same.
    */
   /** The ground at a kerb's outer edge, asked once: each tile within SHEET_M of a kerb asks again (a twentieth of the map's start). */
+  // The lawn's colour at (x, z): the ground's at the points of its 4 m
+  // lattice round it, as its mesh is coloured (see ensurePatch), and
+  // between them. (Asked of the ground's plan at every point of the
+  // island sheet's 1 m grid, 3.6 s of the trial map's start.)
+  const latCol = new Map<number, [number, number, number]>();
+  const lcTmp = new THREE.Color();
+  const latColAt = (i: number, j: number) => {
+    const k = i * 100003 + j;
+    let c = latCol.get(k);
+    if (!c) {
+      const x = WB.minX + i * STEP, z = WB.minZ + j * STEP;
+      rawHeight(x, z);
+      colorAt(x, z, latAt(i, j), lcTmp);
+      latCol.set(k, (c = [lcTmp.r, lcTmp.g, lcTmp.b]));
+    }
+    return c;
+  };
+  const lawnColour = (x: number, z: number, out: THREE.Color) => {
+    const fx = (x - WB.minX) / STEP, fz = (z - WB.minZ) / STEP;
+    const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, v = fz - j;
+    const a = latColAt(i, j), b = latColAt(i + 1, j), c = latColAt(i, j + 1), d = latColAt(i + 1, j + 1);
+    const m = (q: number) => (a[q] * (1 - u) + b[q] * u) * (1 - v) + (c[q] * (1 - u) + d[q] * u) * v;
+    return out.setRGB(m(0), m(1), m(2));
+  };
   const kerbGround = new Map<number, number>();
   const groundAtKerb = (x: number, z: number) => {
     const key = (Math.round(x * 1000) + 5e6) * 1e7 + (Math.round(z * 1000) + 5e6);
     let g = kerbGround.get(key);
-    if (g === undefined) kerbGround.set(key, (g = heightAt(x, z)));
+    // (The ground as drawn, its lattice's: what shows beside the kerb.)
+    if (g === undefined) kerbGround.set(key, (g = groundY(x, z)));
     return g;
   };
   function* islandSheet(ix: number, iz: number, w: { rings: OutRing[]; segs?: Map<number, number[][]>; kerbRuns?: KerbRun[]; all?: { pts: XZ[]; hole: boolean; lvl: number }[] }, lawn: Acc, side: Acc): Generator<void, void, void> {
@@ -8365,6 +8392,7 @@ export async function buildPasirRisCourse(
     };
     const col = new THREE.Color();
     for (const lvl of [...new Set(KR.map((r) => r.lvl))]) {
+      let tM = performance.now(); const mark = (k: string) => { ST[k] = (ST[k] ?? 0) + performance.now() - tM; tM = performance.now(); };
       ST.at = 0;
       // The kerbs' tops and the ground's edges, as samples: x, z, value, out x, out z, length, lawn (1) or ground (0).
       const S: number[] = [];
@@ -8398,6 +8426,27 @@ export async function buildPasirRisCourse(
           const g = groundAtKerb(x, z), t = r.T[j];
           return t === t && g <= t + 0.005 && g >= t - ISLE_DEEP;
         });
+        // (Steadied along the kerb: a stretch of either kind under 2 m
+        // between two of the other takes theirs, gaps first. Asked point by
+        // point of the ground beside a road, held down under its edge, it
+        // flickered, and the lawn's edge ran in teeth between a kerb's top
+        // and the ground far under it, 1809.3,1979.3.)
+        {
+          const cum = [0];
+          for (let j = 1; j < n; j++) cum.push(cum[j - 1] + Math.hypot(r.E[j][0] - r.E[j - 1][0], r.E[j][1] - r.E[j - 1][1]));
+          for (const want of [false, true]) {
+            for (let j = 0; j < n; ) {
+              if (lawnAt[j] !== want) {
+                j++;
+                continue;
+              }
+              let k = j;
+              while (k + 1 < n && lawnAt[k + 1] === want) k++;
+              if (j > 0 && k < n - 1 && cum[k + 1] - cum[j - 1] < 2) for (let q = j; q <= k; q++) lawnAt[q] = !want;
+              j = k + 1;
+            }
+          }
+        }
         let line: XZ[] = [];
         const flush = () => {
           if (line.length >= 2) lawnLines.push(toPath(line));
@@ -8436,6 +8485,7 @@ export async function buildPasirRisCourse(
         }
       }
       if (!lawnLines.length) continue;
+      mark('tKerb');
       // (The outline's sides with no kerb: the lawn meets the ground there.)
       for (const R of w.rings) {
         if (R.lvl !== lvl || !R.kq) continue;
@@ -8452,18 +8502,45 @@ export async function buildPasirRisCourse(
           }
         }
       }
+      mark('tRing');
       // (Nor over a path: it lies on the ground. The lawn meets the ground at its edges.)
       const pathStrips = new Paths64();
+      // (Only its pieces within the lawn's reach of a lawn kerb: a path
+      // runs on for a kilometre, and asked of the ground along all of it
+      // and cut out whole for each tile, it took a second of the trial
+      // map's start.)
+      const nearLawn = (ax: number, az: number, bx: number, bz: number, r: number) => {
+        for (let ci = Math.floor((Math.min(ax, bx) - r) / SG); ci <= Math.floor((Math.max(ax, bx) + r) / SG); ci++)
+          for (let cj = Math.floor((Math.min(az, bz) - r) / SG); cj <= Math.floor((Math.max(az, bz) + r) / SG); cj++)
+            for (const n of sgrid.get(ci * 100003 + cj) ?? []) {
+              if (S[n + 6] !== 2) continue;
+              const qx = bx - ax, qz = bz - az, L2 = qx * qx + qz * qz;
+              const u = L2 > 0 ? Math.max(0, Math.min(1, ((S[n] - ax) * qx + (S[n + 1] - az) * qz) / L2)) : 0;
+              if ((ax + qx * u - S[n]) ** 2 + (az + qz * u - S[n + 1]) ** 2 < r * r) return true;
+            }
+        return false;
+      };
+      const byHalf = new Map<number, Paths64>();
       if (lvl < 0)
         paths.forEach((p, i) => {
           if (p.b) return;
           const pts = p.pts;
           if (!pts.some(([x, z]) => near(x, z, SHEET_M + 4))) return;
-          for (const q of Clipper.InflatePaths(many([toPath(pts)]), (PHALF[i] + 0.05) * S_, JoinType.Round, EndType.Round)) pathStrips.push(q);
           const h = PHALF[i] + 0.05;
+          let piece: XZ[] = [];
+          const flush = () => {
+            if (piece.length >= 2) (byHalf.get(h) ?? byHalf.set(h, new Paths64()).get(h)!).push(toPath(piece));
+            piece = [];
+          };
           for (let k = 0; k + 1 < pts.length; k++) {
             const [ax, az] = pts[k], [bx, bz] = pts[k + 1];
             const L = Math.hypot(bx - ax, bz - az);
+            if (!nearLawn(ax, az, bx, bz, REACH + h + 1)) {
+              flush();
+              continue;
+            }
+            if (!piece.length) piece.push(pts[k]);
+            piece.push(pts[k + 1]);
             if (L < 1e-4) continue;
             const ux = (bx - ax) / L, uz = (bz - az) / L;
             const m = Math.max(1, Math.ceil(L));
@@ -8471,11 +8548,14 @@ export async function buildPasirRisCourse(
               const t = (c + 0.5) / m, x = lerp(ax, bx, t), z = lerp(az, bz, t);
               for (const sd of [1, -1]) {
                 const nx = -uz * sd, nz = ux * sd, px = x + nx * h, pz = z + nz * h;
-                addS(px, pz, gnd(px, pz) + 0.02, nx, nz, L / m, 0);
+                if (near(px, pz, SHEET_M)) addS(px, pz, gnd(px, pz) + 0.02, nx, nz, L / m, 0);
               }
             }
           }
+          flush();
         });
+      for (const [h, P] of byHalf) for (const q of Clipper.InflatePaths(P, h * S_, JoinType.Round, EndType.Round)) pathStrips.push(q);
+      mark('tPath');
       // Where it is laid: within REACH of a lawn kerb, in the tile, off the paving, the kerbs and the paths.
       yield;
       slice = performance.now();
@@ -8504,14 +8584,24 @@ export async function buildPasirRisCourse(
       // (Opened by a centimetre: a kerb's outer edge and the paving's beside
       // it a millimetre apart left a strip of lawn that thin between them,
       // its two sides 30 cm apart in height, standing upright, at 353,1960.)
-      const raw = Clipper.Difference(Clipper.Intersect(reach, tileR, FillRule.NonZero), off, FillRule.NonZero);
+      // (Over the tile and SOLVE_M round it, where the rule is worked out: see below.)
+      const sqR = many([toPath([[X0 - SOLVE_M, Z0 - SOLVE_M], [X1 + SOLVE_M, Z0 - SOLVE_M], [X1 + SOLVE_M, Z1 + SOLVE_M], [X0 - SOLVE_M, Z1 + SOLVE_M]])]);
+      const raw = Clipper.Difference(Clipper.Intersect(reach, sqR, FillRule.NonZero), off, FillRule.NonZero);
       tt.push(performance.now());
-      const region = Clipper.InflatePaths(
+      const domain = Clipper.InflatePaths(
         Clipper.InflatePaths(raw, -0.01 * S_, JoinType.Miter, EndType.Polygon),
         0.01 * S_,
         JoinType.Miter,
         EndType.Polygon,
       );
+      const region = Clipper.Intersect(domain, tileR, FillRule.NonZero);
+      {
+        const G = globalThis as { __sheetWant?: string[]; __sheetDbg?: Record<string, unknown> };
+        if (G.__sheetWant?.includes(`${ix},${iz}`)) {
+          const P = (Q: Paths64) => Q.map((p) => p.map((q) => [q.x / S_, q.y / S_]));
+          (G.__sheetDbg ??= {})[`${ix},${iz},${lvl}`] = { domain: P(domain), reach: P(reach), off: P(off), lawnLines: P(lawnLines), S: S.slice() };
+        }
+      }
       tt.push(performance.now());
       for (let q = 1; q < tt.length; q++) ST['r' + q] = (ST['r' + q] ?? 0) + tt[q] - tt[q - 1];
       ST.regionPts = (ST.regionPts ?? 0) + region.reduce((a, p) => a + p.length, 0);
@@ -8565,6 +8655,7 @@ export async function buildPasirRisCourse(
       // rule B3, as main's did (2.8 m between a raised road's kerb and
       // one 5.4 m lower at 1147,1934; 7.5 m under a 6 m wall at
       // 1857.5,1822). Eased between, over a metre.
+      mark('tRegion');
       const top0 = new Map<number, number>(), lawn0 = new Set<number>();
       for (let n = 0; n < S.length; n += 8) {
         if (S[n + 6]) top0.set(n, S[n + 2]);
@@ -8593,86 +8684,249 @@ export async function buildPasirRisCourse(
           // a strip 10 to 30 cm wide between a slip road's kerb and the
           // road beside it was turned from the light, dark, at 1335,571.6.)
           if (d > 0 && fk) S[n + 7] = best * smoothstep(2 * d + 1.1, 2 * d + 0.1, best);
+          // (And the lower kerb's edge of the lawn lifted to match, its
+          // road its own wall up to it: the lawn's edges are what the rule
+          // runs between, see below.)
+          if (d < 0 && fk) S[n + 2] = lerp(S[n + 2], tf, smoothstep(-2 * d + 1.1, -2 * d + 0.1, best));
           continue;
         }
         const sv = d === d ? smoothstep(1.5, 0.5, d) : 0;
         S[n + 2] = lerp(gnd(x + nx * 0.05, z + nz * 0.05) + 0.02, S[n + 2], sv);
         if (sv <= 0) S[n + 6] = 0;
       }
-      // (Each sample counted from 10 cm behind its edge, in the kerb: from
-      // the edge itself, a point on it, as the sheet's own edge is, had the
-      // kerb along it all edge-on, counting for nothing, and took its height
-      // from the far kerb: a shard of grass 2 m tall at 1416,653.)
-      const BACK = 0.1;
-      /** How steeply the lawn may rise from where it meets the ground: 1 in 1.25, under 40 degrees. */
-      const GROUND_RISE = 0.8;
+      mark('tPre');
       const NONE: number[] = [];
-      // (Each kerb counted out to 10 m, faded from 7.5 m: one 10 m off
-      // weighs a hundredth of one a metre off, and out to 12.5 m the rule
-      // took 4 s of the map's start.)
-      const F_R = 10;
-      const F = (x: number, z: number) => {
-        ST.F = (ST.F ?? 0) + 1;
-        let sw = 0, sv = 0, dmin = Infinity, clamp = -Infinity, under = Infinity;
-        const c0 = Math.floor((x - F_R) / SG), c1 = Math.floor((x + F_R) / SG), d0 = Math.floor((z - F_R) / SG), d1 = Math.floor((z + F_R) / SG);
-        for (let ci = c0; ci <= c1; ci++)
-          for (let cj = d0; cj <= d1; cj++)
+      // The height rule: the lawn is the smoothest sheet that meets each of
+      // its edges at that edge's own height, a kerb's top, or the ground's
+      // where it meets the ground. At each point of a 1 m grid fixed to the
+      // world it is the mean of its four neighbours, an edge standing in for
+      // a neighbour beyond it at its own distance (a harmonic sheet, by
+      // Shortley and Weller's stencil). So it runs evenly across between
+      // two kerbs, lies level between two at one height, and has no bump,
+      // fold or step inside, nor any point higher or lower than its edges.
+      // (Weighed from every kerb in sight, the lawn rose in a bullseye by
+      // each kerb's point and creased where a kerb came into sight or went
+      // out of it: 24,065 folds on the map, scalloped banks at
+      // -2730.2,-2485.8.) Worked out over the tile and SOLVE_M beyond it,
+      // where the next tile works it out too: the two meet within a
+      // centimetre or so at the border.
+      /** The height of an edge of the lawn at (x, z): a lawn kerb's top (lifted by rule B3), a drop's kerb's, or the ground's. */
+      const edgeAt = (x: number, z: number) => {
+        ST.edgeAt = (ST.edgeAt ?? 0) + 1;
+        for (const e of egrid.get(Math.floor(x / EG) * 100003 + Math.floor(z / EG)) ?? NONE) {
+          const [ax, az, ta, bx, bz, tb] = edges[e];
+          const qx = bx - ax, qz = bz - az, L2 = qx * qx + qz * qz;
+          const u = L2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * qx + (z - az) * qz) / L2)) : 0;
+          const ox = ax + qx * u - x, oz = az + qz * u - z;
+          if (ox * ox + oz * oz > 0.003 * 0.003) continue;
+          // (Lifted as its samples are, by rule B3, eased along it as below.)
+          let sw = 0, sv = 0;
+          for (let ci = Math.floor((x - 0.75) / SG); ci <= Math.floor((x + 0.75) / SG); ci++)
+            for (let cj = Math.floor((z - 0.75) / SG); cj <= Math.floor((z + 0.75) / SG); cj++)
+              for (const n of sgrid.get(ci * 100003 + cj) ?? NONE) {
+                if (S[n + 6] !== 2) continue;
+                const dd = Math.sqrt((x - S[n]) ** 2 + (z - S[n + 1]) ** 2);
+                if (dd >= 0.75) continue;
+                const wt = S[n + 5] * (1 - dd / 0.75) ** 2;
+                sw += wt;
+                sv += wt * (S[n + 2] - top0.get(n)!);
+              }
+          let y = lerp(ta, tb, u) + (sw > 0 ? sv / sw : 0);
+          // (Nor more than 1 in 2 over where the lawn meets the ground, a
+          // path's edge or the outline's with no kerb: where a kerb ends on
+          // the ground, the lawn's edge comes down to it along the kerb's
+          // last half metre, the kerb's own side over it, as a kerb ramps
+          // down. Stepped there, the lawn stood upright at the kerb's end,
+          // 1167,1665.2.)
+          for (let ci = Math.floor((x - 1.6) / SG); ci <= Math.floor((x + 1.6) / SG); ci++)
+            for (let cj = Math.floor((z - 1.6) / SG); cj <= Math.floor((z + 1.6) / SG); cj++)
+              for (const n of sgrid.get(ci * 100003 + cj) ?? NONE) {
+                if (S[n + 6] === 2 || S[n + 2] >= y) continue;
+                const tx = -S[n + 4], tz = S[n + 3], hl = S[n + 5] / 2;
+                const al = Math.max(-hl, Math.min(hl, (x - S[n]) * tx + (z - S[n + 1]) * tz));
+                const dd = Math.hypot(x - S[n] - tx * al, z - S[n + 1] - tz * al);
+                y = Math.min(y, S[n + 2] + 0.5 * dd);
+              }
+          return y;
+        }
+        // (Else the samples along it within 75 cm, of the nearest one's
+        // kind, kerb or ground, each weighed by its length and nearness:
+        // even along the edge, where the nearest alone stepped at every
+        // sample. None so near: the end of the lawn's reach, on the ground.)
+        let best = 0.75 * 0.75, bn = -1;
+        const near1: number[] = [];
+        for (let ci = Math.floor((x - 0.75) / SG); ci <= Math.floor((x + 0.75) / SG); ci++)
+          for (let cj = Math.floor((z - 0.75) / SG); cj <= Math.floor((z + 0.75) / SG); cj++)
             for (const n of sgrid.get(ci * 100003 + cj) ?? NONE) {
-              const ex = x - S[n], ez = z - S[n + 1];
-              // (How far the nearest lawn kerb is, seen or not, facing or
-              // not: the lawn is laid within REACH of them, and falls to the
-              // ground by its edge there. Counted from those in view, a
-              // point with them hidden was left at a kerb's top, the
-              // lawn's edge open over a drop of up to 6.9 m, -1947.8,-1032.1.)
-              const re = Math.sqrt(ex * ex + ez * ez);
-              if (S[n + 6] === 2 && re < dmin) dmin = re;
-              const dx = ex + S[n + 3] * BACK, dz = ez + S[n + 4] * BACK;
-              // (Faced from behind its edge too: a point on the kerb's edge a
-              // hair behind a sample's own piece of it, as round a bend,
-              // had every bit of that kerb near it behind it, took its
-              // height from kerbs 10 m off, and stood 2 m up, 1866.8,1815.9.)
-              const cn = dx * S[n + 3] + dz * S[n + 4];
-              if (cn <= 0) continue;
-              if (re > F_R) continue;
-              const r = Math.sqrt(dx * dx + dz * dz);
-              const c = cn / r;
-              if (!vis(S[n] + S[n + 3] * 0.01, S[n + 1] + S[n + 4] * 0.01, x, z)) continue;
-              const wt = (S[n + 5] * c) / (r * r) * (re < F_R - 2.5 ? 1 : smoothstep(F_R, F_R - 2.5, re));
-              sw += wt;
-              sv += wt * S[n + 2];
-              if (S[n + 6] === 2) clamp = Math.max(clamp, S[n + 2] - Math.max(0, re - S[n + 7]) / 2);
-              else if (!S[n + 6]) under = Math.min(under, S[n + 2] + GROUND_RISE * re);
+              const d2 = (x - S[n]) ** 2 + (z - S[n + 1]) ** 2;
+              if (d2 >= 0.75 * 0.75) continue;
+              near1.push(n);
+              if (d2 < best) (best = d2), (bn = n);
             }
-        const g = gnd(x, z) + 0.02;
-        // (No kerb in view: the ground. Left out, the lawn had a hole there.)
-        if (!(sw > 0)) return g;
-        let h = sv / sw;
-        // (Never steeper than 1 in 2 under a lawn kerb's top: rule B3. Eased over 10 cm: no crease where it takes over.)
-        if (clamp > -Infinity) {
-          const d = clamp - h, k = 0.1;
-          h = d > k ? clamp : d < -k ? h : h + ((d + k) * (d + k)) / (4 * k);
+        if (bn < 0) return gnd(x, z) + 0.02;
+        const kerb = S[bn + 6] > 0;
+        let sw = 0, sv = 0;
+        for (const n of near1) {
+          if (S[n + 6] > 0 !== kerb) continue;
+          const d = Math.sqrt((x - S[n]) ** 2 + (z - S[n + 1]) ** 2);
+          const wt = S[n + 5] * (1 - d / 0.75) ** 2;
+          sw += wt;
+          sv += wt * S[n + 2];
         }
-        // (Nor more than GROUND_RISE in 1 over an edge where it meets the
-        // ground, a road's edge with no kerb, a path, the foot of a raised
-        // road's wall: held up there by a kerb's top near it, the lawn's
-        // edge stood open in mid-air, 856 places on the map, 6.9 m up at
-        // -1947.8,-1032.1. Eased as above.)
-        if (under < Infinity) {
-          const d = h - under, k = 0.1;
-          h = d > k ? under : d < -k ? h : h - ((d + k) * (d + k)) / (4 * k);
+        return sw > 0 ? sv / sw : S[bn + 2];
+      };
+      // Where it is worked out: the domain's crossings with each line of the grid, as spans.
+      type Span = { a: number; b: number; ea: number; eb: number };
+      const spansOf = (alongX: boolean) => {
+        const out = new Map<number, Span[]>();
+        const cuts = new Map<number, number[]>();
+        for (const p of domain)
+          for (let q = 0; q < p.length; q++) {
+            const A = p[q], Bq = p[(q + 1) % p.length];
+            const ca = (alongX ? A.y : A.x) / S_, cb = (alongX ? Bq.y : Bq.x) / S_;
+            const ua = (alongX ? A.x : A.y) / S_, ub = (alongX ? Bq.x : Bq.y) / S_;
+            for (let j = Math.ceil(Math.min(ca, cb)); j <= Math.floor(Math.max(ca, cb)); j++) {
+              if ((ca <= j) === (cb <= j)) continue;
+              const u = ua + ((ub - ua) * (j - ca)) / (cb - ca);
+              (cuts.get(j) ?? cuts.set(j, []).get(j)!).push(u);
+            }
+          }
+        // (The square's own sides, at half metres, are no edge: past them the sheet goes on, and the grid takes it as level there.)
+        const free = (u: number) => Math.abs(u - (alongX ? SX0 : SZ0)) < 0.002 || Math.abs(u - (alongX ? SX1 : SZ1)) < 0.002;
+        for (const [j, L] of cuts) {
+          L.sort((p, q) => p - q);
+          const sp: Span[] = [];
+          for (let q = 0; q + 1 < L.length; q += 2) {
+            const a = L[q], b = L[q + 1];
+            const [x, z] = alongX ? [a, j] : [j, a];
+            const [x2, z2] = alongX ? [b, j] : [j, b];
+            sp.push({ a, b, ea: free(a) ? NaN : edgeAt(x, z), eb: free(b) ? NaN : edgeAt(x2, z2) });
+          }
+          out.set(j, sp);
         }
-        h = lerp(h, g, smoothstep(ISLE_W / 2, REACH, dmin));
-        return Math.max(h, g);
+        return out;
+      };
+      const SX0 = X0 - SOLVE_M, SX1 = X1 + SOLVE_M, SZ0 = Z0 - SOLVE_M, SZ1 = Z1 + SOLVE_M;
+      const tS0 = performance.now();
+      const rows = spansOf(true);
+      yield;
+      slice = performance.now();
+      const colsG = spansOf(false);
+      yield;
+      slice = performance.now();
+      ST.spanMs = (ST.spanMs ?? 0) + performance.now() - tS0;
+      // The grid's points in the domain, each with its four neighbours: a point, or an edge at its distance, or none (past the square).
+      const nodeId = new Map<number, number>();
+      const nX: number[] = [], nZ: number[] = [];
+      for (const [j, sp] of rows)
+        for (const s of sp)
+          for (let i = Math.ceil(s.a); i <= Math.floor(s.b); i++) {
+            nodeId.set(i * 100003 + j, nX.length);
+            nX.push(i), nZ.push(j);
+          }
+      const N = nX.length;
+      const U = new Float64Array(N);
+      // Per point and side (-x, +x, -z, +z): the neighbour's id, or -1 with the edge's distance and height, or -2 past the square.
+      const nb = new Int32Array(N * 4).fill(-2), nh = new Float64Array(N * 4).fill(1), ne = new Float64Array(N * 4);
+      const fixed = new Uint8Array(N);
+      const link = (lines: Map<number, Span[]>, alongX: boolean) => {
+        for (const [j, sp] of lines)
+          for (const s of sp)
+            for (let i = Math.ceil(s.a); i <= Math.floor(s.b); i++) {
+              const id = nodeId.get(alongX ? i * 100003 + j : j * 100003 + i);
+              if (id === undefined) continue;
+              const lo = alongX ? 0 : 2;
+              const side = (k: number, e: number, dist: number, other: number) => {
+                if (dist < 1) {
+                  if (e === e) (nb[id * 4 + k] = -1), (nh[id * 4 + k] = dist), (ne[id * 4 + k] = e);
+                  else nb[id * 4 + k] = -2;
+                  if (dist < 0.002 && e === e) (fixed[id] = 1), (U[id] = e);
+                } else {
+                  const o = nodeId.get(alongX ? other * 100003 + j : j * 100003 + other);
+                  if (o !== undefined) nb[id * 4 + k] = o;
+                }
+              };
+              side(lo, s.ea, i - s.a, i - 1);
+              side(lo + 1, s.eb, s.b - i, i + 1);
+            }
+      };
+      link(rows, true);
+      link(colsG, false);
+      // (A first guess, along each row from edge to edge.)
+      for (const [j, sp] of rows)
+        for (const s of sp) {
+          const ea = s.ea === s.ea ? s.ea : s.eb, eb = s.eb === s.eb ? s.eb : s.ea;
+          for (let i = Math.ceil(s.a); i <= Math.floor(s.b); i++) {
+            const id = nodeId.get(i * 100003 + j)!;
+            if (!fixed[id]) U[id] = ea === ea ? lerp(ea, eb, s.b > s.a ? (i - s.a) / (s.b - s.a) : 0.5) : gnd(i, j) + 0.02;
+          }
+        }
+      yield;
+      slice = performance.now();
+      // Solved by over-relaxation, to a tenth of a millimetre.
+      const tS1 = performance.now();
+      ST.N = (ST.N ?? 0) + N;
+      {
+        const W = 1.7;
+        for (let it = 0; it < 4000; it++) {
+          let worst = 0;
+          for (let id = 0; id < N; id++) {
+            if (fixed[id]) continue;
+            let sa = 0, sv = 0;
+            for (const lo of [0, 2]) {
+              // (Past the square, the far side's mirror: level there.)
+              let k1 = lo, k2 = lo + 1;
+              if (nb[id * 4 + k1] === -2 && nb[id * 4 + k2] === -2) continue;
+              if (nb[id * 4 + k1] === -2) k1 = k2;
+              else if (nb[id * 4 + k2] === -2) k2 = k1;
+              const h1 = nh[id * 4 + k1], h2 = nh[id * 4 + k2], c = 2 / (h1 + h2);
+              const v1 = nb[id * 4 + k1] >= 0 ? U[nb[id * 4 + k1]] : ne[id * 4 + k1];
+              const v2 = nb[id * 4 + k2] >= 0 ? U[nb[id * 4 + k2]] : ne[id * 4 + k2];
+              sa += c / h1 + c / h2;
+              sv += (c / h1) * v1 + (c / h2) * v2;
+            }
+            if (!(sa > 0)) continue;
+            const d = (sv / sa - U[id]) * W;
+            U[id] += d;
+            if (Math.abs(d) > worst) worst = Math.abs(d);
+          }
+          ST.iters = (ST.iters ?? 0) + 1;
+          if (worst < 1e-4) break;
+          if (pause()) {
+            yield;
+            slice = performance.now();
+          }
+        }
+      }
+      ST.solveMs = (ST.solveMs ?? 0) + performance.now() - tS1;
+      /** The sheet's height at (x, z): at a point of the grid its own; on a line of the grid, between the points or edges either side; elsewhere, on an edge, the edge's. */
+      const sheetY = (x: number, z: number) => {
+        const xi = Math.round(x), zi = Math.round(z);
+        const onX = Math.abs(z - zi) < 1e-6, onZ = Math.abs(x - xi) < 1e-6;
+        if (onX && onZ) {
+          const id = nodeId.get(xi * 100003 + zi);
+          if (id !== undefined) return U[id];
+        }
+        const along = (lines: Map<number, Span[]>, j: number, u: number, key: (i: number) => number, at: (u: number) => [number, number]) => {
+          for (const s of lines.get(j) ?? []) {
+            if (u < s.a - 1e-3 || u > s.b + 1e-3) continue;
+            const ea = s.ea === s.ea ? s.ea : edgeAt(...at(s.a)), eb = s.eb === s.eb ? s.eb : edgeAt(...at(s.b));
+            if (Math.abs(u - s.a) < 1e-3) return ea;
+            if (Math.abs(u - s.b) < 1e-3) return eb;
+            const il = Math.floor(u), ir = il + 1;
+            const idl = nodeId.get(key(il)), idr = nodeId.get(key(ir));
+            const [pl, vl] = il <= s.a || idl === undefined ? [s.a, ea] : [il, U[idl]];
+            const [pr, vr] = ir >= s.b || idr === undefined ? [s.b, eb] : [ir, U[idr]];
+            return pr > pl ? lerp(vl, vr, (u - pl) / (pr - pl)) : vl;
+          }
+          return NaN;
+        };
+        let v = NaN;
+        if (onX) v = along(rows, zi, x, (i) => i * 100003 + zi, (u) => [u, zi]);
+        if (!(v === v) && onZ) v = along(colsG, xi, z, (i) => xi * 100003 + i, (u) => [xi, u]);
+        return v === v ? v : edgeAt(x, z);
       };
       ST.at = 5;
-      /** The rule at a point of the 1 m grid, asked once. */
-      const nodeF = new Map<number, number>();
-      const FN = (i: number, j: number) => {
-        const key = i * 100003 + j;
-        let f = nodeF.get(key);
-        if (f === undefined) nodeF.set(key, (f = F(i, j)));
-        return f;
-      };
       // The sheet: 1 m squares fixed to the world, each cut to where it is laid.
       const vIdx = new Map<number, number>();
       /** A point's key, its millimetres packed in one number. */
@@ -8711,6 +8965,31 @@ export async function buildPasirRisCourse(
         const inner = cell.filter((p) => Clipper.area(p) < 0);
         for (const o of outers) {
           const hs = inner.filter((h) => Clipper.pointInPolygon(new Point64(h[0].x, h[0].y), o) === PointInPolygonResult.IsInside);
+          // (Fanned out from a corner of the square where the piece has one
+          // and all of it is in view from there: each piece then has a point
+          // of the grid. Cut by ear, pieces of three points along the
+          // lawn's edge, a few millimetres across, stood up on end with the
+          // smallest wave in the edge's heights, 323 on the trial map.)
+          if (!hs.length) {
+            const n = o.length;
+            const cr = (A: { x: number; y: number }, B: { x: number; y: number }, C: { x: number; y: number }) => (B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y);
+            let fan = -1;
+            for (let c = 0; c < n && fan < 0; c++) {
+              if (o[c].x % S_ !== 0 || o[c].y % S_ !== 0) continue;
+              let ok = true;
+              for (let q = 1; q + 1 < n && ok; q++) ok = cr(o[c], o[(c + q) % n], o[(c + q + 1) % n]) >= 0;
+              if (ok) fan = c;
+            }
+            if (fan >= 0) {
+              const C = o[fan];
+              for (let q = 1; q + 1 < n; q++) {
+                const B = o[(fan + q) % n], D = o[(fan + q + 1) % n];
+                if (cr(C, B, D) < 2e-6 * S_ * S_) continue;
+                tris.push(vert(C.x, C.y), vert(B.x, B.y), vert(D.x, D.y));
+              }
+              continue;
+            }
+          }
           const pts = [...o, ...hs.flat()];
           const faces = THREE.ShapeUtils.triangulateShape(o.map((q) => new THREE.Vector2(q.x, q.y)), hs.map((h) => h.map((q) => new THREE.Vector2(q.x, q.y))));
           for (const [a, b, c] of faces) {
@@ -8895,6 +9174,7 @@ export async function buildPasirRisCourse(
       ST.at = 6;
       ST.gridMs = (ST.gridMs ?? 0) + performance.now() - tA;
       if (!tris.length) continue;
+      mark('tGrid');
       // Heights: on a lawn kerb's outer edge its own top (or higher, where rule B3 lifts the lawn), else the rule.
       const vy: number[] = new Array(vx.length);
       const onEdge: [number, number, number][] = [];
@@ -8911,7 +9191,7 @@ export async function buildPasirRisCourse(
           (eBest = e), (eT = lerp(ta, tb, u)), (eu = u);
           break;
         }
-        const f = Number.isInteger(x) && Number.isInteger(z) ? FN(x, z) : F(x, z);
+        const f = sheetY(x, z);
         if (eBest >= 0) {
           // (The rule's own height there, its kerb's top in effect. Lifted
           // to the kerb's top wherever the rule lay under it, it stood up
@@ -8923,12 +9203,13 @@ export async function buildPasirRisCourse(
           vy[i] = y;
           // (Its own top for the face under it: see below.)
           edgeTop.set(i, eT);
-        } else vy[i] = f;
+        } else vy[i] = Math.max(f, gnd(x, z) + 0.02);
         if (pause()) {
           yield;
           slice = performance.now();
         }
       }
+      mark('tHeights');
       // Its light, from the rule's own slope: at each point of the 1 m
       // grid from its neighbours either side, and between them as they
       // lie about it. (Asked again round every point, the rule was 5
@@ -8941,7 +9222,10 @@ export async function buildPasirRisCourse(
         // (Only from points of the 1 m grid the lawn has: the rule asked
         // out on a road beside it gives some other island's heights, and
         // turned a strip between two kerbs dark in specks, 1335,571.6.)
-        const At = (a: number, b: number) => (vIdx.has(vKey(a * S_, b * S_)) ? FN(a, b) : NaN);
+        const At = (a: number, b: number) => {
+          const id = nodeId.get(a * 100003 + b);
+          return id !== undefined && vIdx.has(vKey(a * S_, b * S_)) ? U[id] : NaN;
+        };
         const f0 = At(i, j), xp = At(i + 1, j), xm = At(i - 1, j), zp = At(i, j + 1), zm = At(i, j - 1);
         const d = (p: number, m: number, c: number) => (p === p && m === m ? (p - m) / 2 : p === p && c === c ? p - c : m === m && c === c ? c - m : NaN);
         g = [d(xp, xm, f0), d(zp, zm, f0)];
@@ -8987,12 +9271,12 @@ export async function buildPasirRisCourse(
           slice = performance.now();
         }
       }
+      mark('tNormals');
       // Into the tile's lawn.
       const base = lawn.pos.length / 3;
       for (let i = 0; i < vx.length; i++) {
         const x = vx[i], z = vz[i], y = vy[i];
-        rawHeight(x, z);
-        colorAt(x, z, y, col);
+        lawnColour(x, z, col);
         const s = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
         lawn.pos.push(x, y === y ? y : 0, z);
         lawn.uv.push(x / DETAIL_M, z / DETAIL_M);
