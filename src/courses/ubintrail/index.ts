@@ -808,6 +808,8 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       pebble: { geo: new THREE.IcosahedronGeometry(1, 0), mat: new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }), hsl: [0.07, 0.1, 0.24], shadow: false },
       ledge: { geo: (() => { const g = new THREE.BoxGeometry(1, 1, 1, 3, 1, 1); const pos = g.attributes.position; const r = mulberry32(SEED + 78); for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0) pos.setY(i, pos.getY(i) - 0.12 * r()); g.computeVertexNormals(); return g; })(), mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.07, 0.22], shadow: true },
       root: { geo: new THREE.CylinderGeometry(1, 1, 1, 6).rotateX(Math.PI / 2), mat: new THREE.MeshStandardMaterial({ roughness: 0.9 }), hsl: [0.07, 0.4, 0.13], shadow: true },
+      // (A look spot's post: weathered wood, a yellow band at the top.)
+      post: { geo: merge([tint(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), 0x6b5236), tint(new THREE.BoxGeometry(1.15, 0.16, 1.15).translate(0, 0.86, 0), 0xe8c020)]), mat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }), hsl: [0, 0, 0.93], shadow: true },
       puddle: { geo: new THREE.CircleGeometry(0.5, 14).rotateX(-Math.PI / 2), mat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.9 }), hsl: [0.09, 0.3, 0.11], shadow: false },
     };
     const dummy = new THREE.Object3D();
@@ -838,6 +840,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
           // Its top flush with the step above.
           dummy.position.set(p.x, h - p.sy / 2 + 0.03, p.z);
           dummy.scale.set(p.sz, p.sy, p.sx);
+        } else if (name === 'post') {
+          dummy.position.set(p.x, h - 0.1, p.z);
+          dummy.scale.set(p.sx, p.sy, p.sz);
         } else if (name === 'root') {
           dummy.position.set(p.x, h + p.sx * 0.25, p.z);
           dummy.scale.set(p.sx, p.sx * 0.8, p.sz);

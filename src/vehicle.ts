@@ -54,6 +54,10 @@ const TUNING = {
   rutDig: 0.3,
   rutGrip: 0.45,
   rutSink: 0.15,
+  // The diff locked off the road: both wheels of an axle made to turn at
+  // the same speed scrub, and the front pushes wide: the car turns no
+  // tighter than diffTurn of full lock. Tight turns want it open.
+  diffTurn: 0.65,
 };
 
 const DUST = new THREE.Color(0x8a7458);
@@ -351,8 +355,11 @@ export class Vehicle {
       this.knock += (this.knockTo - this.knock) * Math.min(1, dt * 14);
       knock = this.knock;
     } else this.knock = this.knockTo = 0;
-    c.setWheelSteering(0, this.steerAngle + knock);
-    c.setWheelSteering(1, this.steerAngle + knock);
+    // (A locked diff off the road pushes wide: the front will not turn in tight.)
+    let turn = this.steerAngle + knock;
+    if (this.diffLock && (this.off[0] || this.off[1])) turn = clamp(turn, -TUNING.steerCrawl * TUNING.diffTurn, TUNING.steerCrawl * TUNING.diffTurn);
+    c.setWheelSteering(0, turn);
+    c.setWheelSteering(1, turn);
 
     // Engine: simple torque falloff toward top speed of the selected range.
     const low = this.lowRange;
