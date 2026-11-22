@@ -84,7 +84,7 @@ export const PUAKA: TrailDef = {
     {
       kind: 'rutted',
       label: 'Deep ruts',
-      at: [605, 120],
+      at: [596, 218],
       len: 60,
       needs: {},
       mix: [
@@ -95,7 +95,7 @@ export const PUAKA: TrailDef = {
     {
       kind: 'notch',
       label: 'Granite notch',
-      at: [585, 256],
+      at: [561, 332],
       len: 45,
       needs: {},
       // (A line, not kit: nothing stops you in the middle, so no way round.)
@@ -108,7 +108,7 @@ export const PUAKA: TrailDef = {
     {
       kind: 'falls',
       label: 'Rock waterfall',
-      at: [566, 313],
+      at: [467, 397],
       len: 45,
       needs: { low: true, diff: true },
       mix: [

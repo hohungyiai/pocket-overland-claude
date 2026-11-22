@@ -166,14 +166,18 @@ const kits = (o, room = 150) => {
         // Tries with no kit, from the run-in each time: the way round
         // opens after the third.
         let st2 = null;
+        let openedEarly = false;
         const sayings = [];
         for (let k = 0; k < 5; k++) {
           const t = await drive(page, from, to, K.none, { timeout: 90, giveUp: 5 });
           sayings.push(...t.says.map((x) => x[1]), ...t.tips.map((x) => 'tip: ' + x[1]));
           st2 = (await page.evaluate(() => window.__ubinObstacles()))[i];
+          if (st2.open && st2.tries < 3) openedEarly = true;
           if (st2.open) break;
         }
-        check(`${o.label}: the way round opens after three tries, not before`, st2.open && st2.tries === 3, `(tries ${st2.tries}) ${JSON.stringify([...new Set(sayings)])}`);
+        // (A long stretch can take two tries in one drive: stalled, a little
+        // further, stalled again. Opened with fewer than three is the fault.)
+        check(`${o.label}: the way round opens after three tries, not before`, st2.open && st2.tries >= 3 && !openedEarly, `(tries ${st2.tries}) ${JSON.stringify([...new Set(sayings)])}`);
         const rk = { low: !!info.roundKit.low, diff: !!info.roundKit.diff, cruise: 6 };
         const round = await page.evaluate(([i, k]) => window.__ubinDrive(window.__ubinRound(i), { ...k, timeout: 150 }), [i, rk]);
         const st3 = (await page.evaluate(() => window.__ubinObstacles()))[i];
