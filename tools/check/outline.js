@@ -683,7 +683,18 @@ window.__checkLawnInIsland = (all = false) => {
         const l = Math.hypot(cx - t[c], cz - t[c + 2]);
         if (l < 0.1) continue;
         const f = 0.05 / l;
-        S.push([t[c] + (cx - t[c]) * f, t[c + 1] + (cy - t[c + 1]) * f, t[c + 2] + (cz - t[c + 2]) * f]);
+        const x = t[c] + (cx - t[c]) * f, z = t[c + 2] + (cz - t[c + 2]) * f;
+        // (Not where that is still within 2 cm of the piece's own side, a
+        // sliver's: 5 cm along to its middle, it was a centimetre off the
+        // lawn's edge, where the lawn meets a deck level with it and the two
+        // edges lie a centimetre apart, 1827,1926.9.)
+        let edge = Infinity;
+        for (let e = 0; e < 9; e += 3) {
+          const ax = t[e], az = t[e + 2], bx = t[(e + 3) % 9], bz = t[(e + 5) % 9], L = Math.hypot(bx - ax, bz - az);
+          if (L > 1e-9) edge = Math.min(edge, Math.abs((bx - ax) * (z - az) - (bz - az) * (x - ax)) / L);
+        }
+        if (edge < 0.02) continue;
+        S.push([x, t[c + 1] + (cy - t[c + 1]) * f, z]);
       }
       for (const [x, y, z] of S)
         if (paved(x, z, y)) {

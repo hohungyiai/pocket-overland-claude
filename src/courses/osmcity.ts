@@ -9177,7 +9177,14 @@ export async function buildPasirRisCourse(
                 sv += wt * (S[n + 2] - top0.get(n)!);
               }
           const y = lerp(ta, tb, u) + (sw > 0 ? sv / sw : 0);
-          return capAt(x, z, y);
+          // (Eased down no further than the ground there, the lawn being
+          // laid over it: a kerb's edge eased 1 in 2 towards lower edges a
+          // few metres off, where the ground itself fell less, lay a metre
+          // under the ground 3 cm from the grid's next point, held on the
+          // ground: a fold, 1868,1860.5. Never over its own height: lifted
+          // to the ground wherever it lay under it, the lawn stood out over
+          // a road beside a kerb in a cutting, 1827,1926.9.)
+          return Math.max(capAt(x, z, y), Math.min(y, gnd(x, z) + 0.02));
         }
         // (Else, off a lawn kerb: the ground's or a drop's edge, as its
         // samples within 75 cm have it, each weighed by its length and
@@ -9215,7 +9222,7 @@ export async function buildPasirRisCourse(
                 sw += wt;
                 sv += wt * S[n + 2];
               }
-          if (sw > 0) return capAt(x, z, sv / sw);
+          if (sw > 0) return Math.max(capAt(x, z, sv / sw), Math.min(sv / sw, gnd(x, z) + 0.02));
         }
         return gv === gv ? gv : gnd(x, z) + 0.02;
       };
@@ -9339,7 +9346,10 @@ export async function buildPasirRisCourse(
           eb = d2;
           y = lerp(envSeg[id + 2], envSeg[id + 5], u);
         }
-        return y === y ? y : edgeRaw(x, z);
+        // (Eased down along the edge, never under the ground there, nor
+        // its own height: see capAt.)
+        if (!(y === y)) return edgeRaw(x, z);
+        return Math.max(y, Math.min(edgeRaw(x, z), gnd(x, z) + 0.02));
       };
       // Where it is worked out: the domain's crossings with each line of the grid, as spans.
       type Span = { a: number; b: number; ea: number; eb: number };
