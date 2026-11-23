@@ -8640,6 +8640,91 @@ export async function buildPasirRisCourse(
         for (const q of out) pathStrips.push(q);
       }
       mark('tPath');
+      const rect = (x0: number, z0: number, x1: number, z1: number) => many([toPath([[x0, z0], [x1, z0], [x1, z1], [x0, z1]])]);
+      const clip = (P: Paths64, x0: number, z0: number, x1: number, z1: number) => Clipper.Intersect(P, rect(x0, z0, x1, z1), FillRule.NonZero);
+      /**
+       * Each ring's parts on one side of a line along x (or z) = m: its runs
+       * on that side, each joined to the next along the line as the ring's
+       * inside lies there (the crossings, in order along the line, pair off
+       * in and out). A point on the line counts as below it. Where the
+       * pairing fails, the clipper's.
+       */
+      const split = (P: Paths64, alongX: boolean, m: number, below: boolean, x0: number, z0: number, x1: number, z1: number) => {
+        const out = new Paths64();
+        const c = (q: { x: number; y: number }) => (alongX ? q.x : q.y);
+        const u = (q: { x: number; y: number }) => (alongX ? q.y : q.x);
+        const keep = (q: { x: number; y: number }) => (below ? c(q) <= m : c(q) > m);
+        type Q = { x: number; y: number };
+        const at = (a: Q, b: Q): Q => {
+          // (The same point from either side, from the edge's ends in order.)
+          if (c(a) === m) return a;
+          if (c(b) === m) return b;
+          const [p, r] = c(a) < c(b) ? [a, b] : [b, a];
+          const t = Math.round(u(p) + ((u(r) - u(p)) * (m - c(p))) / (c(r) - c(p)));
+          return alongX ? new Point64(m, t) : new Point64(t, m);
+        };
+        for (const ring of P) {
+          const n = ring.length;
+          let k0 = -1;
+          for (let q = 0; q < n; q++) if (!keep(ring[q])) { k0 = q; break; }
+          if (k0 < 0) {
+            out.push(ring);
+            continue;
+          }
+          // Runs kept: [in point, points..., out point].
+          const runs: Q[][] = [];
+          let cur: Q[] | null = null;
+          for (let s = 0; s < n; s++) {
+            const a = ring[(k0 + s) % n], b = ring[(k0 + s + 1) % n];
+            const ka = keep(a), kb = keep(b);
+            if (!ka && kb) cur = [at(a, b)];
+            if (kb && cur) cur.push(b);
+            if (ka && !kb && cur) {
+              cur.push(at(a, b));
+              runs.push(cur);
+              cur = null;
+            }
+          }
+          if (!runs.length) continue;
+          // The crossings along the line, paired.
+          const ends: [number, number, boolean][] = [];
+          runs.forEach((r, i) => {
+            ends.push([u(r[0]), i, true], [u(r[r.length - 1]), i, false]);
+          });
+          ends.sort((p, q) => p[0] - q[0] || (p[2] === q[2] ? 0 : p[2] ? 1 : -1));
+          const nextRun = new Map<number, number>();
+          let ok = ends.length % 2 === 0;
+          for (let q = 0; ok && q < ends.length; q += 2) {
+            const [, ia, ina] = ends[q], [, ib, inb] = ends[q + 1];
+            if (ina === inb) ok = false;
+            else if (ina) nextRun.set(ib, ia);
+            else nextRun.set(ia, ib);
+          }
+          if (!ok || nextRun.size !== runs.length) {
+            // (Wound as it was: a hole's ring cut by the clipper came back wound as a piece.)
+            const back = Clipper.area(ring) < 0;
+            for (const q of clip(many([back ? ring.slice().reverse() : ring]), x0, z0, x1, z1)) out.push(back ? q.slice().reverse() : q);
+            continue;
+          }
+          const used = new Set<number>();
+          for (let i = 0; i < runs.length; i++) {
+            if (used.has(i)) continue;
+            const o = new Path64();
+            let j = i;
+            while (!used.has(j)) {
+              used.add(j);
+              for (const q of runs[j]) {
+                const l = o[o.length - 1];
+                if (!l || l.x !== q.x || l.y !== q.y) o.push(new Point64(q.x, q.y));
+              }
+              j = nextRun.get(j)!;
+            }
+            while (o.length > 1 && o[0].x === o[o.length - 1].x && o[0].y === o[o.length - 1].y) o.pop();
+            if (o.length >= 3 && Math.abs(Clipper.area(o)) >= 1) out.push(o);
+          }
+        }
+        return out;
+      };
       // Where it is laid: within REACH of a lawn kerb, in the tile, off the paving, the kerbs and the paths.
       yield;
       slice = performance.now();
@@ -8647,7 +8732,6 @@ export async function buildPasirRisCourse(
       for (const r of w.all ?? []) if (r.lvl === lvl) (r.hole ? holes : pave).push(toPath(r.pts));
       ST.at = 1;
       const tt = [performance.now()];
-      const paved = Clipper.Difference(Clipper.Union(pave, undefined, FillRule.NonZero), Clipper.Union(holes, undefined, FillRule.NonZero), FillRule.NonZero);
       ST.at = 2;
       tt.push(performance.now());
       // (Its rounds to 5 cm: to the clipper's own fineness, a millimetre, a
@@ -8674,22 +8758,42 @@ export async function buildPasirRisCourse(
       const tileR = many([toPath([[X0, Z0], [X1, Z0], [X1, Z1], [X0, Z1]])]);
       ST.at = 3;
       tt.push(performance.now());
-      // (Each part of it wound the one way: a kerb's band wound against the
-      // paving under it cancelled it out, and the lawn was laid over a
-      // path there, 1871,1855.)
-      const off = many(paved, Clipper.Union(bands, undefined, FillRule.NonZero), pathStrips);
+      // (Cut into strips 25 m wide, each worked out alone and the pieces
+      // joined again: the clipper's time goes as the number of sides a
+      // line across the whole lot crosses, and over the whole square that
+      // was a third of the sheet's time.)
+      const QX0 = X0 - SOLVE_M, QX1 = X1 + SOLVE_M, QZ0 = Z0 - SOLVE_M, QZ1 = Z1 + SOLVE_M, FAR = 1e5;
+      const NSTRIP = Math.ceil((QX1 - QX0) / 25 - 1e-9), SW = (QX1 - QX0) / NSTRIP;
+      const strips = (P: Paths64) => {
+        let rest = split(split(P, false, QZ0 * S_, false, -FAR, QZ0, FAR, FAR), false, QZ1 * S_, true, -FAR, QZ0, FAR, QZ1);
+        rest = split(rest, true, QX0 * S_, false, QX0, -FAR, FAR, FAR);
+        const out: Paths64[] = [];
+        for (let k = 1; k <= NSTRIP; k++) {
+          const c = k === NSTRIP ? QX1 : QX0 + k * SW;
+          out.push(split(rest, true, c * S_, true, -FAR, -FAR, c, FAR));
+          if (k < NSTRIP) rest = split(rest, true, c * S_, false, c, -FAR, FAR, FAR);
+        }
+        return out;
+      };
+      const reachS = strips(reach), paveS = strips(pave), holesS = strips(holes), bandsS = strips(bands), psS = strips(pathStrips);
+      const parts = new Paths64();
+      const off = new Paths64();
+      for (let k = 0; k < NSTRIP; k++) {
+        if (!reachS[k].length) continue;
+        // (Each part of it wound the one way: a kerb's band wound against the
+        // paving under it cancelled it out, and the lawn was laid over a
+        // path there, 1871,1855.)
+        const offK = many(Clipper.Difference(Clipper.Union(paveS[k], undefined, FillRule.NonZero), Clipper.Union(holesS[k], undefined, FillRule.NonZero), FillRule.NonZero), Clipper.Union(bandsS[k], undefined, FillRule.NonZero), psS[k]);
+        for (const q of Clipper.Difference(reachS[k], offK, FillRule.NonZero)) parts.push(q);
+        for (const q of offK) off.push(q);
+      }
       ST.at = 4;
       tt.push(performance.now());
-      // (Opened by a centimetre: a kerb's outer edge and the paving's beside
-      // it a millimetre apart left a strip of lawn that thin between them,
-      // its two sides 30 cm apart in height, standing upright, at 353,1960.)
-      // (Over the tile and SOLVE_M round it, where the rule is worked out: see below.)
-      const sqR = many([toPath([[X0 - SOLVE_M, Z0 - SOLVE_M], [X1 + SOLVE_M, Z0 - SOLVE_M], [X1 + SOLVE_M, Z1 + SOLVE_M], [X0 - SOLVE_M, Z1 + SOLVE_M]])]);
       // (Less its crumbs, rings of under a square centimetre: the clipper
       // takes the way the lowest ring winds for the way they all do, and
       // a crumb of three points in a line wound the other way, lowest of
       // all; narrowed, the tile's lawn came back as none, 633.6,200.)
-      const raw = Clipper.Difference(Clipper.Intersect(reach, sqR, FillRule.NonZero), off, FillRule.NonZero).filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_);
+      const raw = Clipper.Union(parts, undefined, FillRule.NonZero).filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_);
       tt.push(performance.now());
       // (And its points no closer than 5 mm to the line through those
       // either side: round a nose the kerb is in pieces of 3 cm, and a
@@ -8708,7 +8812,7 @@ export async function buildPasirRisCourse(
         const G = globalThis as { __sheetWant?: string[]; __sheetDbg?: Record<string, unknown> };
         if (G.__sheetWant?.includes(`${ix},${iz}`)) {
           const P = (Q: Paths64) => Q.map((p) => p.map((q) => [q.x / S_, q.y / S_]));
-          (G.__sheetDbg ??= {})[`${ix},${iz},${lvl}`] = { domain: P(domain), reach: P(reach), off: P(off), paved: P(paved), bands: P(bands), ps: P(pathStrips), bh: [...byHalf].map(([h, Q]) => [h, P(Q)]), lawnLines: P(lawnLines), S: S.slice() };
+          (G.__sheetDbg ??= {})[`${ix},${iz},${lvl}`] = { domain: P(domain), reach: P(reach), off: P(off), bands: P(bands), ps: P(pathStrips), bh: [...byHalf].map(([h, Q]) => [h, P(Q)]), lawnLines: P(lawnLines), S: S.slice() };
         }
       }
       tt.push(performance.now());
@@ -8986,15 +9090,25 @@ export async function buildPasirRisCourse(
           // edge, a low point beyond the one tile's reach brought the
           // border's height down 5 cm in that tile alone, -182.4,200.)
           const v0 = v.slice();
+          // (Each side's length once; and no further along than the lowest
+          // point anywhere on it could bring it down from: looked along the
+          // whole ENV_D from every point, a twentieth of the sheet's time.)
+          const len = new Float64Array(n);
+          let vmin = Infinity;
+          for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            len[i] = Math.hypot(px[j] - px[i], pz[j] - pz[i]);
+            if (v0[i] < vmin) vmin = v0[i];
+          }
           for (let i = 0; i < n; i++) {
             if (!(v0[i] === v0[i])) continue;
-            for (const dir of [1, -1]) {
+            for (let dir = 1; dir >= -1; dir -= 2) {
               let j = i, s = 0;
               for (let step = 0; step < n; step++) {
                 const k = (j + dir + n) % n;
                 if (!open[dir > 0 ? j : k]) break;
-                s += Math.hypot(px[k] - px[j], pz[k] - pz[j]);
-                if (s > ENV_D) break;
+                s += len[dir > 0 ? j : k];
+                if (s > ENV_D || vmin + ENV_S * s >= v[i]) break;
                 const c = v0[k] + ENV_S * s;
                 if (c < v[i]) v[i] = c;
                 j = k;
@@ -9137,28 +9251,46 @@ export async function buildPasirRisCourse(
         // Solved by over-relaxation, to a tenth of a millimetre.
         const tS1 = performance.now();
         ST.N = (ST.N ?? 0) + N;
+        // (Each point's weights on its neighbours and the edges' part, once:
+        // worked out afresh each sweep, the solving was a tenth of the
+        // sheet's time.)
+        const cOff = new Int32Array(N + 1), cNb: number[] = [], cW: number[] = [];
+        const cK = new Float64Array(N), cS = new Float64Array(N);
+        for (let id = 0; id < N; id++) {
+          cOff[id] = cNb.length;
+          if (fixed[id]) continue;
+          let sa = 0, sv = 0;
+          for (let lo = 0; lo <= 2; lo += 2) {
+            // (Past the side, the far side's mirror: level there.)
+            let k1 = lo, k2 = lo + 1;
+            if (nb[id * 4 + k1] === -2 && nb[id * 4 + k2] === -2) continue;
+            if (nb[id * 4 + k1] === -2) k1 = k2;
+            else if (nb[id * 4 + k2] === -2) k2 = k1;
+            const h1 = nh[id * 4 + k1], h2 = nh[id * 4 + k2], c = 2 / (h1 + h2);
+            for (const [k, h] of [[k1, h1], [k2, h2]]) {
+              sa += c / h;
+              if (nb[id * 4 + k] >= 0) cNb.push(nb[id * 4 + k]), cW.push(c / h);
+              else sv += (c / h) * ne[id * 4 + k];
+            }
+          }
+          if (!(sa > 0)) continue;
+          cS[id] = 1 / sa;
+          cK[id] = sv;
+        }
+        cOff[N] = cNb.length;
+        const NB = Int32Array.from(cNb), WT = Float64Array.from(cW);
         const W = 1.85;
         for (let it = 0; it < 4000; it++) {
           let worst = 0;
           for (let id = 0; id < N; id++) {
-            if (fixed[id]) continue;
-            let sa = 0, sv = 0;
-            for (const lo of [0, 2]) {
-              // (Past the side, the far side's mirror: level there.)
-              let k1 = lo, k2 = lo + 1;
-              if (nb[id * 4 + k1] === -2 && nb[id * 4 + k2] === -2) continue;
-              if (nb[id * 4 + k1] === -2) k1 = k2;
-              else if (nb[id * 4 + k2] === -2) k2 = k1;
-              const h1 = nh[id * 4 + k1], h2 = nh[id * 4 + k2], c = 2 / (h1 + h2);
-              const v1 = nb[id * 4 + k1] >= 0 ? U[nb[id * 4 + k1]] : ne[id * 4 + k1];
-              const v2 = nb[id * 4 + k2] >= 0 ? U[nb[id * 4 + k2]] : ne[id * 4 + k2];
-              sa += c / h1 + c / h2;
-              sv += (c / h1) * v1 + (c / h2) * v2;
-            }
-            if (!(sa > 0)) continue;
-            const d = (sv / sa - U[id]) * W;
+            const is = cS[id];
+            if (!is) continue;
+            let sv = cK[id];
+            for (let q = cOff[id], e = cOff[id + 1]; q < e; q++) sv += WT[q] * U[NB[q]];
+            const d = (sv * is - U[id]) * W;
             U[id] += d;
-            if (Math.abs(d) > worst) worst = Math.abs(d);
+            if (d > worst) worst = d;
+            else if (-d > worst) worst = -d;
           }
           ST.iters = (ST.iters ?? 0) + 1;
           if (worst < 1e-4) break;
@@ -9272,8 +9404,6 @@ export async function buildPasirRisCourse(
       // own rectangle clip loops without end on this
       // outline, see clipfix. A 1 m square no edge crosses is whole or
       // empty, as its middle is.)
-      const rect = (x0: number, z0: number, x1: number, z1: number) => many([toPath([[x0, z0], [x1, z0], [x1, z1], [x0, z1]])]);
-      const clip = (P: Paths64, x0: number, z0: number, x1: number, z1: number) => Clipper.Intersect(P, rect(x0, z0, x1, z1), FillRule.NonZero);
       /**
        * A piece's triangles, each pair side by side turned the other way
        * across their shared side where that makes the thinner of them less
@@ -9454,87 +9584,6 @@ export async function buildPasirRisCourse(
           }
         }
       };
-      /**
-       * Each ring's parts on one side of a line along x (or z) = m: its runs
-       * on that side, each joined to the next along the line as the ring's
-       * inside lies there (the crossings, in order along the line, pair off
-       * in and out). A point on the line counts as below it. Where the
-       * pairing fails, the clipper's.
-       */
-      const split = (P: Paths64, alongX: boolean, m: number, below: boolean, x0: number, z0: number, x1: number, z1: number) => {
-        const out = new Paths64();
-        const c = (q: { x: number; y: number }) => (alongX ? q.x : q.y);
-        const u = (q: { x: number; y: number }) => (alongX ? q.y : q.x);
-        const keep = (q: { x: number; y: number }) => (below ? c(q) <= m : c(q) > m);
-        type Q = { x: number; y: number };
-        const at = (a: Q, b: Q): Q => {
-          // (The same point from either side, from the edge's ends in order.)
-          if (c(a) === m) return a;
-          if (c(b) === m) return b;
-          const [p, r] = c(a) < c(b) ? [a, b] : [b, a];
-          const t = Math.round(u(p) + ((u(r) - u(p)) * (m - c(p))) / (c(r) - c(p)));
-          return alongX ? new Point64(m, t) : new Point64(t, m);
-        };
-        for (const ring of P) {
-          const n = ring.length;
-          let k0 = -1;
-          for (let q = 0; q < n; q++) if (!keep(ring[q])) { k0 = q; break; }
-          if (k0 < 0) {
-            out.push(ring);
-            continue;
-          }
-          // Runs kept: [in point, points..., out point].
-          const runs: Q[][] = [];
-          let cur: Q[] | null = null;
-          for (let s = 0; s < n; s++) {
-            const a = ring[(k0 + s) % n], b = ring[(k0 + s + 1) % n];
-            const ka = keep(a), kb = keep(b);
-            if (!ka && kb) cur = [at(a, b)];
-            if (kb && cur) cur.push(b);
-            if (ka && !kb && cur) {
-              cur.push(at(a, b));
-              runs.push(cur);
-              cur = null;
-            }
-          }
-          if (!runs.length) continue;
-          // The crossings along the line, paired.
-          const ends: [number, number, boolean][] = [];
-          runs.forEach((r, i) => {
-            ends.push([u(r[0]), i, true], [u(r[r.length - 1]), i, false]);
-          });
-          ends.sort((p, q) => p[0] - q[0] || (p[2] === q[2] ? 0 : p[2] ? 1 : -1));
-          const nextRun = new Map<number, number>();
-          let ok = ends.length % 2 === 0;
-          for (let q = 0; ok && q < ends.length; q += 2) {
-            const [, ia, ina] = ends[q], [, ib, inb] = ends[q + 1];
-            if (ina === inb) ok = false;
-            else if (ina) nextRun.set(ib, ia);
-            else nextRun.set(ia, ib);
-          }
-          if (!ok || nextRun.size !== runs.length) {
-            for (const q of clip(many([ring]), x0, z0, x1, z1)) out.push(q);
-            continue;
-          }
-          const used = new Set<number>();
-          for (let i = 0; i < runs.length; i++) {
-            if (used.has(i)) continue;
-            const o = new Path64();
-            let j = i;
-            while (!used.has(j)) {
-              used.add(j);
-              for (const q of runs[j]) {
-                const l = o[o.length - 1];
-                if (!l || l.x !== q.x || l.y !== q.y) o.push(new Point64(q.x, q.y));
-              }
-              j = nextRun.get(j)!;
-            }
-            while (o.length > 1 && o[0].x === o[o.length - 1].x && o[0].y === o[o.length - 1].y) o.pop();
-            if (o.length >= 3 && Math.abs(Clipper.area(o)) >= 1) out.push(o);
-          }
-        }
-        return out;
-      };
       // (Halved and halved again, each half cut from its own half's piece,
       // down to blocks of 8 m or less: cut from the whole tile's, as 40 m
       // squares were, the clipper took 30 s of the map's start.)
@@ -9601,7 +9650,7 @@ export async function buildPasirRisCourse(
           // (Its own top for the face under it: see below.)
           edgeTop.set(i, eT);
         } else vy[i] = Math.max(f, gnd(x, z) + 0.02);
-        if (pause()) {
+        if ((i & 255) === 0 && pause()) {
           yield;
           slice = performance.now();
         }
@@ -9630,40 +9679,41 @@ export async function buildPasirRisCourse(
         return g;
       };
       const nrm: number[] = new Array(vx.length * 3);
-      const faceN: ([number, number, number] | undefined)[] = new Array(vx.length);
+      const faceN = new Float64Array(vx.length * 3);
       for (let t = 0; t < tris.length; t += 3) {
         const a = tris[t], b = tris[t + 1], c = tris[t + 2];
         if (!(vy[a] === vy[a] && vy[b] === vy[b] && vy[c] === vy[c])) continue;
         const ux = vx[b] - vx[a], uy = vy[b] - vy[a], uz = vz[b] - vz[a], wx = vx[c] - vx[a], wy = vy[c] - vy[a], wz = vz[c] - vz[a];
         let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
         if (ny < 0) (nx = -nx), (ny = -ny), (nz = -nz);
-        for (const q of [a, b, c]) {
-          const f = (faceN[q] ??= [0, 0, 0]);
-          (f[0] += nx), (f[1] += ny), (f[2] += nz);
-        }
+        for (const q of [a * 3, b * 3, c * 3]) (faceN[q] += nx), (faceN[q + 1] += ny), (faceN[q + 2] += nz);
       }
       for (let i = 0; i < vx.length; i++) {
         const x = vx[i], z = vz[i];
         const ci = Math.floor(x), cj = Math.floor(z), u = x - ci, v = z - cj;
         let gx = 0, gz = 0, ws = 0;
-        for (const [di, dj, wt] of [[0, 0, (1 - u) * (1 - v)], [1, 0, u * (1 - v)], [0, 1, (1 - u) * v], [1, 1, u * v]] as const) {
-          if (wt <= 1e-9) continue;
+        const add = (di: number, dj: number, wt: number) => {
+          if (wt <= 1e-9) return;
           const g = grad(ci + di, cj + dj);
-          if (!(g[0] === g[0] && g[1] === g[1])) continue;
+          if (!(g[0] === g[0] && g[1] === g[1])) return;
           (gx += g[0] * wt), (gz += g[1] * wt), (ws += wt);
-        }
+        };
+        add(0, 0, (1 - u) * (1 - v));
+        add(1, 0, u * (1 - v));
+        add(0, 1, (1 - u) * v);
+        add(1, 1, u * v);
         if (ws > 0) {
           (gx /= ws), (gz /= ws);
           const l = Math.sqrt(gx * gx + 1 + gz * gz);
           (nrm[3 * i] = -gx / l), (nrm[3 * i + 1] = 1 / l), (nrm[3 * i + 2] = -gz / l);
         } else {
           // (None about it: a strip narrower than the grid. Its pieces' own slope.)
-          const fn = faceN[i];
-          const l = fn ? Math.hypot(fn[0], fn[1], fn[2]) : 0;
-          if (fn && l > 0) (nrm[3 * i] = fn[0] / l), (nrm[3 * i + 1] = fn[1] / l), (nrm[3 * i + 2] = fn[2] / l);
+          const f0 = faceN[3 * i], f1 = faceN[3 * i + 1], f2 = faceN[3 * i + 2];
+          const l = Math.hypot(f0, f1, f2);
+          if (l > 0) (nrm[3 * i] = f0 / l), (nrm[3 * i + 1] = f1 / l), (nrm[3 * i + 2] = f2 / l);
           else (nrm[3 * i] = 0), (nrm[3 * i + 1] = 1), (nrm[3 * i + 2] = 0);
         }
-        if (pause()) {
+        if ((i & 255) === 0 && pause()) {
           yield;
           slice = performance.now();
         }
