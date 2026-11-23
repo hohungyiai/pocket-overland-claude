@@ -84,6 +84,35 @@ function simplifyRings(P: Paths64, tol: number): Paths64 {
   }
   return out;
 }
+/** Open lines' points no further than tol from the line through those kept either side (Douglas-Peucker, end to end). */
+function simplifyLines(P: Paths64, tol: number): Paths64 {
+  const out = new Paths64();
+  const t2 = tol * tol;
+  for (const r of P) {
+    const n = r.length;
+    if (n < 3) { out.push(r); continue; }
+    const keep = new Uint8Array(n);
+    keep[0] = keep[n - 1] = 1;
+    const stack: number[] = [0, n - 1];
+    while (stack.length) {
+      const b = stack.pop()!, a = stack.pop()!;
+      const A = r[a], B = r[b];
+      const dx = B.x - A.x, dy = B.y - A.y, L2 = dx * dx + dy * dy;
+      let w = -1, wd = t2;
+      for (let i = a + 1; i < b; i++) {
+        const ex = r[i].x - A.x, ey = r[i].y - A.y;
+        const c = ex * dy - ey * dx;
+        const d = L2 > 0 ? (c * c) / L2 : ex * ex + ey * ey;
+        if (d > wd) { wd = d; w = i; }
+      }
+      if (w >= 0) { keep[w] = 1; stack.push(a, w, w, b); }
+    }
+    const q = new Path64();
+    for (let i = 0; i < n; i++) if (keep[i]) q.push(r[i]);
+    out.push(q);
+  }
+  return out;
+}
 const STEP_FAR = 20;
 const G = 4; // raster cell for land use, metres
 const WB = { minX: -3600, maxX: 3600, minZ: -3600, maxZ: 3600 };
@@ -8399,6 +8428,8 @@ export async function buildPasirRisCourse(
     if (g === undefined) kerbGround.set(key, (g = groundY(x, z)));
     return g;
   };
+  /** Each tile border's island sheet heights, by level, side and corner, once worked out: see islandSheet. */
+  const borderKept = new Map<string, Float64Array>();
   function* islandSheet(ix: number, iz: number, w: { rings: OutRing[]; segs?: Map<number, number[][]>; kerbRuns?: KerbRun[]; all?: { pts: XZ[]; hole: boolean; lvl: number }[] }, lawn: Acc, side: Acc): Generator<void, void, void> {
     const KR = w.kerbRuns ?? [];
     if (!KR.length) return;
@@ -8599,7 +8630,15 @@ export async function buildPasirRisCourse(
       // (The clipper widens an open line by half the width it is given, each
       // side: so twice h. Rounded at its bends: so the strip is all within h
       // of the path's line, however a tile cut the line, see clipfix.)
-      for (const [h, P] of byHalf) for (const q of Clipper.InflatePaths(P, 2 * h * S_, JoinType.Round, EndType.Round)) pathStrips.push(q);
+      // (Its rounds to a centimetre: to the clipper's own fineness, under a
+      // millimetre, every bend and end took dozens of points.)
+      for (const [h, P] of byHalf) {
+        const co = new ClipperOffset(2, 0.01 * S_);
+        co.addPaths(P, JoinType.Round, EndType.Round);
+        const out = new Paths64();
+        co.execute(2 * h * S_, out);
+        for (const q of out) pathStrips.push(q);
+      }
       mark('tPath');
       // Where it is laid: within REACH of a lawn kerb, in the tile, off the paving, the kerbs and the paths.
       yield;
@@ -8621,7 +8660,11 @@ export async function buildPasirRisCourse(
         // matter of distance only, the same in every tile. Mitred, a kerb
         // cut into lines differently by two tiles reached 8.2 m in one,
         // 7.75 in the other, and the lawn ended at the border, 1800,2192.5.)
-        co.addPaths(lawnLines, JoinType.Round, EndType.Round);
+        // (Its lines to a centimetre first: round a nose a kerb has a point
+        // every 3 cm, and widened 8 m every one of them crossed dozens of
+        // others' on the inside of the bend, a second of the trial map's
+        // start; the reach's own rounds are to 5 cm.)
+        co.addPaths(simplifyLines(lawnLines, 0.01 * S_), JoinType.Round, EndType.Round);
         // (Twice REACH: the clipper widens an open line by half each side.
         // Given REACH, the lawn reached only half as far from its kerbs,
         // and footpaths were cut out half their width, the lawn over the
@@ -9094,7 +9137,7 @@ export async function buildPasirRisCourse(
         // Solved by over-relaxation, to a tenth of a millimetre.
         const tS1 = performance.now();
         ST.N = (ST.N ?? 0) + N;
-        const W = 1.7;
+        const W = 1.85;
         for (let it = 0; it < 4000; it++) {
           let worst = 0;
           for (let id = 0; id < N; id++) {
@@ -9140,19 +9183,43 @@ export async function buildPasirRisCourse(
         const id = r.nodeId.get(i * 100003 + j);
         return id === undefined ? NaN : r.U[id];
       };
-      const sideL = yield* solveRect(X0 - M, X0 + M, Z0 - M, Z1 + M);
-      const sideR = yield* solveRect(X1 - M, X1 + M, Z0 - M, Z1 + M);
-      const sideT = yield* solveRect(X0 - M, X1 + M, Z0 - M, Z0 + M);
-      const sideB = yield* solveRect(X0 - M, X1 + M, Z1 - M, Z1 + M);
-      const cornerAt = new Map<number, Solved>();
-      for (const [cx, cz] of [[X0, Z0], [X1, Z0], [X0, Z1], [X1, Z1]]) cornerAt.set(cx * 100003 + cz, yield* solveRect(cx - M, cx + M, cz - M, cz + M));
+      // (Each border's heights kept once worked out, for the tile on its
+      // other side: the same numbers, and half the work. None where no
+      // lawn comes within a metre of it.)
+      const nearLine = (x0: number, z0: number, x1: number, z1: number) => Clipper.Intersect(domain, many([toPath([[x0 - 1, z0 - 1], [x1 + 1, z0 - 1], [x1 + 1, z1 + 1], [x0 - 1, z1 + 1]])]), FillRule.NonZero).length > 0;
+      const sideVals = function* (vertical: boolean, cx: number, cz: number): Generator<void, Float64Array, void> {
+        const key = `${lvl}|${vertical ? 'v' : 'h'}|${cx}|${cz}`;
+        let got = borderKept.get(key);
+        if (got) return got;
+        got = new Float64Array(TILE + 1).fill(NaN);
+        if (vertical ? nearLine(cx, cz, cx, cz + TILE) : nearLine(cx, cz, cx + TILE, cz)) {
+          const r = vertical ? yield* solveRect(cx - M, cx + M, cz - M, cz + TILE + M) : yield* solveRect(cx - M, cx + TILE + M, cz - M, cz + M);
+          for (let t = 0; t <= TILE; t++) got[t] = vertical ? at(r, cx, cz + t) : at(r, cx + t, cz);
+        }
+        borderKept.set(key, got);
+        return got;
+      };
+      const cornerVal = function* (cx: number, cz: number): Generator<void, number, void> {
+        const key = `${lvl}|c|${cx}|${cz}`;
+        let got = borderKept.get(key);
+        if (!got) {
+          got = new Float64Array(1).fill(NaN);
+          if (nearLine(cx, cz, cx, cz)) got[0] = at(yield* solveRect(cx - M, cx + M, cz - M, cz + M), cx, cz);
+          borderKept.set(key, got);
+        }
+        return got[0];
+      };
+      const sideL = yield* sideVals(true, X0, Z0), sideR = yield* sideVals(true, X1, Z0);
+      const sideT = yield* sideVals(false, X0, Z0), sideB = yield* sideVals(false, X0, Z1);
+      const cornerAt = new Map<number, number>();
+      for (const [cx, cz] of [[X0, Z0], [X1, Z0], [X0, Z1], [X1, Z1]]) cornerAt.set(cx * 100003 + cz, yield* cornerVal(cx, cz));
       const borderAt = (i: number, j: number) => {
         const onL = i === X0, onR = i === X1, onT = j === Z0, onB = j === Z1;
-        if ((onL || onR) && (onT || onB)) return at(cornerAt.get(i * 100003 + j)!, i, j);
-        if (onL) return at(sideL, i, j);
-        if (onR) return at(sideR, i, j);
-        if (onT) return at(sideT, i, j);
-        if (onB) return at(sideB, i, j);
+        if ((onL || onR) && (onT || onB)) return cornerAt.get(i * 100003 + j)!;
+        if (onL) return sideL[j - Z0];
+        if (onR) return sideR[j - Z0];
+        if (onT) return sideT[i - X0];
+        if (onB) return sideB[i - X0];
         return NaN;
       };
       const own = yield* solveRect(X0 - 0.5, X1 + 0.5, Z0 - 0.5, Z1 + 0.5, borderAt);
@@ -9304,18 +9371,6 @@ export async function buildPasirRisCourse(
           }
         }
       };
-      /** Winding of the paths about (x, z), in millimetres. */
-      const wind = (P: Paths64, x: number, z: number) => {
-        let wn = 0;
-        for (const p of P)
-          for (let q = 0; q < p.length; q++) {
-            const a = p[q], b = p[(q + 1) % p.length];
-            if (a.y <= z) {
-              if (b.y > z && (b.x - a.x) * (z - a.y) - (x - a.x) * (b.y - a.y) > 0) wn++;
-            } else if (b.y <= z && (b.x - a.x) * (z - a.y) - (x - a.x) * (b.y - a.y) < 0) wn--;
-          }
-        return wn;
-      };
       /** A block of 1 m squares, its piece of the sheet cut to it: each square cut, or whole, or empty. */
       const block = (blk: Paths64, bx0: number, bz0: number, bx1: number, bz1: number) => {
         // (The 1 m squares an edge of it passes through.)
@@ -9333,32 +9388,71 @@ export async function buildPasirRisCourse(
               for (const ox of [-0.002, 0.002]) for (const oz of [-0.002, 0.002]) hit.add(Math.floor(x + ox) * 100003 + Math.floor(z + oz));
             }
           }
-        const boxes = blk.map((p) => {
+        // (Whether a square no edge crosses is in: by its row's crossings
+        // with the line through the squares' middles, once a row. Asked of
+        // the block's every side square by square, a tenth of the sheet's
+        // time.)
+        const inRow = new Map<number, Uint8Array>();
+        for (let cz = bz0; cz < bz1; cz++) {
+          const zc = (cz + 0.5) * S_;
+          const xs: [number, number][] = [];
+          for (const p of blk)
+            for (let q = 0; q < p.length; q++) {
+              const a = p[q], b = p[(q + 1) % p.length];
+              if ((a.y <= zc) === (b.y <= zc)) continue;
+              xs.push([a.x + ((b.x - a.x) * (zc - a.y)) / (b.y - a.y), a.y <= zc ? 1 : -1]);
+            }
+          xs.sort((u, v) => u[0] - v[0]);
+          const row = new Uint8Array(bx1 - bx0);
+          let k = 0, wn = 0;
+          for (let cx = bx0; cx < bx1; cx++) {
+            const xc = (cx + 0.5) * S_;
+            while (k < xs.length && xs[k][0] < xc) wn += xs[k++][1];
+            row[cx - bx0] = wn !== 0 ? 1 : 0;
+          }
+          inRow.set(cz, row);
+        }
+        const boxOf = (P: Paths64) => P.map((p) => {
           let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
           for (const q of p) (x0 = Math.min(x0, q.x)), (x1 = Math.max(x1, q.x)), (z0 = Math.min(z0, q.y)), (z1 = Math.max(z1, q.y));
           return [x0, z0, x1, z1];
         });
-        for (let cx = bx0; cx < bx1; cx++)
+        const boxes = boxOf(blk);
+        for (let cx = bx0; cx < bx1; cx++) {
+          // (Its column cut out once, and each square from the column: cut
+          // from the block's whole piece four times a square, the lawn's
+          // edges cost a sixth of the sheet's time.)
+          let colP: Paths64 | null = null, colB: number[][] = [];
           for (let cz = bz0; cz < bz1; cz++) {
             if (hit.has(cx * 100003 + cz)) {
               const t1 = performance.now();
-              const near1 = new Paths64();
               const X0 = cx * S_, Z0 = cz * S_, X1 = X0 + S_, Z1 = Z0 + S_;
-              blk.forEach((p, k) => {
-                const b = boxes[k];
-                if (!(b[2] <= X0 || b[0] >= X1 || b[3] <= Z0 || b[1] >= Z1)) near1.push(p);
+              if (!colP) {
+                const near1 = new Paths64();
+                blk.forEach((p, k) => {
+                  const b = boxes[k];
+                  if (!(b[2] <= X0 || b[0] >= X1)) near1.push(p);
+                });
+                colP = split(split(near1, true, X0, false, cx, bz0, cx + 1, bz1), true, X1, true, cx, bz0, cx + 1, bz1);
+                colB = boxOf(colP);
+              }
+              const near1 = new Paths64();
+              colP.forEach((p, k) => {
+                const b = colB[k];
+                if (!(b[3] <= Z0 || b[1] >= Z1)) near1.push(p);
               });
-              const cc = split(split(split(split(near1, true, X0, false, cx, cz, cx + 1, cz + 1), true, X1, true, cx, cz, cx + 1, cz + 1), false, Z0, false, cx, cz, cx + 1, cz + 1), false, Z1, true, cx, cz, cx + 1, cz + 1);
+              const cc = split(split(near1, false, Z0, false, cx, cz, cx + 1, cz + 1), false, Z1, true, cx, cz, cx + 1, cz + 1);
               ST.cutMs = (ST.cutMs ?? 0) + performance.now() - t1;
               const t2 = performance.now();
               cellTris(cc, cx, cz);
               ST.triMs = (ST.triMs ?? 0) + performance.now() - t2;
             }
-            else if (wind(blk, (cx + 0.5) * S_, (cz + 0.5) * S_) !== 0) {
+            else if (inRow.get(cz)![cx - bx0]) {
               const a = vert(cx * S_, cz * S_), b = vert((cx + 1) * S_, cz * S_), c = vert((cx + 1) * S_, (cz + 1) * S_), d = vert(cx * S_, (cz + 1) * S_);
               tris.push(a, b, d, b, c, d);
             }
           }
+        }
       };
       /**
        * Each ring's parts on one side of a line along x (or z) = m: its runs
