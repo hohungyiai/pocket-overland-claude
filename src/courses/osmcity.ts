@@ -8442,6 +8442,11 @@ export async function buildPasirRisCourse(
     if (!KR.length) return;
     let slice = performance.now();
     const pause = () => performance.now() - slice > 4;
+    /** A pause, the slice begun again after it: `if (pause()) yield* rest();` between steps. (Whole, a step of the sheet held a frame up for up to a third of a second.) */
+    const rest = function* () {
+      yield;
+      slice = performance.now();
+    };
     const X0 = ix * TILE, Z0 = iz * TILE, X1 = X0 + TILE, Z1 = Z0 + TILE;
     const near = (x: number, z: number, m: number) => x > X0 - m && x < X1 + m && z > Z0 - m && z < Z1 + m;
     const gnd = (x: number, z: number) => Math.max(groundY(x, z), islandFill(x, z, true));
@@ -8480,18 +8485,67 @@ export async function buildPasirRisCourse(
       const egrid = new Map<number, number[]>();
       const lawnLines = new Paths64();
       const bands = new Paths64();
+      // A gap shared with another level: a kerb of this level and, across
+      // from it within 6 m, facing it, one of another level within a metre
+      // of its height (two raised roads side by side, each its own
+      // structure). No lawn there: each road its own wall down to the
+      // ground between, rule B3, as on main. (Each laid its own lawn, as
+      // from a kerb over a drop, down to the ground: it sloped 3 m from
+      // one kerb to the other, both at 8.6 m, and the two lawns crossed,
+      // -2847.4,-2075; 274 such places on the whole map. Laid level across
+      // by one of the two, the other's kerbs on the same line, of a third
+      // level, laid theirs too.) Within 6 m: a kerb's partner is then
+      // always among the kerbs this tile knows (SHEET_M), so two tiles
+      // judge it alike.
+      const oP: number[] = [];
+      const oGrid = new Map<number, number[]>();
+      for (const r of KR) {
+        if (r.lvl === lvl) continue;
+        for (let j = 0; j < r.E.length; j++) {
+          const t = r.T[j];
+          if (!(t === t)) continue;
+          const [x, z] = r.E[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1, c = Math.floor(x / 4) * 100003 + Math.floor(z / 4);
+          (oGrid.get(c) ?? oGrid.set(c, []).get(c)!).push(oP.length);
+          oP.push(x, z, t, r.N[j][0] / nl, r.N[j][1] / nl, r.lvl);
+        }
+      }
+      /** Across from a kerb point (x, z) facing (nx, nz), its top t: another level's kerb point within 6 m, as above (its place in oP), or -1. */
+      const across = (x: number, z: number, nx: number, nz: number, t: number) => {
+        let best = 6.0001, got = -1;
+        const ex0 = x + nx * 6, ez0 = z + nz * 6;
+        for (let ci = Math.floor((Math.min(x, ex0) - 2) / 4); ci <= Math.floor((Math.max(x, ex0) + 2) / 4); ci++)
+          for (let cj = Math.floor((Math.min(z, ez0) - 2) / 4); cj <= Math.floor((Math.max(z, ez0) + 2) / 4); cj++)
+            for (const m of oGrid.get(ci * 100003 + cj) ?? []) {
+              if (Math.abs(oP[m + 2] - t) >= 1 || oP[m + 3] * nx + oP[m + 4] * nz > -0.3) continue;
+              const ex = oP[m] - x, ez = oP[m + 1] - z, al = ex * nx + ez * nz;
+              if (al < 0.02 || al >= best || Math.abs(ex * nz - ez * nx) > 0.75 + 0.15 * al) continue;
+              best = al;
+              got = m;
+            }
+        return got;
+      };
       for (const [ri, r] of KR.entries()) {
         if (r.lvl !== lvl) continue;
         const n = r.E.length;
         if (n < 2) continue;
         bands.push(toPath([...r.I, ...r.E.slice().reverse()]));
+        const share = r.E.map(([x, z], j) => {
+          const t = r.T[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1;
+          return t === t ? across(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t) : -1;
+        });
         // (A kerb with the ground beside it a little under its top: the
         // lawn's. Over a drop deeper than ISLE_DEEP, or with the ground
-        // over it, the ground's: the walls' business, see wallGaps.)
+        // over it, the ground's: the walls' business, see wallGaps. Across
+        // a gap shared with another level, not the lawn's.)
         const lawnAt = r.E.map(([x, z], j) => {
           const g = groundAtKerb(x, z), t = r.T[j];
-          return t === t && g <= t + 0.005 && g >= t - ISLE_DEEP;
+          return share[j] < 0 && t === t && g <= t + 0.005 && g >= t - ISLE_DEEP;
         });
+        // (And the gap itself off this level's lawn.)
+        for (let j = 0; j + 1 < n; j++) {
+          const a = share[j], b = share[j + 1];
+          if (a >= 0 && b >= 0) bands.push(toPath([r.E[j], r.E[j + 1], [oP[b], oP[b + 1]], [oP[a], oP[a + 1]]]));
+        }
         // (Steadied along the kerb: a stretch of either kind under 2 m
         // between two of the other takes theirs, gaps first. Asked point by
         // point of the ground beside a road, held down under its edge, it
@@ -8590,10 +8644,15 @@ export async function buildPasirRisCourse(
       };
       const byHalf = new Map<number, Paths64>();
       if (lvl < 0)
-        paths.forEach((p, i) => {
-          if (p.b) return;
+        for (let i = 0; i < paths.length; i++) {
+          const p = paths[i];
           const pts = p.pts;
-          if (!pts.some(([x, z]) => near(x, z, SHEET_M + 4))) return;
+          if (!pts.some(([x, z]) => near(x, z, SHEET_M + 4))) continue;
+          // (A footbridge too, where it lies on the ground or a hand's
+          // breadth over it: its ends on the banks. Passed by whole, the lawn
+          // was laid over a footbridge's approach beside a canal,
+          // -822.8,-633.5. Not where it stands clear over the lawn.)
+          const deck = p.b ? pathDeck(i) : null;
           const h = PHALF[i] + 0.05;
           let piece: XZ[] = [];
           const flush = () => {
@@ -8603,6 +8662,10 @@ export async function buildPasirRisCourse(
           for (let k = 0; k + 1 < pts.length; k++) {
             const [ax, az] = pts[k], [bx, bz] = pts[k + 1];
             const L = Math.hypot(bx - ax, bz - az);
+            if (deck && ((deck[k] === deck[k] && deck[k] > gnd(ax, az) + 1) || (deck[k + 1] === deck[k + 1] && deck[k + 1] > gnd(bx, bz) + 1))) {
+              flush();
+              continue;
+            }
             // (Cut out wherever it crosses the square the rule is worked out
             // over, near a lawn kerb or not: cut only near one, a path's
             // piece ended in its round end where a kerb further on was not
@@ -8626,7 +8689,8 @@ export async function buildPasirRisCourse(
             }
           }
           flush();
-        });
+          if (pause()) yield* rest();
+        }
       // (The clipper widens an open line by half the width it is given, each
       // side: so twice h. Rounded at its bends: so the strip is all within h
       // of the path's line, however a tile cut the line, see clipfix.)
@@ -8638,6 +8702,7 @@ export async function buildPasirRisCourse(
         const out = new Paths64();
         co.execute(2 * h * S_, out);
         for (const q of out) pathStrips.push(q);
+        if (pause()) yield* rest();
       }
       const rect = (x0: number, z0: number, x1: number, z1: number) => many([toPath([[x0, z0], [x1, z0], [x1, z1], [x0, z1]])]);
       const clip = (P: Paths64, x0: number, z0: number, x1: number, z1: number) => Clipper.Intersect(P, rect(x0, z0, x1, z1), FillRule.NonZero);
@@ -8733,28 +8798,21 @@ export async function buildPasirRisCourse(
       // lawn, a flyover over an island: a ramp beside a road on a bank, its
       // paving another level's, had the lawn laid on under it, at its
       // slab's foot and under the ground beside it, 1797,1465.4. Clear by
-      // the highest edge of this level's lawn within 12 m, or the ground
-      // there, where its reach ends: the lawn is nowhere higher than its
-      // edges. Each piece of road and each joint's
-      // paving by its own height, the level's outline cut to those low
-      // enough.)
-      // (Worked out from 4 m squares: each square's highest edge, and
-      // whether a lawn kerb's in it. Asked sample by sample, of every
-      // piece of road in reach and every point round each joint, it held a
-      // frame up for a third of a second.)
+      // the highest kerb of this level within 12 m, or the ground there,
+      // where its reach ends: the lawn is nowhere higher than its edges.
+      // Each piece of road and each joint's paving by its own height, the
+      // level's outline cut to those low enough.)
+      // (Whether a lawn kerb is near, from 4 m squares: asked sample by
+      // sample, of every piece of road in reach and every point round each
+      // joint, it held a frame up for a third of a second.)
       const otherRings = new Paths64(), lowRings = new Paths64();
       {
         for (const r of w.all ?? []) if (r.lvl !== lvl && !r.hole && r.pts.some(([x, z]) => near(x, z, SOLVE_M + 40))) otherRings.push(toPath(r.pts));
         // (Its kerbs too: past the paving's edge, over its slab's edge, 1827,1927.)
         for (const r of KR) if (r.lvl !== lvl && r.E.length >= 2) otherRings.push(toPath([...r.I, ...r.E.slice().reverse()]));
         if (otherRings.length) {
-          const NONE_S: number[] = [];
-          const cellTop = new Map<number, number>(), cellLawn = new Set<number>();
-          for (let n = 0; n < S.length; n += 8) {
-            const c = Math.floor(S[n] / SG) * 100003 + Math.floor(S[n + 1] / SG);
-            if (!(S[n + 2] <= (cellTop.get(c) ?? -Infinity))) cellTop.set(c, S[n + 2]);
-            if (S[n + 6] === 2) cellLawn.add(c);
-          }
+          const cellLawn = new Set<number>();
+          for (let n = 0; n < S.length; n += 8) if (S[n + 6] === 2) cellLawn.add(Math.floor(S[n] / SG) * 100003 + Math.floor(S[n + 1] / SG));
           const cells = (x: number, z: number, r: number, f: (c: number) => void) => {
             for (let ci = Math.floor((x - r) / SG); ci <= Math.floor((x + r) / SG); ci++)
               for (let cj = Math.floor((z - r) / SG); cj <= Math.floor((z + r) / SG); cj++) f(ci * 100003 + cj);
@@ -8764,13 +8822,21 @@ export async function buildPasirRisCourse(
             cells(x, z, r, (c) => (hit ||= cellLawn.has(c)));
             return hit;
           };
-          /** The highest of the ground at (x, z) and this level's edges within 12 m: the lawn there is no higher. */
+          /**
+           * The highest of the ground at (x, z) and this level's kerb tops
+           * within 12 m (its roads' heights, a kerb up): the lawn there is no
+           * higher. (From the roads themselves, the same in every tile. From
+           * this tile's own lawn edges, a piece of road reaching past them
+           * was judged low by one tile and clear by the next, and the lawn
+           * ended at their border: 63 places on the whole map.)
+           */
           const refAt = (x: number, z: number) => {
             let m = gnd(x, z) + 0.02;
-            cells(x, z, 12, (c) => {
-              // (A square with nothing over m in it passed by.)
-              if (!((cellTop.get(c) ?? -Infinity) > m)) return;
-              for (const n of sgrid.get(c) ?? NONE_S) if ((S[n] - x) ** 2 + (S[n + 1] - z) ** 2 < 144 && S[n + 2] > m) m = S[n + 2];
+            roads.each(x, z, 12 + 16, (i, seg, u, d) => {
+              if (seg + 1 >= EP[i].length || lvlOf(i, seg) !== lvl || d >= 12 + Math.max(drawnHalf(i, seg, 0), drawnHalf(i, seg, 1))) return;
+              const [ax, az] = EP[i][seg], [bx, bz] = EP[i][seg + 1];
+              const y = (hasProfile[i] ? lerp(deckAtHit(i, seg, 0), deckAtHit(i, seg, 1), u) : dropAt(lerp(ax, bx, u), lerp(az, bz, u))) + 0.2;
+              if (y > m) m = y;
             });
             return m;
           };
@@ -8847,6 +8913,7 @@ export async function buildPasirRisCourse(
         // rest, 1871,1855.)
         co.execute(2 * REACH * S_, reach);
       }
+      if (pause()) yield* rest();
       const tileR = many([toPath([[X0, Z0], [X1, Z0], [X1, Z1], [X0, Z1]])]);
       // (Cut into strips 25 m wide, each worked out alone and the pieces
       // joined again: the clipper's time goes as the number of sides a
@@ -8857,6 +8924,7 @@ export async function buildPasirRisCourse(
       const inSq = (P: Paths64) => split(split(P, false, QZ0 * S_, false, -FAR, QZ0, FAR, FAR), false, QZ1 * S_, true, -FAR, QZ0, FAR, QZ1);
       const band = (P: Paths64, xa: number, xb: number) => split(split(P, true, xa * S_, false, xa, -FAR, FAR, FAR), true, xb * S_, true, -FAR, -FAR, xb, FAR);
       const reachQ = inSq(reach), paveQ = inSq(pave), holesQ = inSq(holes), bandsQ = inSq(bands), psQ = inSq(pathStrips), otherQ = lowRings.length ? inSq(otherRings) : new Paths64(), lowQ = lowRings.length ? inSq(Clipper.Union(lowRings, undefined, FillRule.NonZero)) : new Paths64();
+      if (pause()) yield* rest();
       const crumbless = (P: Paths64) => P.filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_);
       const parts = new Paths64();
       for (let k = 0; k < NSTRIP; k++) {
@@ -8878,8 +8946,19 @@ export async function buildPasirRisCourse(
         // (Opened by a centimetre: a kerb's outer edge and the paving's beside
         // it a millimetre apart left a strip of lawn that thin between them,
         // its two sides 30 cm apart in height, standing upright, at 353,1960.)
-        const openK = Clipper.InflatePaths(crumbless(Clipper.InflatePaths(rawK, -0.01 * S_, JoinType.Miter, EndType.Polygon)), 0.01 * S_, JoinType.Miter, EndType.Polygon);
+        // (Both times from rings wound the right way only, outer rings first: the
+        // clipper widens or narrows them all by the way the lowest of them
+        // winds, and a sliver of 3 square centimetres wound backwards along
+        // the square's side, lowest of all, turned the narrowing round and
+        // a whole strip's lawn was lost, the next tile's ending at their
+        // border: 63 places on the whole map, -719.2,-400.)
+        const sure = (P: Paths64) => {
+          const U = Clipper.Union(P, undefined, FillRule.Positive);
+          return many(U.filter((p) => Clipper.area(p) > 0), U.filter((p) => Clipper.area(p) <= 0));
+        };
+        const openK = Clipper.InflatePaths(sure(crumbless(Clipper.InflatePaths(sure(rawK), -0.01 * S_, JoinType.Miter, EndType.Polygon))), 0.01 * S_, JoinType.Miter, EndType.Polygon);
         for (const q of band(openK, xa, xb)) parts.push(q);
+        if (pause()) yield* rest();
       }
       // (The strips joined again, and its points no closer than 5 mm to the
       // line through those either side: round a nose the kerb is in pieces
@@ -8890,6 +8969,7 @@ export async function buildPasirRisCourse(
       // whole ring, 1,436 square metres of lawn in one tile and not the
       // next, 1358.7,2000.)
       const domain = simplifyRings(crumbless(Clipper.Union(parts, undefined, FillRule.NonZero)), 0.005 * S_);
+      if (pause()) yield* rest();
       const region = Clipper.Intersect(domain, tileR, FillRule.NonZero);
       yield;
       slice = performance.now();
@@ -8945,6 +9025,7 @@ export async function buildPasirRisCourse(
         if (S[n + 6] === 2) lawn0.add(n);
       }
       for (let n = 0; n < S.length; n += 8) {
+        if (pause()) yield* rest();
         if (!S[n + 6]) continue;
         const x = S[n], z = S[n + 1], nx = S[n + 3], nz = S[n + 4];
         let best = Infinity, tf = NaN, fk = false;
@@ -9158,7 +9239,10 @@ export async function buildPasirRisCourse(
           }
           const n = px.length;
           const v = new Float64Array(n);
-          for (let i = 0; i < n; i++) v[i] = open[i] || open[(i + n - 1) % n] ? edgeRaw(px[i], pz[i]) : NaN;
+          for (let i = 0; i < n; i++) {
+            v[i] = open[i] || open[(i + n - 1) % n] ? edgeRaw(px[i], pz[i]) : NaN;
+            if (pause()) yield* rest();
+          }
           // (From those within ENV_D along it only: the next tile has the
           // edge that far past the border too. Carried on round the whole
           // edge, a low point beyond the one tile's reach brought the
@@ -9230,7 +9314,7 @@ export async function buildPasirRisCourse(
        */
       const solveRect = function* (rx0: number, rx1: number, rz0: number, rz1: number, fix?: (i: number, j: number) => number): Generator<void, Solved, void> {
         const dom = Clipper.Intersect(domain, many([toPath([[rx0, rz0], [rx1, rz0], [rx1, rz1], [rx0, rz1]])]), FillRule.NonZero);
-        const spansOf = (alongX: boolean) => {
+        const spansOf = function* (alongX: boolean): Generator<void, Map<number, Span[]>, void> {
           const out = new Map<number, Span[]>();
           const cuts = new Map<number, number[]>();
           for (const p of dom)
@@ -9253,15 +9337,16 @@ export async function buildPasirRisCourse(
               sp.push({ a, b, ea: free(a) ? NaN : edgeOnce(alongX, j, a), eb: free(b) ? NaN : edgeOnce(alongX, j, b) });
             }
             out.set(j, sp);
+            if (pause()) yield* rest();
           }
           return out;
         };
-        const rows = spansOf(true);
+        const rows = yield* spansOf(true);
         if (pause()) {
           yield;
           slice = performance.now();
         }
-        const colsG = spansOf(false);
+        const colsG = yield* spansOf(false);
         if (pause()) {
           yield;
           slice = performance.now();
@@ -9280,8 +9365,9 @@ export async function buildPasirRisCourse(
         // Per point and side (-x, +x, -z, +z): the neighbour's id, or -1 with the edge's distance and height, or -2 past the side.
         const nb = new Int32Array(N * 4).fill(-2), nh = new Float64Array(N * 4).fill(1), ne = new Float64Array(N * 4);
         const fixed = new Uint8Array(N);
-        const link = (lines: Map<number, Span[]>, alongX: boolean) => {
-          for (const [j, sp] of lines)
+        const link = function* (lines: Map<number, Span[]>, alongX: boolean): Generator<void, void, void> {
+          for (const [j, sp] of lines) {
+            if (pause()) yield* rest();
             for (const s of sp)
               for (let i = Math.ceil(s.a); i <= Math.floor(s.b); i++) {
                 const id = nodeId.get(alongX ? i * 100003 + j : j * 100003 + i);
@@ -9300,11 +9386,13 @@ export async function buildPasirRisCourse(
                 side(lo, s.ea, i - s.a, i - 1);
                 side(lo + 1, s.eb, s.b - i, i + 1);
               }
+          }
         };
-        link(rows, true);
-        link(colsG, false);
+        yield* link(rows, true);
+        yield* link(colsG, false);
         // (A first guess, along each row from edge to edge.)
-        for (const [j, sp] of rows)
+        for (const [j, sp] of rows) {
+          if (pause()) yield* rest();
           for (const s of sp) {
             const ea = s.ea === s.ea ? s.ea : s.eb, eb = s.eb === s.eb ? s.eb : s.ea;
             for (let i = Math.ceil(s.a); i <= Math.floor(s.b); i++) {
@@ -9312,6 +9400,7 @@ export async function buildPasirRisCourse(
               if (!fixed[id]) U[id] = ea === ea ? lerp(ea, eb, s.b > s.a ? (i - s.a) / (s.b - s.a) : 0.5) : gnd(i, j) + 0.02;
             }
           }
+        }
         if (fix)
           for (let id = 0; id < N; id++)
             if (!fixed[id]) {
@@ -9671,13 +9760,16 @@ export async function buildPasirRisCourse(
           }
           return;
         }
+        if (pause()) yield* rest();
         if (x1 - x0 >= z1 - z0) {
           const mx = x0 + Math.floor((x1 - x0) / 2);
           yield* halve(split(P, true, mx * S_, true, x0, z0, mx, z1), x0, z0, mx, z1);
+          if (pause()) yield* rest();
           yield* halve(split(P, true, mx * S_, false, mx, z0, x1, z1), mx, z0, x1, z1);
         } else {
           const mz = z0 + Math.floor((z1 - z0) / 2);
           yield* halve(split(P, false, mz * S_, true, x0, z0, x1, mz), x0, z0, x1, mz);
+          if (pause()) yield* rest();
           yield* halve(split(P, false, mz * S_, false, x0, mz, x1, z1), x0, mz, x1, z1);
         }
       };
