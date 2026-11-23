@@ -295,7 +295,7 @@ export const CHEK_JAWA: TrailDef = {
         { kind: 'ridge', from: 0, to: 210, p: { w: 2.5, drop: 1, run: 2 } },
         { kind: 'mud', from: 0, to: 100, p: { rut: 0.3, hole: 0.5 } },
         // (Mangrove trunks fallen across the ruts.)
-        { kind: 'logs', from: 20, to: 84, p: { period: 9, r: 0.2 } },
+        { kind: 'logs', from: 20, to: 84, p: { period: 9, r: 0.15 } },
         // (Then a firm run-up, and a tall, steep tidal dune: low range
         // cannot carry the speed over it.)
         { kind: 'sand', from: 96, to: 135, p: { firm: 1, grip: 0.75, drag: 1, sink: 0, duneH: 0, dip: 0.05 } },

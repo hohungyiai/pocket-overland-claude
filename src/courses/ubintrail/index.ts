@@ -813,6 +813,8 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     scene.add(ford);
   }
 
+  const BLUR = [[0, 0], [0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]];
+  const tmpCol = new THREE.Color();
   // ---------- Fine strips: the ground of deep ruts, notches, ditches and ledges ----------
   // Every 0.5 m along and 0.25 m across, drawn and solid (the tiles' own
   // ground is sunk under its middle): wheel-width ruts and a notch's crack
@@ -880,7 +882,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
           const t = Math.max(smoothstep(half - UbinTrail.FINE_RIM - 2, half - UbinTrail.FINE_RIM, Math.abs(off)), 1 - smoothstep(sA + 3, sA + 6, u), smoothstep(sB - 6, sB - 3, u));
           pos.set([x, t > 0 ? y + (tileGround(x, z) - y) * t : y, z], k * 3);
           uvs.set([x / DETAIL_M, z / DETAIL_M], k * 2);
-          colorAt(x, z, y, col);
+          // (Its colour softened over about a metre and a half, as soft as
+          // the tiles' own: a kind of ground's edge, or the strip's own end,
+          // no sawtooth at the strip's finer spacing.)
+          col.setRGB(0, 0, 0);
+          for (const [ax, az] of BLUR) {
+            colorAt(x + ax, z + az, ax || az ? heightAt(x + ax, z + az) : y, tmpCol);
+            col.r += tmpCol.r / BLUR.length;
+            col.g += tmpCol.g / BLUR.length;
+            col.b += tmpCol.b / BLUR.length;
+          }
           const v = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
           clr.set([col.r * v, col.g * v, col.b * v], k * 3);
         }
