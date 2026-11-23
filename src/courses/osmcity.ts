@@ -8423,9 +8423,8 @@ export async function buildPasirRisCourse(
     const fx = (x - WB.minX) / STEP, fz = (z - WB.minZ) / STEP;
     const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, v = fz - j;
     if (i !== lcI || j !== lcJ) (lcI = i), (lcJ = j), (lcA = latColAt(i, j)), (lcB = latColAt(i + 1, j)), (lcC = latColAt(i, j + 1)), (lcD = latColAt(i + 1, j + 1));
-    const a = lcA, b = lcB, c = lcC, d = lcD;
-    const m = (q: number) => (a[q] * (1 - u) + b[q] * u) * (1 - v) + (c[q] * (1 - u) + d[q] * u) * v;
-    return out.setRGB(m(0), m(1), m(2));
+    const a = lcA, b = lcB, c = lcC, d = lcD, iu = 1 - u, iv = 1 - v;
+    return out.setRGB((a[0] * iu + b[0] * u) * iv + (c[0] * iu + d[0] * u) * v, (a[1] * iu + b[1] * u) * iv + (c[1] * iu + d[1] * u) * v, (a[2] * iu + b[2] * u) * iv + (c[2] * iu + d[2] * u) * v);
   };
   const kerbGround = new Map<number, number>();
   const groundAtKerb = (x: number, z: number) => {
@@ -8514,7 +8513,10 @@ export async function buildPasirRisCourse(
         let best = 6.0001, got = -1;
         const ex0 = x + nx * 6, ez0 = z + nz * 6;
         for (let ci = Math.floor((Math.min(x, ex0) - 2) / 4); ci <= Math.floor((Math.max(x, ex0) + 2) / 4); ci++)
-          for (let cj = Math.floor((Math.min(z, ez0) - 2) / 4); cj <= Math.floor((Math.max(z, ez0) + 2) / 4); cj++)
+          for (let cj = Math.floor((Math.min(z, ez0) - 2) / 4); cj <= Math.floor((Math.max(z, ez0) + 2) / 4); cj++) {
+            // (Not a square whose middle lies further from the line out than half its diagonal and the width.)
+            const mx = (ci + 0.5) * 4 - x, mz = (cj + 0.5) * 4 - z, al = mx * nx + mz * nz;
+            if (Math.max(-al, al - 6, Math.abs(mx * nz - mz * nx) - 1.66) > 4 * 0.7072) continue;
             for (const m of oGrid.get(ci * 100003 + cj) ?? []) {
               if (Math.abs(oP[m + 2] - t) >= 1 || oP[m + 3] * nx + oP[m + 4] * nz > -0.3) continue;
               const ex = oP[m] - x, ez = oP[m + 1] - z, al = ex * nx + ez * nz;
@@ -8522,6 +8524,7 @@ export async function buildPasirRisCourse(
               best = al;
               got = m;
             }
+          }
         return got;
       };
       for (const [ri, r] of KR.entries()) {
@@ -8830,7 +8833,12 @@ export async function buildPasirRisCourse(
            * was judged low by one tile and clear by the next, and the lawn
            * ended at their border: 63 places on the whole map.)
            */
+          // (Kept by the point itself: road pieces share their ends.)
+          const refMemo = new Map<number, Map<number, number>>();
           const refAt = (x: number, z: number) => {
+            const row = refMemo.get(x) ?? refMemo.set(x, new Map()).get(x)!;
+            const got = row.get(z);
+            if (got !== undefined) return got;
             let m = gnd(x, z) + 0.02;
             roads.each(x, z, 12 + 16, (i, seg, u, d) => {
               if (seg + 1 >= EP[i].length || lvlOf(i, seg) !== lvl || d >= 12 + Math.max(drawnHalf(i, seg, 0), drawnHalf(i, seg, 1))) return;
@@ -8838,6 +8846,7 @@ export async function buildPasirRisCourse(
               const y = (hasProfile[i] ? lerp(deckAtHit(i, seg, 0), deckAtHit(i, seg, 1), u) : dropAt(lerp(ax, bx, u), lerp(az, bz, u))) + 0.2;
               if (y > m) m = y;
             });
+            row.set(z, m);
             return m;
           };
           const pieces: [number, number][] = [];
@@ -9027,7 +9036,7 @@ export async function buildPasirRisCourse(
         if (S[n + 6] === 2) lawn0.add(n);
       }
       for (let n = 0; n < S.length; n += 8) {
-        if (pause()) yield* rest();
+        if ((n & 127) === 0 && pause()) yield* rest();
         if (!S[n + 6]) continue;
         const x = S[n], z = S[n + 1], nx = S[n + 3], nz = S[n + 4];
         let best = Infinity, tf = NaN, fk = false;
@@ -9112,17 +9121,33 @@ export async function buildPasirRisCourse(
        * kerb. Out to 6 m: a lawn kerb meeting a drop's wall foot up to 3 m
        * down.
        */
+      // (Each square's lowest edge sample off a lawn kerb, and its longest
+      // half: a square that can't bring the cap down is passed by. Asked of
+      // every sample within 6 m, the cap was a tenth of the sheet's time.)
+      const capLow = new Map<number, [number, number]>();
       const capAt = (x: number, z: number, y: number) => {
         let cap = y;
         for (let ci = Math.floor((x - 6) / SG); ci <= Math.floor((x + 6) / SG); ci++)
-          for (let cj = Math.floor((z - 6) / SG); cj <= Math.floor((z + 6) / SG); cj++)
-            for (const n of sgrid.get(ci * 100003 + cj) ?? NONE) {
+          for (let cj = Math.floor((z - 6) / SG); cj <= Math.floor((z + 6) / SG); cj++) {
+            const c = ci * 100003 + cj;
+            let lo = capLow.get(c);
+            if (!lo) {
+              let m = Infinity, h = 0;
+              for (const n of sgrid.get(c) ?? NONE) if (S[n + 6] !== 2) (m = Math.min(m, S[n + 2])), (h = Math.max(h, S[n + 5] / 2));
+              capLow.set(c, (lo = [m, h]));
+            }
+            if (lo[0] >= cap) continue;
+            const bx = Math.max(0, ci * SG - x, x - (ci + 1) * SG), bz = Math.max(0, cj * SG - z, z - (cj + 1) * SG);
+            const bd = Math.max(0, Math.sqrt(bx * bx + bz * bz) - lo[1] - 1e-6);
+            if (bd >= 6 || lo[0] + 0.5 * bd >= cap) continue;
+            for (const n of sgrid.get(c) ?? NONE) {
               if (S[n + 6] === 2 || S[n + 2] >= cap) continue;
               const tx = -S[n + 4], tz = S[n + 3], hl = S[n + 5] / 2;
               const al = Math.max(-hl, Math.min(hl, (x - S[n]) * tx + (z - S[n + 1]) * tz));
               const dd = Math.hypot(x - S[n] - tx * al, z - S[n + 1] - tz * al);
               if (dd < 6) cap = Math.min(cap, S[n + 2] + 0.5 * dd);
             }
+          }
         return cap;
       };
       /** The height of an edge of the lawn at (x, z): a lawn kerb's top (lifted by rule B3), a drop's kerb's, or the ground's. */
@@ -9261,7 +9286,7 @@ export async function buildPasirRisCourse(
           const v = new Float64Array(n);
           for (let i = 0; i < n; i++) {
             v[i] = open[i] || open[(i + n - 1) % n] ? edgeRaw(px[i], pz[i]) : NaN;
-            if (pause()) yield* rest();
+            if ((i & 7) === 7 && pause()) yield* rest();
           }
           // (From those within ENV_D along it only: the next tile has the
           // edge that far past the border too. Carried on round the whole
@@ -9698,7 +9723,8 @@ export async function buildPasirRisCourse(
             const L = Math.hypot(ex - ax, ez - az), m = Math.max(1, Math.ceil(L * 4));
             for (let t = 0; t <= m; t++) {
               const x = lerp(ax, ex, t / m), z = lerp(az, ez, t / m);
-              for (const ox of [-0.002, 0.002]) for (const oz of [-0.002, 0.002]) hit.add(Math.floor(x + ox) * 100003 + Math.floor(z + oz));
+              const xa = Math.floor(x - 0.002) * 100003, xb = Math.floor(x + 0.002) * 100003, za = Math.floor(z - 0.002), zb = Math.floor(z + 0.002);
+              hit.add(xa + za), hit.add(xa + zb), hit.add(xb + za), hit.add(xb + zb);
             }
           }
         // (Whether a square no edge crosses is in: by its row's crossings
