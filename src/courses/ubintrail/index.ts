@@ -61,6 +61,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     });
   const ground = new UbinGround(map);
   ground.shape = (x, z) => trail.shape(x, z);
+  trail.base = (x, z) => ground.baseAt(x, z);
   const B = map.bounds;
   const heightAt = (x: number, z: number) => ground.heightAt(x, z);
 
@@ -87,6 +88,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   }
 
   // ---------- Colours ----------
+  const EARTH = new THREE.Color(0.33, 0.19, 0.11);
   const C = {
     grass: new THREE.Color(0.25, 0.45, 0.16),
     lush: new THREE.Color(0.17, 0.36, 0.12),
@@ -127,7 +129,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     }
     const o = trail.surface(x, z);
     if (o) {
-      if (/mud|ford|slick|bog/i.test(o.name)) {
+      if (/creek|plank/i.test(o.name)) {
+        // A creek's channel and a bridge's gully: bare dark earth, wet and
+        // darker the deeper it is cut, so the cut reads from the track.
+        // (Redder than the sandy track's colour, so the ground shader
+        // draws it as earth, not sand ripples.)
+        out.lerp(C.dirt, 0.75);
+        const cut = trail.base ? smoothstep(0.15, 1.1, trail.base(x, z) - y) : 0;
+        out.lerp(EARTH, cut);
+        if (/creek/i.test(o.name)) out.lerp(C.wetMud, 0.35 * cut);
+      } else if (/mud|ford|slick|bog/i.test(o.name)) {
         // Wet, dark mud, with darker puddles in the ruts.
         out.lerp(C.wetMud, 0.92);
         if (valueNoise(x / 2.2, z / 2.2, SEED + 11) > 0.62) out.lerp(C.puddle, 0.6);
@@ -700,10 +711,13 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   const waterEdges: { x: number; z: number; y: number }[] = [];
   const puddleRims: { x: number; z: number; y: number; lo: number }[] = [];
   for (const o of trail.obstacles.flatMap((ob) => ob.parts)) {
-    if (o.kind !== 'ford') continue;
+    if (o.kind !== 'ford' && o.kind !== 'creek') continue;
     const len = o.to - o.from;
-    const a = o.line.at(0);
-    const lvl = heightAt(a.x, a.z) - 0.3;
+    // (A creek: a little water along the bottom of its channel, which
+    // crosses the track at the middle of its part.)
+    const creek = o.kind === 'creek';
+    const a = o.line.at(creek ? len / 2 : 0);
+    const lvl = heightAt(a.x, a.z) + (creek ? (o.p.water ?? 0.3) : -0.3);
     const C = 0.25;
     let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
     for (let s = 0; s <= len; s += 2) {
@@ -721,7 +735,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const wetOk = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < nz && g[j * W + i] < lvl + 0.04 && g[j * W + i + 1] < lvl + 0.04 && g[(j + 1) * W + i] < lvl + 0.04 && g[(j + 1) * W + i + 1] < lvl + 0.04;
     const wet = new Uint8Array(nx * nz);
     const stack: number[] = [];
-    for (let s = 0; s <= len; s += 0.5) {
+    for (let s = creek ? len / 2 - 1 : 0; s <= (creek ? len / 2 + 1 : len); s += 0.5) {
       const p = o.line.at(s);
       const i = Math.floor((p.x - x0) / C);
       const j = Math.floor((p.z - z0) / C);
@@ -794,11 +808,13 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     geo.computeVertexNormals();
     if (geo.attributes.normal.getY(0) < 0) geo.setIndex(I.map((_, i) => I[i - (i % 3) + [0, 2, 1][i % 3]]));
     geo.computeVertexNormals();
-    const ford = new THREE.Mesh(geo, waterMat(0x5b5a3e, 0.93, 2));
+    const ford = new THREE.Mesh(geo, creek ? waterMat(0x3d6a70, 0.85, 2) : waterMat(0x5b5a3e, 0.93, 2));
     ford.receiveShadow = true;
     scene.add(ford);
   }
 
+  const BLUR = [[0, 0], [0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]];
+  const tmpCol = new THREE.Color();
   // ---------- Fine strips: the ground of deep ruts, notches, ditches and ledges ----------
   // Every 0.5 m along and 0.25 m across, drawn and solid (the tiles' own
   // ground is sunk under its middle): wheel-width ruts and a notch's crack
@@ -866,7 +882,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
           const t = Math.max(smoothstep(half - UbinTrail.FINE_RIM - 2, half - UbinTrail.FINE_RIM, Math.abs(off)), 1 - smoothstep(sA + 3, sA + 6, u), smoothstep(sB - 6, sB - 3, u));
           pos.set([x, t > 0 ? y + (tileGround(x, z) - y) * t : y, z], k * 3);
           uvs.set([x / DETAIL_M, z / DETAIL_M], k * 2);
-          colorAt(x, z, y, col);
+          // (Its colour softened over about a metre and a half, as soft as
+          // the tiles' own: a kind of ground's edge, or the strip's own end,
+          // no sawtooth at the strip's finer spacing.)
+          col.setRGB(0, 0, 0);
+          for (const [ax, az] of BLUR) {
+            colorAt(x + ax, z + az, ax || az ? heightAt(x + ax, z + az) : y, tmpCol);
+            col.r += tmpCol.r / BLUR.length;
+            col.g += tmpCol.g / BLUR.length;
+            col.b += tmpCol.b / BLUR.length;
+          }
           const v = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
           clr.set([col.r * v, col.g * v, col.b * v], k * 3);
         }
@@ -947,6 +972,8 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       pebble: { geo: new THREE.IcosahedronGeometry(1, 0), mat: new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }), hsl: [0.07, 0.1, 0.24], shadow: false },
       ledge: { geo: (() => { const g = new THREE.BoxGeometry(1, 1, 1, 3, 1, 1); const pos = g.attributes.position; const r = mulberry32(SEED + 78); for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0) pos.setY(i, pos.getY(i) - 0.12 * r()); g.computeVertexNormals(); return g; })(), mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.07, 0.22], shadow: true },
       root: { geo: new THREE.CylinderGeometry(1, 1, 1, 6).rotateX(Math.PI / 2), mat: new THREE.MeshStandardMaterial({ roughness: 0.9 }), hsl: [0.07, 0.4, 0.13], shadow: true },
+      // (A fallen trunk: grey-brown bark, its cut ends paler.)
+      log: { geo: merge([tint(new THREE.CylinderGeometry(1, 1, 1, 11, 1, true).rotateX(Math.PI / 2), 0x5a4a3c), tint(new THREE.CircleGeometry(1, 11).translate(0, 0, 0.5), 0xa08560), tint(new THREE.CircleGeometry(1, 11).rotateY(Math.PI).translate(0, 0, -0.5), 0xa08560)]), mat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 }), hsl: [0, 0, 0.8], shadow: true },
       // (A look spot's post: weathered wood, a yellow band at the top.)
       post: { geo: merge([tint(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), 0x6b5236), tint(new THREE.BoxGeometry(1.15, 0.16, 1.15).translate(0, 0.86, 0), 0xe8c020)]), mat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }), hsl: [0, 0, 0.93], shadow: true },
       puddle: { geo: new THREE.CircleGeometry(0.5, 14).rotateX(-Math.PI / 2), mat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.9 }), hsl: [0.09, 0.3, 0.11], shadow: false },
@@ -982,6 +1009,17 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         } else if (name === 'post') {
           dummy.position.set(p.x, h - 0.1, p.z);
           dummy.scale.set(p.sx, p.sy, p.sz);
+        } else if (name === 'log') {
+          // Along its slant, level with the hump's top a little either side
+          // of the track's middle (tilted to follow it), its top just under it.
+          const dx = Math.sin(p.yaw);
+          const dz = Math.cos(p.yaw);
+          const ya = heightAt(p.x - dx * 2.2, p.z - dz * 2.2) - p.sx + 0.02;
+          const yb = heightAt(p.x + dx * 2.2, p.z + dz * 2.2) - p.sx + 0.02;
+          dummy.position.set(p.x, (ya + yb) / 2, p.z);
+          dummy.lookAt(p.x + dx * 2.2, yb, p.z + dz * 2.2);
+          dummy.rotateZ(rnd() * 6.28);
+          dummy.scale.set(p.sx, p.sx, p.sz);
         } else if (name === 'root') {
           dummy.position.set(p.x, h + p.sx * 0.25, p.z);
           dummy.scale.set(p.sx, p.sx * 0.8, p.sz);
@@ -1089,6 +1127,52 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         const bx = (a.upper[0] - a.top[0]) / 0.55;
         const bz = (a.upper[1] - a.top[1]) / 0.55;
         world.createCollider(RAPIER.ColliderDesc.cuboid(Math.hypot(ax, az) / 2 + 0.05, hh, 0.7).setTranslation(cx + bx * 0.15, top - hh, cz + bz * 0.15).setRotation({ x: qq.x, y: qq.y, z: qq.z, w: qq.w }).setFriction(0.9), boulderBody);
+      }
+    }
+  }
+
+  // ---------- Plank bridges: two planks over a gully, solid ----------
+  // Each plank's top a little above the bank at either end, straight
+  // between (tilted if one bank is higher), on a log bearer at each bank.
+  {
+    const planks = trail.planks();
+    if (planks.length) {
+      const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+      const wood = new THREE.MeshStandardMaterial({ color: 0x8a6a48, roughness: 0.85, vertexColors: true });
+      const bark = new THREE.MeshStandardMaterial({ color: 0x5a4a3c, roughness: 0.92 });
+      const T = 0.12;
+      const o3 = new THREE.Object3D();
+      for (const P of planks) {
+        const ya = heightAt(P.a[0], P.a[1]) + 0.08 - T / 2;
+        const yb = heightAt(P.b[0], P.b[1]) + 0.08 - T / 2;
+        const a = new THREE.Vector3(P.a[0], ya, P.a[1]);
+        const b = new THREE.Vector3(P.b[0], yb, P.b[1]);
+        const L = a.distanceTo(b);
+        o3.position.copy(a).add(b).multiplyScalar(0.5);
+        o3.lookAt(b);
+        o3.updateMatrix();
+        // (Two boards side by side, a hair apart.)
+        const g = merge([tint(new THREE.BoxGeometry(P.w / 2 - 0.01, T, L).translate(-P.w / 4, 0, 0), 0xffffff), tint(new THREE.BoxGeometry(P.w / 2 - 0.01, T, L).translate(P.w / 4, 0, 0), 0xe8e0d8)]);
+        const m = new THREE.Mesh(g, wood);
+        m.position.copy(o3.position);
+        m.quaternion.copy(o3.quaternion);
+        m.castShadow = true;
+        m.receiveShadow = true;
+        scene.add(m);
+        const q = o3.quaternion;
+        world.createCollider(RAPIER.ColliderDesc.cuboid(P.w / 2, T / 2, L / 2).setTranslation(o3.position.x, o3.position.y, o3.position.z).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }).setFriction(0.8), body);
+        // (The bearers: a log under each end, bedded in the bank.)
+        for (const e of [a, b]) {
+          const toward = new THREE.Vector3().subVectors(o3.position, e).setY(0).normalize();
+          const c = e.clone().addScaledVector(toward, 0.9);
+          const bm = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.1, 9).rotateZ(Math.PI / 2), bark);
+          // (Its top just under the plank.)
+          const f = e === a ? 0.9 / L : 1 - 0.9 / L;
+          bm.position.set(c.x, ya + (yb - ya) * f - T / 2 - 0.165, c.z);
+          bm.rotation.y = Math.atan2(toward.x, toward.z);
+          bm.castShadow = true;
+          scene.add(bm);
+        }
       }
     }
   }

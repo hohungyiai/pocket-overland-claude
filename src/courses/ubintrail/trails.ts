@@ -65,6 +65,20 @@ export const PUAKA: TrailDef = {
   obstacles: [
     // (Boulders close in either side of each stretch: no driving round on the grass.)
     { kind: 'rocks', label: 'Roots and rock', at: [65, 24], len: 190, needs: { diff: true }, mix: [{ kind: 'rocks', from: 0, to: 190 }, { kind: 'thicket', from: 0, to: 190 }] },
+    // (Fallen logs on the path south of the quarry: the diff lock, and a crawl.)
+    {
+      kind: 'logs',
+      label: 'Fallen logs',
+      at: [280, -83],
+      len: 60,
+      needs: { diff: true },
+      // (No way round: the hillside beside the path is too steep for one. The tips say what it needs.)
+      round: false,
+      mix: [
+        { kind: 'logs', from: 0, to: 60 },
+        { kind: 'thicket', from: 0, to: 60, p: { w: 4.6 } },
+      ],
+    },
     // (Control, not kit: low range makes it easier, but the brakes get you down too.)
     { kind: 'descent', label: 'Loose descent', at: [480, -102], len: 110, needs: {}, mix: [{ kind: 'descent', from: 0, to: 110 }, { kind: 'thicket', from: 0, to: 110 }] },
     // Four short lessons on the way round to the hill path, one new kind of
@@ -115,6 +129,34 @@ export const PUAKA: TrailDef = {
         { kind: 'climb', from: 0, to: 45, p: { h: 5, up: 15, top: 6 } },
         { kind: 'falls', from: 4, to: 26, p: { ledgeH: 0.5, every: 3.5 } },
         { kind: 'thicket', from: 0, to: 45 },
+      ],
+    },
+    // (Two more on the way to the hill path: a creek channel, then a plank bridge.)
+    {
+      kind: 'creek',
+      label: 'Creek channel',
+      // (Clear of the waterfall's way round, which rejoins the trail 32 m past it.)
+      at: [376, 393],
+      len: 46,
+      needs: { low: true, diff: true },
+      // (No way round: the creek runs on through the trees either side.)
+      round: false,
+      mix: [
+        { kind: 'creek', from: 0, to: 30 },
+        { kind: 'thicket', from: 0, to: 46, p: { w: 4.6 } },
+      ],
+    },
+    {
+      kind: 'bridge',
+      label: 'Plank bridge',
+      at: [316, 344],
+      len: 30,
+      needs: {},
+      // (A line, not kit: no way round.)
+      round: false,
+      mix: [
+        { kind: 'bridge', from: 0, to: 30 },
+        { kind: 'thicket', from: 0, to: 30, p: { w: 4.6 } },
       ],
     },
     // (No way round the last climb: the top is the point. The tips say what it needs.)
@@ -252,6 +294,8 @@ export const CHEK_JAWA: TrailDef = {
         // (Soft bog either side of the ruts.)
         { kind: 'ridge', from: 0, to: 210, p: { w: 2.5, drop: 1, run: 2 } },
         { kind: 'mud', from: 0, to: 100, p: { rut: 0.3, hole: 0.5 } },
+        // (Mangrove trunks fallen across the ruts.)
+        { kind: 'logs', from: 20, to: 84, p: { period: 9, r: 0.15 } },
         // (Then a firm run-up, and a tall, steep tidal dune: low range
         // cannot carry the speed over it.)
         { kind: 'sand', from: 96, to: 135, p: { firm: 1, grip: 0.75, drag: 1, sink: 0, duneH: 0, dip: 0.05 } },
@@ -266,15 +310,30 @@ export const CHEK_JAWA: TrailDef = {
       label: 'Laterite ruts and ditches',
       nice: 'Over the ruts, across the ditches and up the red clay. Chek Jawa is close.',
       at: [3698, -2],
-      len: 240,
+      len: 200,
       needs: { low: true, diff: true },
       mix: [
-        { kind: 'thicket', from: 0, to: 240, p: { w: 4.2 } },
+        { kind: 'thicket', from: 0, to: 200, p: { w: 4.2 } },
         { kind: 'rutted', from: 0, to: 76, p: { depth: 0.85 } },
         { kind: 'ditches', from: 74, to: 102, p: { depth: 0.55, period: 6.5 } },
-        { kind: 'climb', from: 118, to: 240, p: { h: 8, up: 24, top: 25, wet: 1 } },
+        { kind: 'climb', from: 118, to: 200, p: { h: 8, up: 24, top: 25, wet: 1 } },
         // (Steps the rain has cut in the clay: crawled one corner at a time.)
         { kind: 'falls', from: 122, to: 146, p: { ledgeH: 0.35, every: 4, clay: 1 } },
+      ],
+    },
+    {
+      // (The last stretch before the shore: down into a creek and up out,
+      // then straight onto a plank bridge over a gully.)
+      kind: 'creek',
+      label: 'Creek and plank bridge',
+      nice: 'Through the creek and over the planks. The shore is right there.',
+      at: [3860, 32],
+      len: 62,
+      needs: { low: true, diff: true },
+      mix: [
+        { kind: 'thicket', from: 0, to: 62, p: { w: 4.6 } },
+        { kind: 'creek', from: 0, to: 28 },
+        { kind: 'bridge', from: 32, to: 60 },
       ],
     },
   ],
