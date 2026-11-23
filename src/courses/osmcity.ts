@@ -8438,9 +8438,6 @@ export async function buildPasirRisCourse(
   function* islandSheet(ix: number, iz: number, w: { rings: OutRing[]; segs?: Map<number, number[][]>; kerbRuns?: KerbRun[]; all?: { pts: XZ[]; hole: boolean; lvl: number }[] }, lawn: Acc, side: Acc): Generator<void, void, void> {
     const KR = w.kerbRuns ?? [];
     if (!KR.length) return;
-    const ST = ((globalThis as { __sheetStats?: Record<string, number> }).__sheetStats ??= {});
-    const tA = performance.now();
-    ST.tiles = (ST.tiles ?? 0) + 1;
     let slice = performance.now();
     const pause = () => performance.now() - slice > 4;
     const X0 = ix * TILE, Z0 = iz * TILE, X1 = X0 + TILE, Z1 = Z0 + TILE;
@@ -8461,8 +8458,6 @@ export async function buildPasirRisCourse(
     };
     const col = new THREE.Color();
     for (const lvl of [...new Set(KR.map((r) => r.lvl))]) {
-      let tM = performance.now(); const mark = (k: string) => { ST[k] = (ST[k] ?? 0) + performance.now() - tM; tM = performance.now(); };
-      ST.at = 0;
       // The kerbs' tops and the ground's edges, as samples: x, z, value, out x, out z, length, lawn (1) or ground (0).
       const S: number[] = [];
       const SG = 4;
@@ -8554,7 +8549,6 @@ export async function buildPasirRisCourse(
         }
       }
       if (!lawnLines.length) continue;
-      mark('tKerb');
       // (The outline's sides with no kerb: the lawn meets the ground there.)
       for (const R of w.rings) {
         if (R.lvl !== lvl || !R.kq) continue;
@@ -8571,7 +8565,6 @@ export async function buildPasirRisCourse(
           }
         }
       }
-      mark('tRing');
       // (Nor over a path: it lies on the ground. The lawn meets the ground at its edges.)
       const pathStrips = new Paths64();
       // (Only its pieces over the square the rule is worked out over, and
@@ -8644,7 +8637,6 @@ export async function buildPasirRisCourse(
         co.execute(2 * h * S_, out);
         for (const q of out) pathStrips.push(q);
       }
-      mark('tPath');
       const rect = (x0: number, z0: number, x1: number, z1: number) => many([toPath([[x0, z0], [x1, z0], [x1, z1], [x0, z1]])]);
       const clip = (P: Paths64, x0: number, z0: number, x1: number, z1: number) => Clipper.Intersect(P, rect(x0, z0, x1, z1), FillRule.NonZero);
       /**
@@ -8735,10 +8727,6 @@ export async function buildPasirRisCourse(
       slice = performance.now();
       const pave = new Paths64(), holes = new Paths64();
       for (const r of w.all ?? []) if (r.lvl === lvl) (r.hole ? holes : pave).push(toPath(r.pts));
-      ST.at = 1;
-      const tt = [performance.now()];
-      ST.at = 2;
-      tt.push(performance.now());
       // (Its rounds to 5 cm: to the clipper's own fineness, a millimetre, a
       // tile's reach had 2,000 points and its cutting took seconds. Where
       // it ends the lawn lies on the ground, see F.)
@@ -8761,8 +8749,6 @@ export async function buildPasirRisCourse(
         co.execute(2 * REACH * S_, reach);
       }
       const tileR = many([toPath([[X0, Z0], [X1, Z0], [X1, Z1], [X0, Z1]])]);
-      ST.at = 3;
-      tt.push(performance.now());
       // (Cut into strips 25 m wide, each worked out alone and the pieces
       // joined again: the clipper's time goes as the number of sides a
       // line across the whole lot crosses, and over the whole square that
@@ -8774,7 +8760,6 @@ export async function buildPasirRisCourse(
       const reachQ = inSq(reach), paveQ = inSq(pave), holesQ = inSq(holes), bandsQ = inSq(bands), psQ = inSq(pathStrips);
       const crumbless = (P: Paths64) => P.filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_);
       const parts = new Paths64();
-      const off = new Paths64();
       for (let k = 0; k < NSTRIP; k++) {
         const xa = QX0 + k * SW, xb = k === NSTRIP - 1 ? QX1 : QX0 + (k + 1) * SW;
         // (Each worked out 5 cm past its sides, and cut to them after: the
@@ -8786,7 +8771,6 @@ export async function buildPasirRisCourse(
         // paving under it cancelled it out, and the lawn was laid over a
         // path there, 1871,1855.)
         const offK = many(Clipper.Difference(Clipper.Union(band(paveQ, ea, eb), undefined, FillRule.NonZero), Clipper.Union(band(holesQ, ea, eb), undefined, FillRule.NonZero), FillRule.NonZero), Clipper.Union(band(bandsQ, ea, eb), undefined, FillRule.NonZero), band(psQ, ea, eb));
-        for (const q of offK) off.push(q);
         // (Less its crumbs, rings of under a square centimetre: the clipper
         // takes the way the lowest ring winds for the way they all do, and
         // a crumb of three points in a line wound the other way, lowest of
@@ -8798,8 +8782,6 @@ export async function buildPasirRisCourse(
         const openK = Clipper.InflatePaths(crumbless(Clipper.InflatePaths(rawK, -0.01 * S_, JoinType.Miter, EndType.Polygon)), 0.01 * S_, JoinType.Miter, EndType.Polygon);
         for (const q of band(openK, xa, xb)) parts.push(q);
       }
-      ST.at = 4;
-      tt.push(performance.now());
       // (The strips joined again, and its points no closer than 5 mm to the
       // line through those either side: round a nose the kerb is in pieces
       // of 3 cm, and a piece of lawn between three such points, a sliver,
@@ -8810,18 +8792,6 @@ export async function buildPasirRisCourse(
       // next, 1358.7,2000.)
       const domain = simplifyRings(crumbless(Clipper.Union(parts, undefined, FillRule.NonZero)), 0.005 * S_);
       const region = Clipper.Intersect(domain, tileR, FillRule.NonZero);
-      {
-        const G = globalThis as { __sheetWant?: string[]; __sheetDbg?: Record<string, unknown> };
-        if (G.__sheetWant?.includes(`${ix},${iz}`)) {
-          const P = (Q: Paths64) => Q.map((p) => p.map((q) => [q.x / S_, q.y / S_]));
-          (G.__sheetDbg ??= {})[`${ix},${iz},${lvl}`] = { domain: P(domain), reach: P(reach), off: P(off), bands: P(bands), ps: P(pathStrips), bh: [...byHalf].map(([h, Q]) => [h, P(Q)]), lawnLines: P(lawnLines), S: S.slice() };
-        }
-      }
-      tt.push(performance.now());
-      for (let q = 1; q < tt.length; q++) ST['r' + q] = (ST['r' + q] ?? 0) + tt[q] - tt[q - 1];
-      ST.regionPts = (ST.regionPts ?? 0) + region.reduce((a, p) => a + p.length, 0);
-      ST.reachPts = (ST.reachPts ?? 0) + reach.reduce((a, p) => a + p.length, 0);
-      ST.offPts = (ST.offPts ?? 0) + off.reduce((a, p) => a + p.length, 0);
       yield;
       slice = performance.now();
       if (!region.length) continue;
@@ -8870,7 +8840,6 @@ export async function buildPasirRisCourse(
       // rule B3, as main's did (2.8 m between a raised road's kerb and
       // one 5.4 m lower at 1147,1934; 7.5 m under a 6 m wall at
       // 1857.5,1822). Eased between, over a metre.
-      mark('tRegion');
       const top0 = new Map<number, number>(), lawn0 = new Set<number>();
       for (let n = 0; n < S.length; n += 8) {
         if (S[n + 6]) top0.set(n, S[n + 2]);
@@ -8902,15 +8871,13 @@ export async function buildPasirRisCourse(
           }
         const d = S[n + 2] - tf;
         if (S[n + 6] === 2) {
-          // (A lawn kerb over a lower lawn kerb too close for a 1 in 2 bank
-          // down to it: the lawn is held level with its top across to it, the
-          // lower road its own wall, rule B3. Sloped there 1 in 2 instead,
-          // a strip 10 to 30 cm wide between a slip road's kerb and the
-          // road beside it was turned from the light, dark, at 1335,571.6.)
-          if (d > 0 && fk) S[n + 7] = best * smoothstep(2 * d + 1.1, 2 * d + 0.1, best);
-          // (And the lower kerb's edge of the lawn lifted to match, its
-          // road its own wall up to it: the lawn's edges are what the rule
-          // runs between, see below.)
+          // (A lawn kerb under a higher lawn kerb too close for a 1 in 2 bank
+          // up to it: the lawn's edge here lifted to the higher's top, so
+          // the lawn is held level across, the lower road its own wall up to
+          // it, rule B3; the lawn's edges are what the rule runs between, see
+          // below. Sloped there 1 in 2 instead, a strip 10 to 30 cm wide
+          // between a slip road's kerb and the road beside it was turned
+          // from the light, dark, at 1335,571.6.)
           if (d < 0 && fk) S[n + 2] = lerp(S[n + 2], tf, smoothstep(-2 * d + 1.1, -2 * d + 0.1, best));
           continue;
         }
@@ -8918,8 +8885,6 @@ export async function buildPasirRisCourse(
         S[n + 2] = lerp(gnd(x + nx * 0.05, z + nz * 0.05) + 0.02, S[n + 2], sv);
         if (sv <= 0) S[n + 6] = 0;
       }
-      mark('tPre');
-      { const G = globalThis as { __sheetDbg?: Record<string, { S2?: number[] }> }; const dd = G.__sheetDbg?.[`${ix},${iz},${lvl}`]; if (dd) dd.S2 = S.slice(); }
       const NONE: number[] = [];
       // The height rule: the lawn is the smoothest sheet that meets each of
       // its edges at that edge's own height, a kerb's top, or the ground's
@@ -8962,7 +8927,6 @@ export async function buildPasirRisCourse(
       };
       /** The height of an edge of the lawn at (x, z): a lawn kerb's top (lifted by rule B3), a drop's kerb's, or the ground's. */
       const edgeRaw = (x: number, z: number) => {
-        ST.edgeAt = (ST.edgeAt ?? 0) + 1;
         // (Within 2 cm of one: the lawn's edge along a kerb, or where the
         // grid's lines cross it, a hair off it.)
         let eb = 0.02 * 0.02, ta = NaN, tb = NaN, u = 0;
@@ -9260,8 +9224,6 @@ export async function buildPasirRisCourse(
           slice = performance.now();
         }
         // Solved by over-relaxation, to a tenth of a millimetre.
-        const tS1 = performance.now();
-        ST.N = (ST.N ?? 0) + N;
         // (Each point's weights on its neighbours and the edges' part, once:
         // worked out afresh each sweep, the solving was a tenth of the
         // sheet's time.)
@@ -9303,14 +9265,12 @@ export async function buildPasirRisCourse(
             if (d > worst) worst = d;
             else if (-d > worst) worst = -d;
           }
-          ST.iters = (ST.iters ?? 0) + 1;
           if (worst < 1e-4) break;
           if (pause()) {
             yield;
             slice = performance.now();
           }
         }
-        ST.solveMs = (ST.solveMs ?? 0) + performance.now() - tS1;
         return { rows, colsG, nodeId, U };
       };
       // (The tile's own sheet meets the next tile's at their border: the
@@ -9320,7 +9280,6 @@ export async function buildPasirRisCourse(
       // them there. Each tile working out its border over its own ground
       // and SOLVE_M beyond, the two met 12 to 21 cm apart across a wide
       // island, 1766.5,1800.)
-      const tS0 = performance.now();
       const M = SOLVE_M;
       const at = (r: Solved, i: number, j: number) => {
         const id = r.nodeId.get(i * 100003 + j);
@@ -9367,7 +9326,6 @@ export async function buildPasirRisCourse(
       };
       const own = yield* solveRect(X0 - 0.5, X1 + 0.5, Z0 - 0.5, Z1 + 0.5, borderAt);
       const { rows, colsG, nodeId, U } = own;
-      ST.spanMs = (ST.spanMs ?? 0) + performance.now() - tS0;
       /** The sheet's height at (x, z): at a point of the grid its own; on a line of the grid, between the points or edges either side; elsewhere, on an edge, the edge's. */
       const sheetY = (x: number, z: number) => {
         const xi = Math.round(x), zi = Math.round(z);
@@ -9395,7 +9353,6 @@ export async function buildPasirRisCourse(
         if (!(v === v) && onZ) v = along(colsG, xi, z, (i) => xi * 100003 + i, (u) => [xi, u]);
         return v === v ? v : edgeAt(x, z);
       };
-      ST.at = 5;
       // The sheet: 1 m squares fixed to the world, each cut to where it is laid.
       const vIdx = new Map<number, number>();
       /** A point's key, its millimetres packed in one number. */
@@ -9573,7 +9530,6 @@ export async function buildPasirRisCourse(
           let colP: Paths64 | null = null, colB: number[][] = [];
           for (let cz = bz0; cz < bz1; cz++) {
             if (hit.has(cx * 100003 + cz)) {
-              const t1 = performance.now();
               const X0 = cx * S_, Z0 = cz * S_, X1 = X0 + S_, Z1 = Z0 + S_;
               if (!colP) {
                 const near1 = new Paths64();
@@ -9590,10 +9546,7 @@ export async function buildPasirRisCourse(
                 if (!(b[3] <= Z0 || b[1] >= Z1)) near1.push(p);
               });
               const cc = split(split(near1, false, Z0, false, cx, cz, cx + 1, cz + 1), false, Z1, true, cx, cz, cx + 1, cz + 1);
-              ST.cutMs = (ST.cutMs ?? 0) + performance.now() - t1;
-              const t2 = performance.now();
               cellTris(cc, cx, cz);
-              ST.triMs = (ST.triMs ?? 0) + performance.now() - t2;
             }
             else if (inRow.get(cz)![cx - bx0]) {
               const a = vert(cx * S_, cz * S_), b = vert((cx + 1) * S_, cz * S_), c = vert((cx + 1) * S_, (cz + 1) * S_), d = vert(cx * S_, (cz + 1) * S_);
@@ -9612,9 +9565,7 @@ export async function buildPasirRisCourse(
         // (Or with few points left, cut a square at a time from there: each
         // call to the clipper costs a tenth of a millisecond, however small.)
         if ((x1 - x0 <= 8 && z1 - z0 <= 8) || pts <= 48) {
-          const tb = performance.now();
           block(P, x0, z0, x1, z1);
-          ST.blockMs = (ST.blockMs ?? 0) + performance.now() - tb;
           if (pause()) {
             yield;
             slice = performance.now();
@@ -9632,13 +9583,7 @@ export async function buildPasirRisCourse(
         }
       };
       yield* halve(region, X0, Z0, X1, Z1);
-      ST.verts = (ST.verts ?? 0) + vx.length;
-      for (let i = 0; i < vx.length; i++) if (Number.isInteger(vx[i]) && Number.isInteger(vz[i])) ST.nodes = (ST.nodes ?? 0) + 1;
-      ST.tris = (ST.tris ?? 0) + tris.length / 3;
-      ST.at = 6;
-      ST.gridMs = (ST.gridMs ?? 0) + performance.now() - tA;
       if (!tris.length) continue;
-      mark('tGrid');
       // Heights: on a lawn kerb's outer edge its own top (or higher, where rule B3 lifts the lawn), else the rule.
       const vy: number[] = new Array(vx.length);
       const onEdge: [number, number, number][] = [];
@@ -9673,7 +9618,6 @@ export async function buildPasirRisCourse(
           slice = performance.now();
         }
       }
-      mark('tHeights');
       // Its light, from the rule's own slope: at each point of the 1 m
       // grid from its neighbours either side, and between them as they
       // lie about it. (Asked again round every point, the rule was 5
@@ -9738,7 +9682,6 @@ export async function buildPasirRisCourse(
           slice = performance.now();
         }
       }
-      mark('tNormals');
       // Into the tile's lawn.
       const base = lawn.pos.length / 3;
       for (let i = 0; i < vx.length; i++) {
@@ -9792,7 +9735,6 @@ export async function buildPasirRisCourse(
         }
       }
     }
-    ST.ms = (ST.ms ?? 0) + performance.now() - tA;
   }
   /** Cut a tile's paving to its finished outline: see paveCuts. */
   const bareHoles = new Map<string, XZ[][]>();
@@ -11459,18 +11401,7 @@ export async function buildPasirRisCourse(
               yield;
             }
           }
-          {
-            const PS = ((globalThis as { __sheetStats?: Record<string, number> }).__sheetStats ??= {});
-            const it2 = islandSheet(ix, iz, w, lawn, side);
-            for (;;) {
-              const t0 = performance.now();
-              const r = it2.next();
-              const key = 'p' + (PS.at ?? 0);
-              PS[key] = (PS[key] ?? 0) + performance.now() - t0;
-              if (r.done) break;
-              yield;
-            }
-          }
+          yield* islandSheet(ix, iz, w, lawn, side);
           outWork.delete(k), fillTrisOf.delete(k);
         })(),
       );
