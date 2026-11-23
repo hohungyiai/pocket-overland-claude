@@ -66,6 +66,12 @@ const kits = (o, room = 150) => {
     wrong.push(['a metre off the middle of the notch, all kit in', { ...right, low: true, diff: true, off: (right.off ?? 0) + 1, leans: 35 }]);
     wrong.push(['a metre the other side of the middle of the notch, all kit in', { ...right, low: true, diff: true, off: (right.off ?? 0) - 1, leans: 35 }]);
   }
+  if (o.bridge) {
+    // A plank bridge: square on the planks. Half a metre to either side,
+    // the wheels drop off them and the car is on its belly, all kit in.
+    wrong.push(['half a metre left of the planks, all kit in', { ...right, low: true, diff: true, off: (right.off ?? 0) + 0.5 }]);
+    wrong.push(['half a metre right of the planks, all kit in', { ...right, low: true, diff: true, off: (right.off ?? 0) - 0.5 }]);
+  }
   for (const w of o.closed ?? []) {
     // Closed in: no way round it on the ground either side, even with the
     // right kit (the bog below a ridge or in a valley's ditches holds the
@@ -114,7 +120,7 @@ const kits = (o, room = 150) => {
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), bridge: o.parts.some((q) => q.kind === 'bridge'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
       // Water never hangs in the air: every edge point of the ford's water
