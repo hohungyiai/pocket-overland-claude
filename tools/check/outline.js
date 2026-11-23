@@ -27,6 +27,44 @@ window.__eachMesh = (kinds, f) => {
 };
 
 /**
+ * Triangles of drawn meshes, kept as where they lie in their mesh (which
+ * mesh, which corners) and not copied out: copied, each an array of its own,
+ * the whole map's one-sheet lawn ran the page out of memory. get(q) gives its
+ * corners and which way it faces, [ax, ay, az, bx, by, bz, cx, cy, cz, +-1],
+ * in one array used again by the next call.
+ */
+window.__triRefs = () => {
+  const meshes = [];
+  let ref = new Int32Array(1 << 16), n = 0, last = null;
+  const t = new Float64Array(10);
+  return {
+    add(pos, idx, q) {
+      if (last !== pos) meshes.push(pos, idx), (last = pos);
+      if (2 * n + 2 > ref.length) {
+        const r = new Int32Array(ref.length * 2);
+        r.set(ref);
+        ref = r;
+      }
+      ref[2 * n] = meshes.length - 2;
+      ref[2 * n + 1] = q;
+      return n++;
+    },
+    get length() {
+      return n;
+    },
+    get(q) {
+      const m = ref[2 * q], pos = meshes[m], idx = meshes[m + 1], o = ref[2 * q + 1];
+      for (let c = 0; c < 3; c++) {
+        const v = idx[o + c] * 3;
+        t[3 * c] = pos[v], t[3 * c + 1] = pos[v + 1], t[3 * c + 2] = pos[v + 2];
+      }
+      t[9] = (t[5] - t[2]) * (t[6] - t[0]) - (t[3] - t[0]) * (t[8] - t[2]) > 0 ? 1 : -1;
+      return t;
+    },
+  };
+};
+
+/**
  * The edges of a mesh that only one of its triangles has (its outline), as
  * [ax, ay, az, bx, by, bz, cx, cz] with (cx, cz) the triangle's third corner.
  * Corners count as one where they lie within a millimetre of each other.
@@ -382,7 +420,7 @@ window.__checkIslandTops = (all = false) => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
   const C = 2;
-  const S = { road: [], lawn: [], kerb: [], path: [], deck: [] };
+  const S = { road: __triRefs(), lawn: __triRefs(), kerb: __triRefs(), path: __triRefs(), deck: __triRefs() };
   const grid = { road: new Map(), lawn: new Map(), kerb: new Map(), path: new Map(), deck: new Map() };
   const kerbs = [];
   window.__eachMesh(['road', 'deck', 'lawn', 'kerb', 'foot', 'cycle'], (k, kind, pos, idx) => {
@@ -394,16 +432,14 @@ window.__checkIslandTops = (all = false) => {
       if (kind === 'kerb') kerbs.push(t);
       // (A deck's own faces too, apart: a kerb with a deck's underside under it is on a deck.)
       if (kind === 'deck') {
-        const n = S.deck.length;
-        S.deck.push(t);
+        const n = S.deck.add(pos, idx, q);
         const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
         const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
         if ((x1 - x0 + 1) * (z1 - z0 + 1) <= 400)
           for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) (grid.deck.get(i * 100003 + j) ?? grid.deck.set(i * 100003 + j, []).get(i * 100003 + j)).push(n);
       }
       const into = kind === 'lawn' || kind === 'kerb' ? kind : kind === 'foot' || kind === 'cycle' ? 'path' : 'road';
-      const n = S[into].length;
-      S[into].push(t);
+      const n = S[into].add(pos, idx, q);
       const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
       const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
       if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
@@ -415,7 +451,7 @@ window.__checkIslandTops = (all = false) => {
   const top = (kind, x, z, y, within = 0.5) => {
     let best = -Infinity;
     for (const q of grid[kind].get(Math.floor(x / C) * 100003 + Math.floor(z / C)) ?? []) {
-      const t = S[kind][q];
+      const t = S[kind].get(q);
       const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
       const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
       const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
@@ -496,7 +532,7 @@ const levelIslands = (all, holes) => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
   const C = 2;
-  const S = { road: [], lawn: [], kerb: [], path: [], deck: [] };
+  const S = { road: __triRefs(), lawn: __triRefs(), kerb: __triRefs(), path: __triRefs(), deck: __triRefs() };
   const grid = { road: new Map(), lawn: new Map(), kerb: new Map(), path: new Map(), deck: new Map() };
   const kerbs = [];
   window.__eachMesh(['road', 'deck', 'lawn', 'kerb', 'foot', 'cycle'], (k, kind, pos, idx) => {
@@ -510,8 +546,7 @@ const levelIslands = (all, holes) => {
       t.push(ny > 0 ? 1 : -1);
       if (kind === 'kerb') kerbs.push(t);
       const into = kind === 'lawn' || kind === 'kerb' || kind === 'deck' ? kind : kind === 'foot' || kind === 'cycle' ? 'path' : 'road';
-      const n = S[into].length;
-      S[into].push(t);
+      const n = S[into].add(pos, idx, q);
       const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
       const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
       if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
@@ -523,7 +558,7 @@ const levelIslands = (all, holes) => {
   const tops = (kind, x, z, y, within = 0.5) => {
     const r = [];
     for (const q of grid[kind].get(Math.floor(x / C) * 100003 + Math.floor(z / C)) ?? []) {
-      const t = S[kind][q];
+      const t = S[kind].get(q);
       const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
       const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
       const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
