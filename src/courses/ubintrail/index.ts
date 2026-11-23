@@ -88,6 +88,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   }
 
   // ---------- Colours ----------
+  const EARTH = new THREE.Color(0.33, 0.19, 0.11);
   const C = {
     grass: new THREE.Color(0.25, 0.45, 0.16),
     lush: new THREE.Color(0.17, 0.36, 0.12),
@@ -128,7 +129,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     }
     const o = trail.surface(x, z);
     if (o) {
-      if (/mud|ford|slick|bog/i.test(o.name)) {
+      if (/creek|plank/i.test(o.name)) {
+        // A creek's channel and a bridge's gully: bare dark earth, wet and
+        // darker the deeper it is cut, so the cut reads from the track.
+        // (Redder than the sandy track's colour, so the ground shader
+        // draws it as earth, not sand ripples.)
+        out.lerp(C.dirt, 0.75);
+        const cut = trail.base ? smoothstep(0.15, 1.1, trail.base(x, z) - y) : 0;
+        out.lerp(EARTH, cut);
+        if (/creek/i.test(o.name)) out.lerp(C.wetMud, 0.35 * cut);
+      } else if (/mud|ford|slick|bog/i.test(o.name)) {
         // Wet, dark mud, with darker puddles in the ruts.
         out.lerp(C.wetMud, 0.92);
         if (valueNoise(x / 2.2, z / 2.2, SEED + 11) > 0.62) out.lerp(C.puddle, 0.6);
@@ -798,7 +808,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     geo.computeVertexNormals();
     if (geo.attributes.normal.getY(0) < 0) geo.setIndex(I.map((_, i) => I[i - (i % 3) + [0, 2, 1][i % 3]]));
     geo.computeVertexNormals();
-    const ford = new THREE.Mesh(geo, creek ? waterMat(0x4d5a40, 0.9, 2) : waterMat(0x5b5a3e, 0.93, 2));
+    const ford = new THREE.Mesh(geo, creek ? waterMat(0x3d6a70, 0.85, 2) : waterMat(0x5b5a3e, 0.93, 2));
     ford.receiveShadow = true;
     scene.add(ford);
   }

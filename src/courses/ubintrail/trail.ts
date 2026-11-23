@@ -1365,7 +1365,7 @@ export class UbinTrail {
       for (let i = o.parts.length - 1; i >= 0; i--) {
         const q = o.parts[i];
         if (!inside(q) || q.kind === 'ridge' || q.kind === 'thicket' || q.kind === 'valley') continue;
-        if (Math.abs(n.sd - (q.p.shift ?? 0)) > (q.kind === 'ford' || q.kind === 'camber' || q.kind === 'notch' || q.kind === 'creek' ? 8 : 3.6)) continue;
+        if (Math.abs(n.sd - (q.p.shift ?? 0)) > (q.kind === 'ford' || q.kind === 'camber' || q.kind === 'notch' || q.kind === 'creek' || q.kind === 'bridge' ? 8 : 3.6)) continue;
         // (In a creek's water: soft, and it takes the speed off you, so
         // the far bank is climbed from a crawl, not carried.)
         if (q.kind === 'creek') {
