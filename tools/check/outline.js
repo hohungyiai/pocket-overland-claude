@@ -668,8 +668,8 @@ window.__checkLawnInIsland = (all = false) => {
 // next's: every open edge of a tile's lawn on the tile's own border must
 // meet the next tile's lawn there, at the same height (a tile reading the
 // kerbs differently would leave a step or a slot).
-const lawnTris = (k) => {
-  const r = globalThis.__osm.tileAccs(k).lawn;
+const lawnTris = (k, key = 'lawn') => {
+  const r = globalThis.__osm.tileAccs(k)[key];
   if (!r) return [];
   const { pos, idx } = r, T = [];
   for (let q = 0; q < idx.length; q += 3) T.push([idx[q], idx[q + 1], idx[q + 2]].map((v) => [pos[3 * v], pos[3 * v + 1], pos[3 * v + 2]]));
@@ -685,25 +685,26 @@ window.__checkLawnSeams = (all = false) => {
   const idx = new Map();
   // (Only those by the tile's border: the whole map's at once ran the
   // browser out of memory.)
-  const index = (k) => {
-    if (idx.has(k)) return idx.get(k);
+  const index = (k, key = 'lawn') => {
+    const ik = k + '|' + key;
+    if (idx.has(ik)) return idx.get(ik);
     const [ti, tj] = k.split(',').map(Number);
     const by = (v) => Math.min(v[0] - ti * TILE, (ti + 1) * TILE - v[0], v[2] - tj * TILE, (tj + 1) * TILE - v[2]) < 1.5;
-    const T = lawnTris(k).filter((t) => t.some(by)), g = new Map();
+    const T = lawnTris(k, key).filter((t) => t.some(by)), g = new Map();
     T.forEach((t, i) => {
       const xs = t.map((v) => v[0]), zs = t.map((v) => v[2]);
       for (let a = Math.floor(Math.min(...xs)); a <= Math.floor(Math.max(...xs)); a++)
         for (let b = Math.floor(Math.min(...zs)); b <= Math.floor(Math.max(...zs)); b++) (g.get(a * 100003 + b) ?? g.set(a * 100003 + b, []).get(a * 100003 + b)).push(i);
     });
     const r = { T, g };
-    idx.set(k, r);
+    idx.set(ik, r);
     return r;
   };
   // (The nearest to height y of those over the point: two levels' lawns
   // may lie one over the other, 20 cm apart at 1800,1460.4, each whole
   // across the border.)
-  const yAt = (k, x, z, y) => {
-    const { T, g } = index(k);
+  const yAt = (k, x, z, y, key = 'lawn') => {
+    const { T, g } = index(k, key);
     let best = NaN;
     for (const i of g.get(Math.floor(x) * 100003 + Math.floor(z)) ?? []) {
       const [[x1, y1, z1], [x2, y2, z2], [x3, y3, z3]] = T[i];
@@ -736,12 +737,14 @@ window.__checkLawnSeams = (all = false) => {
       // tile, must have that tile's lawn under it at the same height. At 2
       // cm, where the lawn's edge crossed the border at a slant, 7 to 19
       // degrees, the point 2 cm over was off the lawn in both tiles alike,
-      // 1660.1,2200.)
+      // 1660.1,2200. On the border to half a millimetre, the clipper's
+      // own fineness: a kerb's edge a millimetre inside it is the lawn's
+      // own end, no border, 140.2,1200.)
       let ox = 0, oz = 0;
-      if (Math.abs(a[0] - ti * TILE) < 0.002 && Math.abs(b[0] - ti * TILE) < 0.002) ox = -0.002;
-      else if (Math.abs(a[0] - (ti + 1) * TILE) < 0.002 && Math.abs(b[0] - (ti + 1) * TILE) < 0.002) ox = 0.002;
-      else if (Math.abs(a[2] - tj * TILE) < 0.002 && Math.abs(b[2] - tj * TILE) < 0.002) oz = -0.002;
-      else if (Math.abs(a[2] - (tj + 1) * TILE) < 0.002 && Math.abs(b[2] - (tj + 1) * TILE) < 0.002) oz = 0.002;
+      if (Math.abs(a[0] - ti * TILE) < 0.0005 && Math.abs(b[0] - ti * TILE) < 0.0005) ox = -0.002;
+      else if (Math.abs(a[0] - (ti + 1) * TILE) < 0.0005 && Math.abs(b[0] - (ti + 1) * TILE) < 0.0005) ox = 0.002;
+      else if (Math.abs(a[2] - tj * TILE) < 0.0005 && Math.abs(b[2] - tj * TILE) < 0.0005) oz = -0.002;
+      else if (Math.abs(a[2] - (tj + 1) * TILE) < 0.0005 && Math.abs(b[2] - (tj + 1) * TILE) < 0.0005) oz = 0.002;
       else continue;
       if (Math.hypot(b[0] - a[0], b[2] - a[2]) < 0.05) continue;
       const nk = `${ti + Math.sign(ox)},${tj + Math.sign(oz)}`;
@@ -749,6 +752,10 @@ window.__checkLawnSeams = (all = false) => {
       n++;
       const mx = (a[0] + b[0]) / 2, mz = (a[2] + b[2]) / 2, my = (a[1] + b[1]) / 2;
       const y = yAt(nk, mx + ox, mz + oz, my);
+      // (None beyond, but a kerb's top there at about the lawn's height:
+      // the lawn meets the kerb at the border, its edge and the border one
+      // to the millimetre, 140.7,1200.)
+      if (y !== y && Math.abs(yAt(nk, mx + ox, mz + oz, my, 'kerb') - my) < 0.3) continue;
       if (y !== y) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: 1, what: 'lawn ends at the tile border, none beyond' });
       else if (Math.abs(y - my) > 0.02) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: +Math.abs(y - my).toFixed(3), what: 'lawn steps at the tile border' });
     }

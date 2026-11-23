@@ -8642,7 +8642,11 @@ export async function buildPasirRisCourse(
       // its two sides 30 cm apart in height, standing upright, at 353,1960.)
       // (Over the tile and SOLVE_M round it, where the rule is worked out: see below.)
       const sqR = many([toPath([[X0 - SOLVE_M, Z0 - SOLVE_M], [X1 + SOLVE_M, Z0 - SOLVE_M], [X1 + SOLVE_M, Z1 + SOLVE_M], [X0 - SOLVE_M, Z1 + SOLVE_M]])]);
-      const raw = Clipper.Difference(Clipper.Intersect(reach, sqR, FillRule.NonZero), off, FillRule.NonZero);
+      // (Less its crumbs, rings of under a square centimetre: the clipper
+      // takes the way the lowest ring winds for the way they all do, and
+      // a crumb of three points in a line wound the other way, lowest of
+      // all; narrowed, the tile's lawn came back as none, 633.6,200.)
+      const raw = Clipper.Difference(Clipper.Intersect(reach, sqR, FillRule.NonZero), off, FillRule.NonZero).filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_);
       tt.push(performance.now());
       // (And its points no closer than 5 mm to the line through those
       // either side: round a nose the kerb is in pieces of 3 cm, and a
@@ -8653,7 +8657,7 @@ export async function buildPasirRisCourse(
       // whole ring, 1,436 square metres of lawn in one tile and not the
       // next, 1358.7,2000.)
       const domain = simplifyRings(
-        Clipper.InflatePaths(Clipper.InflatePaths(raw, -0.01 * S_, JoinType.Miter, EndType.Polygon), 0.01 * S_, JoinType.Miter, EndType.Polygon),
+        Clipper.InflatePaths(Clipper.InflatePaths(raw, -0.01 * S_, JoinType.Miter, EndType.Polygon).filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_), 0.01 * S_, JoinType.Miter, EndType.Polygon),
         0.005 * S_,
       );
       const region = Clipper.Intersect(domain, tileR, FillRule.NonZero);
@@ -8757,6 +8761,7 @@ export async function buildPasirRisCourse(
         if (sv <= 0) S[n + 6] = 0;
       }
       mark('tPre');
+      { const G = globalThis as { __sheetDbg?: Record<string, { S2?: number[] }> }; const dd = G.__sheetDbg?.[`${ix},${iz},${lvl}`]; if (dd) dd.S2 = S.slice(); }
       const NONE: number[] = [];
       // The height rule: the lawn is the smoothest sheet that meets each of
       // its edges at that edge's own height, a kerb's top, or the ground's
@@ -8898,7 +8903,7 @@ export async function buildPasirRisCourse(
        * the lawn up between in a spike, 1759,2307.5; 192 such places on
        * the trial map.) Not over the square's own sides: no edge there.
        */
-      const ENV_S = 0.5, ENV_C = 2;
+      const ENV_S = 0.5, ENV_C = 2, ENV_D = 6;
       const envSeg: number[] = [];
       const envGrid = new Map<number, number[]>();
       {
@@ -8913,19 +8918,46 @@ export async function buildPasirRisCourse(
           for (let q = 0; q < m; q++) {
             const ax = ring[q].x / S_, az = ring[q].y / S_, bx = ring[(q + 1) % m].x / S_, bz = ring[(q + 1) % m].y / S_;
             const free = onSquare(ax, az, bx, bz);
-            const k = free ? 1 : Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.5));
-            for (let t = 0; t < k; t++) px.push(lerp(ax, bx, t / k)), pz.push(lerp(az, bz, t / k)), open.push(!free);
+            // (Its points where it crosses the world's half-metre lines:
+            // the next tile's the same. Every half metre from each corner,
+            // the two tiles' heights between them differed by 5 cm along a
+            // kerb whose top ran up and down, -182.4,200.)
+            const ts = [0];
+            if (!free) {
+              for (const [a0, b0] of [[ax, bx], [az, bz]]) {
+                if (Math.abs(b0 - a0) < 1e-9) continue;
+                for (let g = Math.ceil(Math.min(a0, b0) * 2); g <= Math.floor(Math.max(a0, b0) * 2); g++) {
+                  const t = (g / 2 - a0) / (b0 - a0);
+                  if (t > 1e-6 && t < 1 - 1e-6) ts.push(t);
+                }
+              }
+              ts.sort((p, q) => p - q);
+            }
+            for (const t of ts) px.push(lerp(ax, bx, t)), pz.push(lerp(az, bz, t)), open.push(!free);
           }
           const n = px.length;
           const v = new Float64Array(n);
           for (let i = 0; i < n; i++) v[i] = open[i] || open[(i + n - 1) % n] ? edgeRaw(px[i], pz[i]) : NaN;
-          for (let pass = 0; pass < 2; pass++)
-            for (let r = 0; r < 2 * n; r++) {
-              const i = pass ? (2 * n - r) % n : r % n, j = pass ? (i + 1) % n : (i + n - 1) % n;
-              if (!(pass ? open[i] : open[j])) continue;
-              const c = v[j] + ENV_S * Math.hypot(px[i] - px[j], pz[i] - pz[j]);
-              if (c < v[i]) v[i] = c;
+          // (From those within ENV_D along it only: the next tile has the
+          // edge that far past the border too. Carried on round the whole
+          // edge, a low point beyond the one tile's reach brought the
+          // border's height down 5 cm in that tile alone, -182.4,200.)
+          const v0 = v.slice();
+          for (let i = 0; i < n; i++) {
+            if (!(v0[i] === v0[i])) continue;
+            for (const dir of [1, -1]) {
+              let j = i, s = 0;
+              for (let step = 0; step < n; step++) {
+                const k = (j + dir + n) % n;
+                if (!open[dir > 0 ? j : k]) break;
+                s += Math.hypot(px[k] - px[j], pz[k] - pz[j]);
+                if (s > ENV_D) break;
+                const c = v0[k] + ENV_S * s;
+                if (c < v[i]) v[i] = c;
+                j = k;
+              }
             }
+          }
           for (let i = 0; i < n; i++) {
             if (!open[i]) continue;
             const j = (i + 1) % n, id = envSeg.length;
