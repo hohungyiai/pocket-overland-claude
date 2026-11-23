@@ -18,7 +18,7 @@ const CHECKS = [
   // own indexes of the whole map in memory, and the browser's clean-up of
   // those lands inside a slice (31 ms alone, 61 ms after one finished-road
   // check, 102 ms after all of them, in a different kind of slice each time).
-  ['The game starts within 20 s', 'perf.js', '__checkStart', 0],
+  ['The game starts within 23 s (user\'s hold, 23 Nov; back to 20 s)', 'perf.js', '__checkStart', 0],
   // Saving (save.ts): codes round-trip, a damaged code is refused, the autosave holds the car's spot.
   ['A save code gives back the same journey, and a damaged or cut-short code is refused', 'save.js', '__checkSaveCodes', 0],
   ['The autosave keeps the car\'s spot, and your place on other drives', 'save.js', '__checkAutosave', 0.5],
