@@ -9175,6 +9175,49 @@ export async function buildPasirRisCourse(
       // empty, as its middle is.)
       const rect = (x0: number, z0: number, x1: number, z1: number) => many([toPath([[x0, z0], [x1, z0], [x1, z1], [x0, z1]])]);
       const clip = (P: Paths64, x0: number, z0: number, x1: number, z1: number) => Clipper.Intersect(P, rect(x0, z0, x1, z1), FillRule.NonZero);
+      /**
+       * A piece's triangles, each pair side by side turned the other way
+       * across their shared side where that makes the thinner of them less
+       * thin (Lawson's flips, seen from above). (Fanned from a corner of the
+       * square, three points of the piece nearly in a line made a sliver
+       * between them, its middle point a kerb's corner 12 cm over the
+       * others: a spike, 1923.9,1633.)
+       */
+      const flipped = (P: { x: number; y: number }[], F: number[][]) => {
+        const q2 = (a: number, b: number, c: number) => {
+          // Twice the area over the longest side squared: 0 flat, ~0.87 even.
+          const A = P[a], B = P[b], C = P[c];
+          const ar = Math.abs((B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y));
+          const l = Math.max((B.x - A.x) ** 2 + (B.y - A.y) ** 2, (C.x - B.x) ** 2 + (C.y - B.y) ** 2, (A.x - C.x) ** 2 + (A.y - C.y) ** 2);
+          return l > 0 ? ar / l : 0;
+        };
+        const sgn = (a: number, b: number, c: number) => Math.sign((P[b].x - P[a].x) * (P[c].y - P[a].y) - (P[c].x - P[a].x) * (P[b].y - P[a].y));
+        const T = F.map((t) => t.slice());
+        for (let pass = 0; pass < 8; pass++) {
+          let any = false;
+          for (let i = 0; i < T.length; i++)
+            for (let e = 0; e < 3; e++) {
+              const a = T[i][e], b = T[i][(e + 1) % 3], c = T[i][(e + 2) % 3];
+              for (let j = i + 1; j < T.length; j++) {
+                const t = T[j];
+                const k = t.indexOf(b);
+                if (k < 0 || t[(k + 1) % 3] !== a) continue;
+                const d = t[(k + 2) % 3];
+                // (Only where the four make a convex shape: the new side inside it.)
+                const s0 = sgn(a, b, c);
+                if (s0 === 0 || sgn(d, b, c) !== s0 || sgn(c, a, d) !== s0) continue;
+                const before = Math.min(q2(a, b, c), q2(b, a, d)), after = Math.min(q2(a, d, c), q2(d, b, c));
+                if (after <= before * 1.05) continue;
+                T[i] = [a, d, c];
+                T[j] = [d, b, c];
+                any = true;
+                break;
+              }
+            }
+          if (!any) break;
+        }
+        return T;
+      };
       const cellTris = (cell: Paths64, cx: number, cz: number) => {
         let area = 0;
         for (const p of cell) area += Clipper.area(p);
@@ -9208,17 +9251,18 @@ export async function buildPasirRisCourse(
               if (ok) fan = c;
             }
             if (fan >= 0) {
-              const C = o[fan];
-              for (let q = 1; q + 1 < n; q++) {
-                const B = o[(fan + q) % n], D = o[(fan + q + 1) % n];
-                if (cr(C, B, D) < 2e-6 * S_ * S_) continue;
-                tris.push(vert(C.x, C.y), vert(B.x, B.y), vert(D.x, D.y));
+              const F: number[][] = [];
+              for (let q = 1; q + 1 < n; q++) F.push([fan, (fan + q) % n, (fan + q + 1) % n]);
+              for (const [a, b, c] of flipped(o, F)) {
+                const A = o[a], B = o[b], D = o[c];
+                if (Math.abs(cr(A, B, D)) < 2e-6 * S_ * S_) continue;
+                tris.push(vert(A.x, A.y), vert(B.x, B.y), vert(D.x, D.y));
               }
               continue;
             }
           }
           const pts = [...o, ...hs.flat()];
-          const faces = THREE.ShapeUtils.triangulateShape(o.map((q) => new THREE.Vector2(q.x, q.y)), hs.map((h) => h.map((q) => new THREE.Vector2(q.x, q.y))));
+          const faces = flipped(pts, THREE.ShapeUtils.triangulateShape(o.map((q) => new THREE.Vector2(q.x, q.y)), hs.map((h) => h.map((q) => new THREE.Vector2(q.x, q.y)))));
           for (const [a, b, c] of faces) {
             // (None with no size from above: three points in a line along
             // the cell's side, at three heights, stood up as a flap.)
