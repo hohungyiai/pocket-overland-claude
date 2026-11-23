@@ -8798,7 +8798,7 @@ export async function buildPasirRisCourse(
         return cap;
       };
       /** The height of an edge of the lawn at (x, z): a lawn kerb's top (lifted by rule B3), a drop's kerb's, or the ground's. */
-      const edgeAt = (x: number, z: number) => {
+      const edgeRaw = (x: number, z: number) => {
         ST.edgeAt = (ST.edgeAt ?? 0) + 1;
         // (Within 2 cm of one: the lawn's edge along a kerb, or where the
         // grid's lines cross it, a hair off it.)
@@ -8835,20 +8835,36 @@ export async function buildPasirRisCourse(
         // nose's paved point: its top, as its samples have it. Taken as the
         // ground there, the lawn stood up in slivers inside the nose,
         // 1815.6,2035.6.)
-        let best = 0.75 * 0.75, kerb = false, sw = 0, sv = 0;
-        for (let ci = Math.floor((x - 0.75) / SG); ci <= Math.floor((x + 0.75) / SG); ci++)
-          for (let cj = Math.floor((z - 0.75) / SG); cj <= Math.floor((z + 0.75) / SG); cj++)
-            for (const n of sgrid.get(ci * 100003 + cj) ?? NONE) {
-              const d2 = (x - S[n]) ** 2 + (z - S[n + 1]) ** 2;
-              if (d2 >= 0.75 * 0.75) continue;
-              if (d2 < best) (best = d2), (kerb = S[n + 6] === 2);
-              if (S[n + 6] !== 2) continue;
-              const wt = S[n + 5] * (1 - Math.sqrt(d2) / 0.75) ** 2;
-              sw += wt;
-              sv += wt * S[n + 2];
+        // (Nearer by the line along it than any other edge, not by its
+        // nearest sample: a path's edge 70 cm from a kerb took the kerb's
+        // top or the path's height by which sample was nearest, turn and
+        // turn about every few centimetres, and the lawn stood up in
+        // spikes between, 2569.6,1990.6.)
+        let kd = 0.75 * 0.75;
+        for (let gx = Math.floor((x - 0.75) / EG); gx <= Math.floor((x + 0.75) / EG); gx++)
+          for (let gz = Math.floor((z - 0.75) / EG); gz <= Math.floor((z + 0.75) / EG); gz++)
+            for (const e of egrid.get(gx * 100003 + gz) ?? NONE) {
+              const [ax, az, , bx, bz] = edges[e];
+              const qx = bx - ax, qz = bz - az, L2 = qx * qx + qz * qz;
+              const ue = L2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * qx + (z - az) * qz) / L2)) : 0;
+              const ox = ax + qx * ue - x, oz = az + qz * ue - z;
+              if (ox * ox + oz * oz < kd) kd = ox * ox + oz * oz;
             }
-        if (kerb && sw > 0) return capAt(x, z, sv / sw);
-        const [gv] = lowEdge(x, z, 0.75);
+        const [gv, gd] = lowEdge(x, z, 0.75);
+        if (Math.sqrt(kd) < Math.min(gd, 0.75)) {
+          let sw = 0, sv = 0;
+          for (let ci = Math.floor((x - 0.75) / SG); ci <= Math.floor((x + 0.75) / SG); ci++)
+            for (let cj = Math.floor((z - 0.75) / SG); cj <= Math.floor((z + 0.75) / SG); cj++)
+              for (const n of sgrid.get(ci * 100003 + cj) ?? NONE) {
+                if (S[n + 6] !== 2) continue;
+                const d2 = (x - S[n]) ** 2 + (z - S[n + 1]) ** 2;
+                if (d2 >= 0.75 * 0.75) continue;
+                const wt = S[n + 5] * (1 - Math.sqrt(d2) / 0.75) ** 2;
+                sw += wt;
+                sv += wt * S[n + 2];
+              }
+          if (sw > 0) return capAt(x, z, sv / sw);
+        }
         return gv === gv ? gv : gnd(x, z) + 0.02;
       };
       /**
@@ -8872,6 +8888,66 @@ export async function buildPasirRisCourse(
               sv += wt * S[n + 2];
             }
         return [sw > 0 ? sv / sw : NaN, dmin];
+      };
+      /**
+       * Its edge's height, as edgeRaw has it, held along each edge of the
+       * lawn to no more than 1 in 2 over the edge either side of it: where a
+       * kerb's top meets a path or the ground beside it, the lawn's edge
+       * comes down along the kerb, the kerb's own side over it. (Each spot
+       * by itself, a kerb's top 23 cm over a path's edge 4 cm from it stood
+       * the lawn up between in a spike, 1759,2307.5; 192 such places on
+       * the trial map.) Not over the square's own sides: no edge there.
+       */
+      const ENV_S = 0.5, ENV_C = 2;
+      const envSeg: number[] = [];
+      const envGrid = new Map<number, number[]>();
+      {
+        const sideOf = (u: number, a: number) => Math.abs(u - a) < 0.003;
+        const onSquare = (ax: number, az: number, bx: number, bz: number) =>
+          (sideOf(ax, X0 - SOLVE_M) && sideOf(bx, X0 - SOLVE_M)) || (sideOf(ax, X1 + SOLVE_M) && sideOf(bx, X1 + SOLVE_M)) || (sideOf(az, Z0 - SOLVE_M) && sideOf(bz, Z0 - SOLVE_M)) || (sideOf(az, Z1 + SOLVE_M) && sideOf(bz, Z1 + SOLVE_M));
+        for (const ring of domain) {
+          const m = ring.length;
+          if (m < 3) continue;
+          // The ring's points, every half metre at most, and whether the side from each to the next is an edge.
+          const px: number[] = [], pz: number[] = [], open: boolean[] = [];
+          for (let q = 0; q < m; q++) {
+            const ax = ring[q].x / S_, az = ring[q].y / S_, bx = ring[(q + 1) % m].x / S_, bz = ring[(q + 1) % m].y / S_;
+            const free = onSquare(ax, az, bx, bz);
+            const k = free ? 1 : Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.5));
+            for (let t = 0; t < k; t++) px.push(lerp(ax, bx, t / k)), pz.push(lerp(az, bz, t / k)), open.push(!free);
+          }
+          const n = px.length;
+          const v = new Float64Array(n);
+          for (let i = 0; i < n; i++) v[i] = open[i] || open[(i + n - 1) % n] ? edgeRaw(px[i], pz[i]) : NaN;
+          for (let pass = 0; pass < 2; pass++)
+            for (let r = 0; r < 2 * n; r++) {
+              const i = pass ? (2 * n - r) % n : r % n, j = pass ? (i + 1) % n : (i + n - 1) % n;
+              if (!(pass ? open[i] : open[j])) continue;
+              const c = v[j] + ENV_S * Math.hypot(px[i] - px[j], pz[i] - pz[j]);
+              if (c < v[i]) v[i] = c;
+            }
+          for (let i = 0; i < n; i++) {
+            if (!open[i]) continue;
+            const j = (i + 1) % n, id = envSeg.length;
+            envSeg.push(px[i], pz[i], v[i], px[j], pz[j], v[j]);
+            for (let gx = Math.floor((Math.min(px[i], px[j]) - 0.01) / ENV_C); gx <= Math.floor((Math.max(px[i], px[j]) + 0.01) / ENV_C); gx++)
+              for (let gz = Math.floor((Math.min(pz[i], pz[j]) - 0.01) / ENV_C); gz <= Math.floor((Math.max(pz[i], pz[j]) + 0.01) / ENV_C); gz++)
+                (envGrid.get(gx * 100003 + gz) ?? envGrid.set(gx * 100003 + gz, []).get(gx * 100003 + gz)!).push(id);
+          }
+        }
+      }
+      const edgeAt = (x: number, z: number) => {
+        let eb = 0.003 * 0.003, y = NaN;
+        for (const id of envGrid.get(Math.floor(x / ENV_C) * 100003 + Math.floor(z / ENV_C)) ?? NONE) {
+          const ax = envSeg[id], az = envSeg[id + 1], bx = envSeg[id + 3], bz = envSeg[id + 4];
+          const qx = bx - ax, qz = bz - az, L2 = qx * qx + qz * qz;
+          const u = L2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * qx + (z - az) * qz) / L2)) : 0;
+          const d2 = (ax + qx * u - x) ** 2 + (az + qz * u - z) ** 2;
+          if (d2 >= eb) continue;
+          eb = d2;
+          y = lerp(envSeg[id + 2], envSeg[id + 5], u);
+        }
+        return y === y ? y : edgeRaw(x, z);
       };
       // Where it is worked out: the domain's crossings with each line of the grid, as spans.
       type Span = { a: number; b: number; ea: number; eb: number };
