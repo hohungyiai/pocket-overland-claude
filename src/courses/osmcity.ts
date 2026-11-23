@@ -8413,10 +8413,15 @@ export async function buildPasirRisCourse(
     }
     return c;
   };
+  // (The last square's four corners kept: the lawn's points come square
+  // by square, and looked up afresh each, the colours were a twentieth of
+  // the lawn's time.)
+  let lcI = NaN, lcJ = NaN, lcA: number[] = [], lcB: number[] = [], lcC: number[] = [], lcD: number[] = [];
   const lawnColour = (x: number, z: number, out: THREE.Color) => {
     const fx = (x - WB.minX) / STEP, fz = (z - WB.minZ) / STEP;
     const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, v = fz - j;
-    const a = latColAt(i, j), b = latColAt(i + 1, j), c = latColAt(i, j + 1), d = latColAt(i + 1, j + 1);
+    if (i !== lcI || j !== lcJ) (lcI = i), (lcJ = j), (lcA = latColAt(i, j)), (lcB = latColAt(i + 1, j)), (lcC = latColAt(i, j + 1)), (lcD = latColAt(i + 1, j + 1));
+    const a = lcA, b = lcB, c = lcC, d = lcD;
     const m = (q: number) => (a[q] * (1 - u) + b[q] * u) * (1 - v) + (c[q] * (1 - u) + d[q] * u) * v;
     return out.setRGB(m(0), m(1), m(2));
   };
@@ -8764,49 +8769,46 @@ export async function buildPasirRisCourse(
       // was a third of the sheet's time.)
       const QX0 = X0 - SOLVE_M, QX1 = X1 + SOLVE_M, QZ0 = Z0 - SOLVE_M, QZ1 = Z1 + SOLVE_M, FAR = 1e5;
       const NSTRIP = Math.ceil((QX1 - QX0) / 25 - 1e-9), SW = (QX1 - QX0) / NSTRIP;
-      const strips = (P: Paths64) => {
-        let rest = split(split(P, false, QZ0 * S_, false, -FAR, QZ0, FAR, FAR), false, QZ1 * S_, true, -FAR, QZ0, FAR, QZ1);
-        rest = split(rest, true, QX0 * S_, false, QX0, -FAR, FAR, FAR);
-        const out: Paths64[] = [];
-        for (let k = 1; k <= NSTRIP; k++) {
-          const c = k === NSTRIP ? QX1 : QX0 + k * SW;
-          out.push(split(rest, true, c * S_, true, -FAR, -FAR, c, FAR));
-          if (k < NSTRIP) rest = split(rest, true, c * S_, false, c, -FAR, FAR, FAR);
-        }
-        return out;
-      };
-      const reachS = strips(reach), paveS = strips(pave), holesS = strips(holes), bandsS = strips(bands), psS = strips(pathStrips);
+      const inSq = (P: Paths64) => split(split(P, false, QZ0 * S_, false, -FAR, QZ0, FAR, FAR), false, QZ1 * S_, true, -FAR, QZ0, FAR, QZ1);
+      const band = (P: Paths64, xa: number, xb: number) => split(split(P, true, xa * S_, false, xa, -FAR, FAR, FAR), true, xb * S_, true, -FAR, -FAR, xb, FAR);
+      const reachQ = inSq(reach), paveQ = inSq(pave), holesQ = inSq(holes), bandsQ = inSq(bands), psQ = inSq(pathStrips);
+      const crumbless = (P: Paths64) => P.filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_);
       const parts = new Paths64();
       const off = new Paths64();
       for (let k = 0; k < NSTRIP; k++) {
-        if (!reachS[k].length) continue;
+        const xa = QX0 + k * SW, xb = k === NSTRIP - 1 ? QX1 : QX0 + (k + 1) * SW;
+        // (Each worked out 5 cm past its sides, and cut to them after: the
+        // narrowing and widening below reach 2 cm.)
+        const ea = k === 0 ? xa : xa - 0.05, eb = k === NSTRIP - 1 ? xb : xb + 0.05;
+        const reachK = band(reachQ, ea, eb);
+        if (!reachK.length) continue;
         // (Each part of it wound the one way: a kerb's band wound against the
         // paving under it cancelled it out, and the lawn was laid over a
         // path there, 1871,1855.)
-        const offK = many(Clipper.Difference(Clipper.Union(paveS[k], undefined, FillRule.NonZero), Clipper.Union(holesS[k], undefined, FillRule.NonZero), FillRule.NonZero), Clipper.Union(bandsS[k], undefined, FillRule.NonZero), psS[k]);
-        for (const q of Clipper.Difference(reachS[k], offK, FillRule.NonZero)) parts.push(q);
+        const offK = many(Clipper.Difference(Clipper.Union(band(paveQ, ea, eb), undefined, FillRule.NonZero), Clipper.Union(band(holesQ, ea, eb), undefined, FillRule.NonZero), FillRule.NonZero), Clipper.Union(band(bandsQ, ea, eb), undefined, FillRule.NonZero), band(psQ, ea, eb));
         for (const q of offK) off.push(q);
+        // (Less its crumbs, rings of under a square centimetre: the clipper
+        // takes the way the lowest ring winds for the way they all do, and
+        // a crumb of three points in a line wound the other way, lowest of
+        // all; narrowed, the tile's lawn came back as none, 633.6,200.)
+        const rawK = crumbless(Clipper.Difference(reachK, offK, FillRule.NonZero));
+        // (Opened by a centimetre: a kerb's outer edge and the paving's beside
+        // it a millimetre apart left a strip of lawn that thin between them,
+        // its two sides 30 cm apart in height, standing upright, at 353,1960.)
+        const openK = Clipper.InflatePaths(crumbless(Clipper.InflatePaths(rawK, -0.01 * S_, JoinType.Miter, EndType.Polygon)), 0.01 * S_, JoinType.Miter, EndType.Polygon);
+        for (const q of band(openK, xa, xb)) parts.push(q);
       }
       ST.at = 4;
       tt.push(performance.now());
-      // (Less its crumbs, rings of under a square centimetre: the clipper
-      // takes the way the lowest ring winds for the way they all do, and
-      // a crumb of three points in a line wound the other way, lowest of
-      // all; narrowed, the tile's lawn came back as none, 633.6,200.)
-      const raw = Clipper.Union(parts, undefined, FillRule.NonZero).filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_);
-      tt.push(performance.now());
-      // (And its points no closer than 5 mm to the line through those
-      // either side: round a nose the kerb is in pieces of 3 cm, and a
-      // piece of lawn between three such points, a sliver, stood up on end
-      // with the smallest wave in their heights.)
+      // (The strips joined again, and its points no closer than 5 mm to the
+      // line through those either side: round a nose the kerb is in pieces
+      // of 3 cm, and a piece of lawn between three such points, a sliver,
+      // stood up on end with the smallest wave in their heights.)
       // (Our own: the clipper's takes a ring for a line from its first point
       // to its last, and where those two stood side by side it dropped the
       // whole ring, 1,436 square metres of lawn in one tile and not the
       // next, 1358.7,2000.)
-      const domain = simplifyRings(
-        Clipper.InflatePaths(Clipper.InflatePaths(raw, -0.01 * S_, JoinType.Miter, EndType.Polygon).filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_), 0.01 * S_, JoinType.Miter, EndType.Polygon),
-        0.005 * S_,
-      );
+      const domain = simplifyRings(crumbless(Clipper.Union(parts, undefined, FillRule.NonZero)), 0.005 * S_);
       const region = Clipper.Intersect(domain, tileR, FillRule.NonZero);
       {
         const G = globalThis as { __sheetWant?: string[]; __sheetDbg?: Record<string, unknown> };
@@ -8878,8 +8880,16 @@ export async function buildPasirRisCourse(
         if (!S[n + 6]) continue;
         const x = S[n], z = S[n + 1], nx = S[n + 3], nz = S[n + 4];
         let best = Infinity, tf = NaN, fk = false;
-        for (let ci = Math.floor((x - SHEET_R) / SG); ci <= Math.floor((x + SHEET_R) / SG); ci++)
-          for (let cj = Math.floor((z - SHEET_R) / SG); cj <= Math.floor((z + SHEET_R) / SG); cj++)
+        // (Only the squares about the line out along its normal, where what
+        // lies across from it can be: every square within SHEET_R of it
+        // asked, a twentieth of the sheet's time.)
+        const ex0 = x + nx * SHEET_R, ez0 = z + nz * SHEET_R, wl = 0.75 + 0.15 * SHEET_R + 0.01;
+        for (let ci = Math.floor((Math.min(x, ex0) - wl) / SG); ci <= Math.floor((Math.max(x, ex0) + wl) / SG); ci++)
+          for (let cj = Math.floor((Math.min(z, ez0) - wl) / SG); cj <= Math.floor((Math.max(z, ez0) + wl) / SG); cj++) {
+            // (The square's distance from the line, by its middle: past half its diagonal and the width, none of it near.)
+            const mx = (ci + 0.5) * SG - x, mz = (cj + 0.5) * SG - z, al = mx * nx + mz * nz;
+            const cl = Math.max(-al, al - SHEET_R, Math.abs(mx * nz - mz * nx) - wl);
+            if (cl > SG * 0.7072) continue;
             for (const m of sgrid.get(ci * 100003 + cj) ?? []) {
               if (m === n || S[m + 3] * nx + S[m + 4] * nz > -0.3) continue;
               const ex = S[m] - x, ez = S[m + 1] - z, al = ex * nx + ez * nz;
@@ -8889,6 +8899,7 @@ export async function buildPasirRisCourse(
               tf = top0.get(m) ?? S[m + 2];
               fk = lawn0.has(m);
             }
+          }
         const d = S[n + 2] - tf;
         if (S[n + 6] === 2) {
           // (A lawn kerb over a lower lawn kerb too close for a 1 in 2 bank
@@ -9512,6 +9523,13 @@ export async function buildPasirRisCourse(
             // (Not the block's own sides, where it was cut: those are the squares' sides.)
             if ((a.x === b.x && (a.x === SX0 || a.x === SX1)) || (a.y === b.y && (a.y === SZ0 || a.y === SZ1))) continue;
             const ax = a.x / S_, az = a.y / S_, ex = b.x / S_, ez = b.y / S_;
+            // (A short side: every square of its box, a hair wider. A square
+            // it misses is cut too, and comes out whole or empty.)
+            if (Math.abs(ex - ax) < 1 && Math.abs(ez - az) < 1) {
+              const gx1 = Math.floor(Math.max(ax, ex) + 0.002), gz0 = Math.floor(Math.min(az, ez) - 0.002), gz1 = Math.floor(Math.max(az, ez) + 0.002);
+              for (let gx = Math.floor(Math.min(ax, ex) - 0.002); gx <= gx1; gx++) for (let gz = gz0; gz <= gz1; gz++) hit.add(gx * 100003 + gz);
+              continue;
+            }
             const L = Math.hypot(ex - ax, ez - az), m = Math.max(1, Math.ceil(L * 4));
             for (let t = 0; t <= m; t++) {
               const x = lerp(ax, ex, t / m), z = lerp(az, ez, t / m);
@@ -9686,7 +9704,9 @@ export async function buildPasirRisCourse(
         const ux = vx[b] - vx[a], uy = vy[b] - vy[a], uz = vz[b] - vz[a], wx = vx[c] - vx[a], wy = vy[c] - vy[a], wz = vz[c] - vz[a];
         let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
         if (ny < 0) (nx = -nx), (ny = -ny), (nz = -nz);
-        for (const q of [a * 3, b * 3, c * 3]) (faceN[q] += nx), (faceN[q + 1] += ny), (faceN[q + 2] += nz);
+        (faceN[a * 3] += nx), (faceN[a * 3 + 1] += ny), (faceN[a * 3 + 2] += nz);
+        (faceN[b * 3] += nx), (faceN[b * 3 + 1] += ny), (faceN[b * 3 + 2] += nz);
+        (faceN[c * 3] += nx), (faceN[c * 3 + 1] += ny), (faceN[c * 3 + 2] += nz);
       }
       for (let i = 0; i < vx.length; i++) {
         const x = vx[i], z = vz[i];
