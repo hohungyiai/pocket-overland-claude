@@ -25,9 +25,10 @@ const only = args.filter((a) => a !== 'all' && !COURSES.includes(a));
 // The kit for an obstacle, from what it needs: the right kit, and each
 // kit with one thing left out. (Cruise: how fast the bot drives at it.)
 const kitName = (k) =>
-  ([k.low && 'low range', k.diff && 'the diff lock', k.cruise >= 9 && 'speed', k.off && Math.abs(k.off) < 4 && 'the high line'].filter(Boolean).join(' and ') || 'no kit') +
+  ([k.low && 'low range', k.diff && 'the diff lock', k.cruise >= 9 && 'speed', k.off && Math.abs(k.off) < 4 && 'its line'].filter(Boolean).join(' and ') || 'no kit') +
   (k.change ? `, then ${[k.change.low === false && k.low && 'low range', k.change.diff === false && k.diff && 'the diff lock'].filter(Boolean).join(' and ')} out` : '');
-const pace = (o) => (o.needs.speed ? 10 : o.kind === 'climb' ? 5 : o.kind === 'washout' ? 3 : 4);
+// (Cross-axle ditches with the diff locked but in high range want a steady 6: crawling, the hanging wheels stop it.)
+const pace = (o) => (o.needs.speed ? 10 : o.kind === 'climb' ? 5 : o.kind === 'washout' ? 3 : o.kind === 'ditches' && !o.needs.low ? 6 : 4);
 const kits = (o, room = 150) => {
   const right = { low: !!o.needs.low, diff: !!o.needs.diff, cruise: pace(o) };
   const wrong = [];
@@ -39,15 +40,31 @@ const kits = (o, room = 150) => {
     wrong.push([what, kit]);
     wrong.push([`${what}, charging it from ${Math.round(45 + room)} m back`, { ...kit, cruise: kit.low ? 8 : 14, runUp: room }]);
   };
-  if (o.needs.low) both('without low range', { ...right, low: false, cruise: Math.max(right.cruise, 6) });
-  if (o.needs.diff) both('without the diff lock', { ...right, diff: false });
-  if (o.needs.speed) wrong.push(['crawling at it', { ...right, cruise: 4 }]);
   if (o.camber) {
     // A line, not kit: the high side, against the bank. The middle of the
     // track slides you down it, slow or fast.
     const up = o.camber.dir ?? 1;
     right.off = ((o.camber.edge ?? 1) + 1.5) * up;
     both('on the middle of the track', { ...right, off: 0 });
+  }
+  if (o.rutted) {
+    // Deep ruts: straddle them, wheels on the crown and the bank. In them
+    // the belly drags on the crown, slow or fast.
+    right.off = 0.86;
+    both('down in the ruts', { ...right, off: 0 });
+  }
+  // (Each missing piece of kit is tried on the line the right kit must
+  // take: the camber's high side, astride the ruts. On any other line the
+  // car fails anyway, which would hide a kit it can do without.)
+  if (o.needs.low) both('without low range', { ...right, low: false, cruise: Math.max(right.cruise, 6) });
+  if (o.needs.diff) both('without the diff lock', { ...right, diff: false });
+  if (o.needs.speed) wrong.push(['crawling at it', { ...right, cruise: 4 }]);
+  if (o.notch) {
+    // A V-notch: square in its middle. A metre off it a wheel drops to the
+    // crack and the car leans hard on the face, over 35 degrees (or stops),
+    // even with all the kit in.
+    wrong.push(['a metre off the middle of the notch, all kit in', { ...right, low: true, diff: true, off: (right.off ?? 0) + 1, leans: 35 }]);
+    wrong.push(['a metre the other side of the middle of the notch, all kit in', { ...right, low: true, diff: true, off: (right.off ?? 0) - 1, leans: 35 }]);
   }
   for (const w of o.closed ?? []) {
     // Closed in: no way round it on the ground either side, even with the
@@ -97,7 +114,7 @@ const kits = (o, room = 150) => {
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
       // Water never hangs in the air: every edge point of the ford's water
@@ -137,27 +154,33 @@ const kits = (o, room = 150) => {
         for (const [what, kit] of K.wrong) {
           const r = await drive(page, from, to, kit, { timeout: 150, reverseAfterStall: 2 });
           const sw = (await page.evaluate(() => window.__ubinObstacles()))[i];
-          check(`${o.label}: ${what}, the bot does not get through`, !(r.done && sw.done === 'hard'), `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.stalls} stalls, credited: ${sw.done})`);
+          if (kit.leans) check(`${o.label}: ${what}, the car leans over ${kit.leans}° or does not get through`, !(r.done && sw.done === 'hard') || r.maxLeanDeg > kit.leans, `(reached ${r.at}/${r.total}, ${r.seconds}s, lean ${r.maxLeanDeg}°, credited: ${sw.done})`);
+          else check(`${o.label}: ${what}, the bot does not get through`, !(r.done && sw.done === 'hard'), `(reached ${r.at}/${r.total}, ${r.seconds}s, ${r.stalls} stalls, credited: ${sw.done})`);
           await page.close();
           page = await fresh();
         }
         const right = await drive(page, from, to, K.right, { timeout: 150 });
         const st = (await page.evaluate(() => window.__ubinObstacles()))[i];
-        check(`${o.label}: with ${kitName(K.right)} the bot gets through on the hard line`, right.done && st.done === 'hard', `(${right.seconds}s, lean ${right.maxLeanDeg}°, ${st.done}) says: ${JSON.stringify(right.says.map((t) => t[1]))}`);
+        const level = o.kind === 'notch' ? 25 : 90;
+        check(`${o.label}: with ${kitName(K.right)} the bot gets through on the hard line${level < 90 ? `, never leaning over ${level}°` : ''}`, right.done && st.done === 'hard' && right.maxLeanDeg < level, `(${right.seconds}s, lean ${right.maxLeanDeg}°, ${st.done}) says: ${JSON.stringify(right.says.map((t) => t[1]))}`);
         await page.close();
         page = await fresh();
         if (!o.gate) continue;
         // Tries with no kit, from the run-in each time: the way round
         // opens after the third.
         let st2 = null;
+        let openedEarly = false;
         const sayings = [];
         for (let k = 0; k < 5; k++) {
           const t = await drive(page, from, to, K.none, { timeout: 90, giveUp: 5 });
           sayings.push(...t.says.map((x) => x[1]), ...t.tips.map((x) => 'tip: ' + x[1]));
           st2 = (await page.evaluate(() => window.__ubinObstacles()))[i];
+          if (st2.open && st2.tries < 3) openedEarly = true;
           if (st2.open) break;
         }
-        check(`${o.label}: the way round opens after three tries, not before`, st2.open && st2.tries === 3, `(tries ${st2.tries}) ${JSON.stringify([...new Set(sayings)])}`);
+        // (A long stretch can take two tries in one drive: stalled, a little
+        // further, stalled again. Opened with fewer than three is the fault.)
+        check(`${o.label}: the way round opens after three tries, not before`, st2.open && st2.tries >= 3 && !openedEarly, `(tries ${st2.tries}) ${JSON.stringify([...new Set(sayings)])}`);
         const rk = { low: !!info.roundKit.low, diff: !!info.roundKit.diff, cruise: 6 };
         const round = await page.evaluate(([i, k]) => window.__ubinDrive(window.__ubinRound(i), { ...k, timeout: 150 }), [i, rk]);
         const st3 = (await page.evaluate(() => window.__ubinObstacles()))[i];
@@ -385,6 +408,120 @@ const kits = (o, room = 150) => {
           return { button: !!document.getElementById('btn-winch'), badge: !!document.getElementById('hud-score'), hooks: ['winchAt', 'penalty', 'score', 'setBest'].filter((k) => k in c), car: 'winch' in window.game.car };
         });
         check('no winch and no score: no Winch button, no score badge, no winch or score on the course or car', !r.button && !r.badge && !r.hooks.length && !r.car, `(${JSON.stringify(r)})`);
+      }
+      if (want('strip')) {
+        // The fine strips (deep ruts, notches, ditches, ledges) are laid over
+        // the tiles' ground, which is sunk under their middles. Their edges
+        // and ends must sit on the tiles' drawn ground (within 2 cm: no step,
+        // gap, flap or slit to see through), and nowhere over or beside a
+        // strip may the top ground be a hole (0.3 m under the land).
+        const r = await page.evaluate(async () => {
+          const g = window.game, c = g.course, fg = c.fineGround;
+          if (!fg) return [];
+          // Height of a grid mesh laid out as the tiles are (w x h points,
+          // two triangles a square split from (i+1, j) to (i, j+1)).
+          const tileAt = (m, x, z) => {
+            const p = m.geometry.attributes.position.array;
+            const st = p[3] - p[0];
+            const n = p.length / 3;
+            let w = 1;
+            while (w < n && p[w * 3 + 2] === p[2]) w++;
+            const hh = n / w;
+            const fx = (x - p[0]) / st, fz = (z - p[2]) / st;
+            const i = Math.min(w - 2, Math.floor(fx)), j = Math.min(hh - 2, Math.floor(fz));
+            if (i < 0 || j < 0 || fx > w - 1 || fz > hh - 1) return null;
+            const u = fx - i, v = fz - j, Y = (a, b) => p[((j + b) * w + i + a) * 3 + 1];
+            return u + v <= 1 ? Y(0, 0) + u * (Y(1, 0) - Y(0, 0)) + v * (Y(0, 1) - Y(0, 0)) : Y(1, 1) + (1 - u) * (Y(0, 1) - Y(1, 1)) + (1 - v) * (Y(1, 0) - Y(1, 1));
+          };
+          // Triangles of a strip, bucketed by metre, for heights by x, z.
+          const bucket = (m) => {
+            const p = m.geometry.attributes.position.array, idx = m.geometry.index.array, cells = new Map();
+            for (let q = 0; q < idx.length; q += 3) {
+              const t = [idx[q] * 3, idx[q + 1] * 3, idx[q + 2] * 3];
+              const xs = t.map((k) => p[k]), zs = t.map((k) => p[k + 2]);
+              for (let cx = Math.floor(Math.min(...xs)); cx <= Math.floor(Math.max(...xs)); cx++)
+                for (let cz = Math.floor(Math.min(...zs)); cz <= Math.floor(Math.max(...zs)); cz++) {
+                  const key = cx * 100003 + cz;
+                  (cells.get(key) ?? cells.set(key, []).get(key)).push(t);
+                }
+            }
+            return (x, z) => {
+              let top = null;
+              for (const [a, b, d] of cells.get(Math.floor(x) * 100003 + Math.floor(z)) ?? []) {
+                const det = (p[b + 2] - p[d + 2]) * (p[a] - p[d]) + (p[d] - p[b]) * (p[a + 2] - p[d + 2]);
+                if (!det) continue;
+                const l1 = ((p[b + 2] - p[d + 2]) * (x - p[d]) + (p[d] - p[b]) * (z - p[d + 2])) / det;
+                const l2 = ((p[d + 2] - p[a + 2]) * (x - p[d]) + (p[a] - p[d]) * (z - p[d + 2])) / det;
+                const l3 = 1 - l1 - l2;
+                if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
+                const y = l1 * p[a + 1] + l2 * p[b + 1] + l3 * p[d + 1];
+                if (top === null || y > top) top = y;
+              }
+              return top;
+            };
+          };
+          const out = [];
+          const strips = c.trail.fineStrips();
+          for (let m = 0; m < fg.strips.length; m++) {
+            const mesh = fg.strips[m], { o, a, b } = strips[m];
+            const mid = c.trail.fineAt(o, (a + b) / 2, 0);
+            c.prepareAt(mid.x, mid.z);
+            // (No frames in between: the game's own update would stream the
+            // ground back around the car.)
+            for (let k = 0; k < 300; k++) c.update(performance.now() / 1000, 0, undefined, { x: mid.x, y: c.heightAt(mid.x, mid.z), z: mid.z });
+            const tiles = [];
+            g.scene.traverse((t) => {
+              if (!t.isMesh || t.material !== fg.groundMat) return;
+              for (let q = t; q; q = q.parent) if (!q.visible) return;
+              tiles.push(t);
+            });
+            const tileTop = (x, z) => {
+              let top = null;
+              for (const t of tiles) {
+                const y = tileAt(t, x, z);
+                if (y !== null && (top === null || y > top)) top = y;
+              }
+              return top;
+            };
+            const stripTops = fg.strips.filter((s) => s.visible).map(bucket);
+            // Edges and ends.
+            const p = mesh.geometry.attributes.position.array, n = p.length / 3;
+            let nv = 1;
+            while (nv < n && Math.hypot(p[nv * 3] - p[nv * 3 - 3], p[nv * 3 + 2] - p[nv * 3 - 1]) < 1.6) nv++;
+            const nu = n / nv;
+            let edgeWorst = 0, edgeAt = null, edgeOff = 0, noTile = 0;
+            for (let i = 0; i < nu; i++)
+              for (let j = 0; j < nv; j++) {
+                if (i && i < nu - 1 && j && j < nv - 1) continue;
+                const k = (i * nv + j) * 3, y = tileTop(p[k], p[k + 2]);
+                if (y === null) { noTile++; continue; }
+                const e = Math.abs(p[k + 1] - y);
+                if (e > 0.02) edgeOff++;
+                if (e > edgeWorst) { edgeWorst = e; edgeAt = [+p[k].toFixed(1), +p[k + 2].toFixed(1)]; }
+              }
+            // Holes: the top ground over and around the strip.
+            let holes = 0, holeAt = null, pts = 0;
+            for (let s = a - 3; s <= b + 3; s += 0.5)
+              for (let off = -14; off <= 14; off += 0.5) {
+                const { x, z } = c.trail.fineAt(o, s, off);
+                let top = tileTop(x, z);
+                for (const f of stripTops) { const y = f(x, z); if (y !== null && (top === null || y > top)) top = y; }
+                if (top === null) continue;
+                pts++;
+                // (The land there: the lowest of the ground at the point and the
+                // tiles' ground points around it, as on a steep slope the strip
+                // and the tiles' coarser ground may each lie a little low.)
+                const X = Math.floor(x / 2) * 2, Z = Math.floor(z / 2) * 2;
+                let ref = c.heightAt(x, z);
+                for (let dx = -2; dx <= 4; dx += 2) for (let dz = -2; dz <= 4; dz += 2) ref = Math.min(ref, c.heightAt(X + dx, Z + dz));
+                if (top < ref - 0.3) { holes++; holeAt ??= [+x.toFixed(1), +z.toFixed(1), +(top - ref).toFixed(2)]; }
+              }
+            out.push({ shown: mesh.visible, kind: o.kind, label: o.label, a: Math.round(a), b: Math.round(b), tiles: tiles.length, edges: 2 * (nu + nv) - 4, edgeOff, edgeWorst: +edgeWorst.toFixed(3), edgeAt, noTile, pts, holes, holeAt });
+          }
+          return out;
+        });
+        for (const s of r)
+          check(`${s.label}: its fine strip (${s.a}-${s.b} m) meets the tiles' ground at every edge and end point within 2 cm, with no hole over or beside it`, s.shown && s.tiles > 0 && !s.noTile && !s.edgeOff && !s.holes && s.pts > 0, `(${JSON.stringify(s)})`);
       }
       await page.close();
     }

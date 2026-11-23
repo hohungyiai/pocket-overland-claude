@@ -566,12 +566,15 @@ export function boulderGeo(seed: number) {
  * type, worked out from the vertex colour (green = grass, sandy = sand,
  * grey = paving). The geometry needs uvs in world metres / scale.
  */
-export function patchGroundMaterial(m: THREE.MeshStandardMaterial) {
+export function patchGroundMaterial(m: THREE.MeshStandardMaterial, clayToo = false) {
   const weights = /* glsl */ `
     vec3 groundWeights() {
       vec3 c = vColor.rgb;
       float grass = smoothstep(0.03, 0.12, c.g - c.r);
-      float sand = smoothstep(0.1, 0.2, c.r - c.b) * (1.0 - grass);
+      // (With clayToo, red clay, far redder than sand or dirt, takes the plain
+      // ground's texture: the sand's ripples on it read as dunes.)
+      float clay = ${clayToo ? '1.0 - smoothstep(0.62, 0.7, c.g / max(c.r, 0.001))' : '0.0'};
+      float sand = smoothstep(0.1, 0.2, c.r - c.b) * (1.0 - grass) * (1.0 - clay);
       return vec3(grass, sand, max(0.0, 1.0 - grass - sand));
     }
     float groundH(vec2 uv) {

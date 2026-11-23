@@ -102,6 +102,8 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     gravel: new THREE.Color(0.4, 0.35, 0.28),
     bed: new THREE.Color(0.4, 0.38, 0.3),
     sea: new THREE.Color(0.42, 0.47, 0.4),
+    laterite: new THREE.Color(0.6, 0.3, 0.16),
+    granite: new THREE.Color(0.6, 0.58, 0.55),
   };
   const col = new THREE.Color();
   function colorAt(x: number, z: number, y: number, out: THREE.Color) {
@@ -129,7 +131,12 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         // Wet, dark mud, with darker puddles in the ruts.
         out.lerp(C.wetMud, 0.92);
         if (valueNoise(x / 2.2, z / 2.2, SEED + 11) > 0.62) out.lerp(C.puddle, 0.6);
-      } else out.lerp(/sand/i.test(o.name) ? C.sand : /rock|ledge|gravel/i.test(o.name) ? C.gravel : C.dirt, 0.75);
+      } else if (/laterite/i.test(o.name)) {
+        // Red laterite clay, darker where it is worn low.
+        out.lerp(C.laterite, 0.85);
+        if (valueNoise(x / 1.6, z / 1.6, SEED + 12) > 0.6) out.lerp(C.dirt, 0.4);
+      } else if (/granite/i.test(o.name)) out.lerp(C.granite, 0.8 + 0.15 * valueNoise(x / 1.3, z / 1.3, SEED + 13));
+      else out.lerp(/sand/i.test(o.name) ? C.sand : /rock|ledge|gravel/i.test(o.name) ? C.gravel : C.dirt, 0.75);
     }
     return out;
   }
@@ -143,7 +150,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     groundMat.bumpMap = tex;
     groundMat.bumpScale = 1.6;
     groundMat.color.setScalar(0.82);
-    D.patchGroundMaterial(groundMat);
+    D.patchGroundMaterial(groundMat, true);
   }
   // Tiles with an obstacle get a finer ground (the washout's humps).
   const fineTile = new Set<string>();
@@ -151,6 +158,13 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     for (const [x, z] of o.line.pts.concat(o.bypass.pts))
       for (const dx of [-20, 0, 20])
         for (const dz of [-20, 0, 20]) fineTile.add(`${Math.floor((x + dx) / TILE)},${Math.floor((z + dz) / TILE)}`);
+  // Tiles under a fine strip (see trail.fineStrips()).
+  const fineTiles = new Set<string>();
+  for (const { o, a, b } of trail.fineStrips())
+    for (let s = a - 8; s <= b + 8; s += 4) {
+      const a = trail.fineAt(o, s, 0);
+      for (const dx of [-14, 0, 14]) for (const dz of [-14, 0, 14]) fineTiles.add(`${Math.floor((a.x + dx) / TILE)},${Math.floor((a.z + dz) / TILE)}`);
+    }
   interface Patch {
     w: number;
     h: number;
@@ -173,11 +187,15 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const uvs = new Float32Array(w * h * 2);
     let top = -Infinity;
     let t0 = performance.now();
+    // (Not the far-off horizon's ground: its points are 10 m apart, too
+    // coarse to sink under a strip without dragging the land around down.)
+    const sunk = step <= NEAR_STEP && fineTiles.has(`${ti},${tj}`);
     for (let j = 0; j < h; j++) {
       for (let i = 0; i < w; i++) {
         const x = x0 + i * step;
         const z = z0 + j * step;
-        const y = heightAt(x, z);
+        // (Under a fine strip's middle the tile's ground is sunk: the strip is the ground there.)
+        const y = heightAt(x, z) - (sunk && trail.fineCore(x, z) ? 3 : 0);
         top = Math.max(top, y);
         const k = j * w + i;
         pos[k * 3] = x;
@@ -781,6 +799,98 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     scene.add(ford);
   }
 
+  // ---------- Fine strips: the ground of deep ruts, notches, ditches and ledges ----------
+  // Every 0.5 m along and 0.25 m across, drawn and solid (the tiles' own
+  // ground is sunk under its middle): wheel-width ruts and a notch's crack
+  // need finer ground than the tiles have.
+  const fineMeshes: THREE.Mesh[] = [];
+  {
+    const mat = groundMat.clone();
+    // (A clone keeps the textures but not the ground's shader patch, which
+    // blends them by the ground's colour: without it the detail texture
+    // shows raw, as stripes.)
+    if (detailed) D.patchGroundMaterial(mat, true);
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -1;
+    mat.polygonOffsetUnits = -2;
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const HALF = UbinTrail.FINE_HALF;
+    // The tiles' drawn ground (its points 2 m apart, in two triangles a
+    // square, as gridIdx lays them) at a point, as if it were not sunk.
+    const tileGround = (x: number, z: number) => {
+      const x0 = Math.max(B.minX, Math.floor(x / TILE) * TILE);
+      const z0 = Math.max(B.minZ, Math.floor(z / TILE) * TILE);
+      const i = Math.floor((x - x0) / NEAR_STEP);
+      const j = Math.floor((z - z0) / NEAR_STEP);
+      const fx = (x - x0) / NEAR_STEP - i;
+      const fz = (z - z0) / NEAR_STEP - j;
+      const X = x0 + i * NEAR_STEP;
+      const Z = z0 + j * NEAR_STEP;
+      const h10 = heightAt(X + NEAR_STEP, Z);
+      const h01 = heightAt(X, Z + NEAR_STEP);
+      if (fx + fz <= 1) {
+        const h00 = heightAt(X, Z);
+        return h00 + fx * (h10 - h00) + fz * (h01 - h00);
+      }
+      const h11 = heightAt(X + NEAR_STEP, Z + NEAR_STEP);
+      return h11 + (1 - fx) * (h01 - h11) + (1 - fz) * (h10 - h11);
+    };
+    for (const { o, a: sA, b: sB } of trail.fineStrips()) {
+      const nu = Math.round((sB - sA) / 0.5) + 1;
+      // (Across: every 0.25 m over the middle 8 m, every metre out to the edges.)
+      const offs: number[] = [];
+      for (let v = -HALF; v < -4; v += 1) offs.push(v);
+      for (let v = -4; v < 4; v += 0.25) offs.push(v);
+      for (let v = 4; v <= HALF + 1e-6; v += 1) offs.push(v);
+      const nv = offs.length;
+      const pos = new Float32Array(nu * nv * 3);
+      const solid = new Float32Array(nu * nv * 3);
+      const clr = new Float32Array(nu * nv * 3);
+      const uvs = new Float32Array(nu * nv * 2);
+      for (let i = 0; i < nu; i++) {
+        const u = sA + ((sB - sA) * i) / (nu - 1);
+        // (Narrower on the inside of a tight bend: see trail.fineHalf.)
+        const hl = trail.fineHalf(o, u, 1);
+        const hr = trail.fineHalf(o, u, -1);
+        for (let j = 0; j < nv; j++) {
+          const off = offs[j] * (offs[j] > 0 ? hl : hr) / HALF;
+          const half = off > 0 ? hl : hr;
+          const { x, z } = trail.fineAt(o, u, off);
+          const y = heightAt(x, z);
+          const k = i * nv + j;
+          solid.set([x, y, z], k * 3);
+          // Drawn: the ground itself in the middle, easing out to the
+          // tiles' own drawn ground at the edges and ends, so the strip meets
+          // the tiles with no step, gap or flap (the solid ground keeps the
+          // true heights, the tiles' as much as the strip's).
+          const t = Math.max(smoothstep(half - UbinTrail.FINE_RIM - 2, half - UbinTrail.FINE_RIM, Math.abs(off)), 1 - smoothstep(sA + 3, sA + 6, u), smoothstep(sB - 6, sB - 3, u));
+          pos.set([x, t > 0 ? y + (tileGround(x, z) - y) * t : y, z], k * 3);
+          uvs.set([x / DETAIL_M, z / DETAIL_M], k * 2);
+          colorAt(x, z, y, col);
+          const v = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
+          clr.set([col.r * v, col.g * v, col.b * v], k * 3);
+        }
+      }
+      const idx = gridIdx(nv, nu);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(clr, 3));
+      if (detailed) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geo.setIndex(new THREE.BufferAttribute(idx, 1));
+      geo.computeVertexNormals();
+      geo.computeBoundingSphere();
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.receiveShadow = true;
+      // (The tiles it lies on.)
+      const tiles = new Set<string>();
+      for (let k = 0; k < pos.length; k += 3) tiles.add(`${Math.floor(pos[k] / TILE)},${Math.floor(pos[k + 2] / TILE)}`);
+      mesh.userData.tiles = [...tiles].map((t) => t.split(',').map(Number));
+      scene.add(mesh);
+      fineMeshes.push(mesh);
+      world.createCollider(RAPIER.ColliderDesc.trimesh(solid, idx).setFriction(0.9), body);
+    }
+  }
+
   // ---------- The drops' rock lips (built with the props below) ----------
   // Heights along each lip: its top on the ground above the drop, a few
   // centimetres proud and uneven (a rough rock edge), tapering into the
@@ -1281,6 +1391,8 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       return { x: p.x, z: p.z, yaw: Math.atan2(-p.tz, p.tx) };
     },
     prepareAt: (x, z) => streamer.prepare(x, z, 300),
+    // (For the checks: the fine strips and the tiles' ground material.)
+    fineGround: { strips: fineMeshes, groundMat },
     retryAt: (x, z) => trail.retryAt(x, z),
     ...(def.ruts
       ? {
@@ -1302,6 +1414,15 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       if (at) {
         streamer.update(at.x, at.z);
         updateLods(at.x, at.z);
+        // (A strip shows only while all the tiles' ground around it is near
+        // enough to be drawn in full: out on the horizon's coarser ground its
+        // edges would not meet it.)
+        // (And only once those tiles are built: until then the horizon's
+        // coarse ground is drawn there.)
+        for (const m of fineMeshes) {
+          const b = m.geometry.boundingSphere!;
+          m.visible = Math.hypot(at.x - b.center.x, at.z - b.center.z) + b.radius < 410 && (m.userData.tiles as [number, number][]).every(([i, j]) => streamer.built('far', i, j));
+        }
       }
       if (def.ruts) {
         // (Left far behind, the trail's ruts settle: fresh ground next time.)
