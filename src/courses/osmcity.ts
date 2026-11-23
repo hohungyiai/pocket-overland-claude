@@ -8374,6 +8374,8 @@ export async function buildPasirRisCourse(
   const SHEET_R = ISLE_W, SHEET_M = SHEET_R + 1.5;
   /** How far past its tile the island sheet's height rule is worked out (a half metre off the grid: see islandSheet). */
   const SOLVE_M = 12.5;
+  /** How far over the lawn another level's paving must stand for the lawn to run on under it (m): a deck's slab is 1.2 m deep. */
+  const SHEET_CLEAR = 2.5;
   /**
    * The lawn of every island in a tile, one sheet to an island, on a 1 m
    * grid fixed to the world (the user's call, 22 Nov: built a stretch of
@@ -8727,6 +8729,64 @@ export async function buildPasirRisCourse(
       slice = performance.now();
       const pave = new Paths64(), holes = new Paths64();
       for (const r of w.all ?? []) if (r.lvl === lvl) (r.hole ? holes : pave).push(toPath(r.pts));
+      // (Nor on another level's paving, but where it stands clear over the
+      // lawn, a flyover over an island: a ramp beside a road on a bank, its
+      // paving another level's, had the lawn laid on under it, at its
+      // slab's foot and under the ground beside it, 1797,1465.4. Clear by
+      // the highest edge of this level's lawn within 12 m, or the ground
+      // there, where its reach ends: the lawn is nowhere higher than its
+      // edges. Each piece of road and each joint's
+      // paving by its own height, the level's outline cut to those low
+      // enough.)
+      const lowOther = new Paths64();
+      {
+        const other = new Paths64();
+        for (const r of w.all ?? []) if (r.lvl !== lvl && !r.hole && r.pts.some(([x, z]) => near(x, z, SOLVE_M + 40))) other.push(toPath(r.pts));
+        // (Its kerbs too: past the paving's edge, over its slab's edge, 1827,1927.)
+        for (const r of KR) if (r.lvl !== lvl && r.E.length >= 2) other.push(toPath([...r.I, ...r.E.slice().reverse()]));
+        if (other.length) {
+          const refAt = (x: number, z: number) => {
+            let m = gnd(x, z) + 0.02;
+            for (let ci = Math.floor((x - 12) / SG); ci <= Math.floor((x + 12) / SG); ci++)
+              for (let cj = Math.floor((z - 12) / SG); cj <= Math.floor((z + 12) / SG); cj++)
+                for (const n of sgrid.get(ci * 100003 + cj) ?? []) if ((S[n] - x) ** 2 + (S[n + 1] - z) ** 2 < 144 && S[n + 2] > m) m = S[n + 2];
+            return m;
+          };
+          const low = new Paths64();
+          const seen = new Set<number>();
+          const cx = (X0 + X1) / 2, cz = (Z0 + Z1) / 2;
+          roads.each(cx, cz, (TILE / 2) * Math.SQRT2 + SOLVE_M + 2, (i, seg) => {
+            const key = i * 65536 + seg;
+            if (seen.has(key) || seg + 1 >= EP[i].length || lvlOf(i, seg) === lvl) return;
+            seen.add(key);
+            const [ax, az] = EP[i][seg], [bx, bz] = EP[i][seg + 1];
+            const L = Math.hypot(bx - ax, bz - az);
+            if (L < 1e-6) return;
+            const ref = Math.max(refAt(ax, az), refAt(bx, bz), refAt((ax + bx) / 2, (az + bz) / 2));
+            const ya = hasProfile[i] ? deckAtHit(i, seg, 0) : dropAt(ax, az), yb = hasProfile[i] ? deckAtHit(i, seg, 1) : dropAt(bx, bz);
+            if (Math.min(ya, yb) - ref >= SHEET_CLEAR) return;
+            const ux = (bx - ax) / L, uz = (bz - az) / L, h = Math.max(drawnHalf(i, seg, 0), drawnHalf(i, seg, 1)) + 1;
+            low.push(toPath([[ax - ux - uz * h, az - uz + ux * h], [bx + ux - uz * h, bz + uz + ux * h], [bx + ux + uz * h, bz + uz - ux * h], [ax - ux + uz * h, az - uz - ux * h]]));
+          });
+          for (let ci = Math.floor((X0 - SOLVE_M - 64) / JCELL); ci <= Math.floor((X1 + SOLVE_M + 64) / JCELL); ci++)
+            for (let cj = Math.floor((Z0 - SOLVE_M - 64) / JCELL); cj <= Math.floor((Z1 + SOLVE_M + 64) / JCELL); cj++)
+              for (const q of jGrid.get(ci * 100003 + cj) ?? []) {
+                if (seen.has(-1 - q)) continue;
+                seen.add(-1 - q);
+                const J = JPOLY[q];
+                if ((jDeck(q) === 0 ? -1 : jLvlM(q)) === lvl || !near(J.centre[0], J.centre[1], SOLVE_M + J.radius + 1)) continue;
+                const ref = Math.max(refAt(J.centre[0], J.centre[1]), ...J.ring.map(([x, z]) => refAt(x, z)));
+                if (Math.min(...J.ring.map(([x, z]) => jTop(q, x, z))) - ref >= SHEET_CLEAR) continue;
+                const co = new ClipperOffset(2, 0.05 * S_);
+                co.addPaths(many([toPath(J.ring)]), JoinType.Round, EndType.Polygon);
+                // (Into a list of its own: the clipper empties the one it is given.)
+                const out = new Paths64();
+                co.execute(1 * S_, out);
+                for (const q of out) low.push(q);
+              }
+          if (low.length) for (const q of Clipper.Intersect(other, Clipper.Union(low, undefined, FillRule.NonZero), FillRule.NonZero)) lowOther.push(q);
+        }
+      }
       // (Its rounds to 5 cm: to the clipper's own fineness, a millimetre, a
       // tile's reach had 2,000 points and its cutting took seconds. Where
       // it ends the lawn lies on the ground, see F.)
@@ -8757,7 +8817,7 @@ export async function buildPasirRisCourse(
       const NSTRIP = Math.ceil((QX1 - QX0) / 25 - 1e-9), SW = (QX1 - QX0) / NSTRIP;
       const inSq = (P: Paths64) => split(split(P, false, QZ0 * S_, false, -FAR, QZ0, FAR, FAR), false, QZ1 * S_, true, -FAR, QZ0, FAR, QZ1);
       const band = (P: Paths64, xa: number, xb: number) => split(split(P, true, xa * S_, false, xa, -FAR, FAR, FAR), true, xb * S_, true, -FAR, -FAR, xb, FAR);
-      const reachQ = inSq(reach), paveQ = inSq(pave), holesQ = inSq(holes), bandsQ = inSq(bands), psQ = inSq(pathStrips);
+      const reachQ = inSq(reach), paveQ = inSq(pave), holesQ = inSq(holes), bandsQ = inSq(bands), psQ = inSq(pathStrips), lowQ = inSq(lowOther);
       const crumbless = (P: Paths64) => P.filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_);
       const parts = new Paths64();
       for (let k = 0; k < NSTRIP; k++) {
@@ -8770,7 +8830,7 @@ export async function buildPasirRisCourse(
         // (Each part of it wound the one way: a kerb's band wound against the
         // paving under it cancelled it out, and the lawn was laid over a
         // path there, 1871,1855.)
-        const offK = many(Clipper.Difference(Clipper.Union(band(paveQ, ea, eb), undefined, FillRule.NonZero), Clipper.Union(band(holesQ, ea, eb), undefined, FillRule.NonZero), FillRule.NonZero), Clipper.Union(band(bandsQ, ea, eb), undefined, FillRule.NonZero), band(psQ, ea, eb));
+        const offK = many(Clipper.Difference(Clipper.Union(band(paveQ, ea, eb), undefined, FillRule.NonZero), Clipper.Union(band(holesQ, ea, eb), undefined, FillRule.NonZero), FillRule.NonZero), Clipper.Union(band(bandsQ, ea, eb), undefined, FillRule.NonZero), band(psQ, ea, eb), Clipper.Union(band(lowQ, ea, eb), undefined, FillRule.NonZero));
         // (Less its crumbs, rings of under a square centimetre: the clipper
         // takes the way the lowest ring winds for the way they all do, and
         // a crumb of three points in a line wound the other way, lowest of
