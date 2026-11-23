@@ -699,16 +699,23 @@ window.__checkLawnSeams = (all = false) => {
     idx.set(k, r);
     return r;
   };
-  const yAt = (k, x, z) => {
+  // (The nearest to height y of those over the point: two levels' lawns
+  // may lie one over the other, 20 cm apart at 1800,1460.4, each whole
+  // across the border.)
+  const yAt = (k, x, z, y) => {
     const { T, g } = index(k);
+    let best = NaN;
     for (const i of g.get(Math.floor(x) * 100003 + Math.floor(z)) ?? []) {
       const [[x1, y1, z1], [x2, y2, z2], [x3, y3, z3]] = T[i];
       const det = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3);
       if (Math.abs(det) < 1e-12) continue;
       const l1 = ((z2 - z3) * (x - x3) + (x3 - x2) * (z - z3)) / det, l2 = ((z3 - z1) * (x - x3) + (x1 - x3) * (z - z3)) / det, l3 = 1 - l1 - l2;
-      if (l1 >= -1e-4 && l2 >= -1e-4 && l3 >= -1e-4) return l1 * y1 + l2 * y2 + l3 * y3;
+      if (l1 >= -1e-4 && l2 >= -1e-4 && l3 >= -1e-4) {
+        const v = l1 * y1 + l2 * y2 + l3 * y3;
+        if (!(Math.abs(v - y) >= Math.abs(best - y))) best = v;
+      }
     }
-    return NaN;
+    return best;
   };
   let n = 0;
   for (const k of tiles) {
@@ -725,20 +732,23 @@ window.__checkLawnSeams = (all = false) => {
       }
     for (const { n: c, a, b } of use.values()) {
       if (c !== 1) continue;
-      // (On the tile's own border: its middle, 2 cm over into the next
-      // tile, must have that tile's lawn under it at the same height.)
+      // (On the tile's own border: its middle, 2 mm over into the next
+      // tile, must have that tile's lawn under it at the same height. At 2
+      // cm, where the lawn's edge crossed the border at a slant, 7 to 19
+      // degrees, the point 2 cm over was off the lawn in both tiles alike,
+      // 1660.1,2200.)
       let ox = 0, oz = 0;
-      if (Math.abs(a[0] - ti * TILE) < 0.002 && Math.abs(b[0] - ti * TILE) < 0.002) ox = -0.02;
-      else if (Math.abs(a[0] - (ti + 1) * TILE) < 0.002 && Math.abs(b[0] - (ti + 1) * TILE) < 0.002) ox = 0.02;
-      else if (Math.abs(a[2] - tj * TILE) < 0.002 && Math.abs(b[2] - tj * TILE) < 0.002) oz = -0.02;
-      else if (Math.abs(a[2] - (tj + 1) * TILE) < 0.002 && Math.abs(b[2] - (tj + 1) * TILE) < 0.002) oz = 0.02;
+      if (Math.abs(a[0] - ti * TILE) < 0.002 && Math.abs(b[0] - ti * TILE) < 0.002) ox = -0.002;
+      else if (Math.abs(a[0] - (ti + 1) * TILE) < 0.002 && Math.abs(b[0] - (ti + 1) * TILE) < 0.002) ox = 0.002;
+      else if (Math.abs(a[2] - tj * TILE) < 0.002 && Math.abs(b[2] - tj * TILE) < 0.002) oz = -0.002;
+      else if (Math.abs(a[2] - (tj + 1) * TILE) < 0.002 && Math.abs(b[2] - (tj + 1) * TILE) < 0.002) oz = 0.002;
       else continue;
       if (Math.hypot(b[0] - a[0], b[2] - a[2]) < 0.05) continue;
       const nk = `${ti + Math.sign(ox)},${tj + Math.sign(oz)}`;
       if (!tiles.has(nk)) continue;
       n++;
       const mx = (a[0] + b[0]) / 2, mz = (a[2] + b[2]) / 2, my = (a[1] + b[1]) / 2;
-      const y = yAt(nk, mx + ox, mz + oz);
+      const y = yAt(nk, mx + ox, mz + oz, my);
       if (y !== y) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: 1, what: 'lawn ends at the tile border, none beyond' });
       else if (Math.abs(y - my) > 0.02) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: +Math.abs(y - my).toFixed(3), what: 'lawn steps at the tile border' });
     }
