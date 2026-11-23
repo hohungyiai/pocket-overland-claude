@@ -133,7 +133,8 @@ const CHECKS = [
   // at a count that may only go down (21 Nov), for a follow-up to fix. Its
   // holes at main's count once its lawn is main's again (23:06 UTC), 762
   // with more islands on main's lawn (22 Nov, 09:22 UTC).)
-  ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0, { whole: 178, trial: 10 }],
+  // (The trial map's held at 15, the user's call on 23 Nov (08:21 UTC): the one-sheet lawn eases gently down to a footpath crossing an island, where main stepped down to it; a follow-up builds the step.)
+  ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0, { whole: 178, trial: 15 }],
   ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0, { whole: 762, trial: 23 }],
   // (The reviewer's rule, 21 Nov. The user held its places at today's count,
   // 21 Nov, 11 of the whole map's 12 on main before it; may only go down.)
