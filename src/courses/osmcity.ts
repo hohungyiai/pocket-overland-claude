@@ -9020,6 +9020,8 @@ export async function buildPasirRisCourse(
       // one 5.4 m lower at 1147,1934; 7.5 m under a 6 m wall at
       // 1857.5,1822). Eased between, over a metre.
       const top0 = new Map<number, number>(), lawn0 = new Set<number>();
+      /** Each kerb over a drop's part of its top (1) or of the ground (0), worked out below; NaN where nothing lies across from it. */
+      const svOf = new Map<number, number>();
       for (let n = 0; n < S.length; n += 8) {
         if (S[n + 6]) top0.set(n, S[n + 2]);
         if (S[n + 6] === 2) lawn0.add(n);
@@ -9061,8 +9063,26 @@ export async function buildPasirRisCourse(
           if (d < 0 && fk) S[n + 2] = lerp(S[n + 2], tf, smoothstep(-2 * d + 1.1, -2 * d + 0.1, best));
           continue;
         }
-        const sv = d === d ? smoothstep(1.5, 0.5, d) : 0;
-        S[n + 2] = lerp(gnd(x + nx * 0.05, z + nz * 0.05) + 0.02, S[n + 2], sv);
+        svOf.set(n, d === d ? smoothstep(1.5, 0.5, d) : NaN);
+      }
+      // (Where nothing lies across from it, as its neighbours along the
+      // kerb within 1.5 m have it: at the round point of a narrow island's
+      // nose one point faces out along the island, nothing across, and
+      // taken as the ground's it pulled the lawn of the whole nose down to
+      // the ground under it, 1.5 m under its kerbs, 1132.5,1932.6.)
+      for (const [n, v] of svOf) {
+        let sv = v;
+        if (!(sv === sv)) {
+          sv = 0;
+          const x = S[n], z = S[n + 1];
+          for (let ci = Math.floor((x - 1.5) / SG); ci <= Math.floor((x + 1.5) / SG); ci++)
+            for (let cj = Math.floor((z - 1.5) / SG); cj <= Math.floor((z + 1.5) / SG); cj++)
+              for (const m of sgrid.get(ci * 100003 + cj) ?? []) {
+                const u = S[m + 6] === 2 ? 1 : svOf.get(m);
+                if (u !== undefined && u === u && u > sv && (S[m] - x) ** 2 + (S[m + 1] - z) ** 2 < 2.25) sv = u;
+              }
+        }
+        S[n + 2] = lerp(gnd(S[n] + S[n + 3] * 0.05, S[n + 1] + S[n + 4] * 0.05) + 0.02, S[n + 2], sv);
         if (sv <= 0) S[n + 6] = 0;
       }
       const NONE: number[] = [];
