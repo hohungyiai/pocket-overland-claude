@@ -61,6 +61,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     });
   const ground = new UbinGround(map);
   ground.shape = (x, z) => trail.shape(x, z);
+  trail.base = (x, z) => ground.baseAt(x, z);
   const B = map.bounds;
   const heightAt = (x: number, z: number) => ground.heightAt(x, z);
 

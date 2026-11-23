@@ -72,6 +72,8 @@ export const PUAKA: TrailDef = {
       at: [280, -83],
       len: 60,
       needs: { diff: true },
+      // (No way round: the hillside beside the path is too steep for one. The tips say what it needs.)
+      round: false,
       mix: [
         { kind: 'logs', from: 0, to: 60 },
         { kind: 'thicket', from: 0, to: 60, p: { w: 4.6 } },
@@ -133,9 +135,12 @@ export const PUAKA: TrailDef = {
     {
       kind: 'creek',
       label: 'Creek channel',
-      at: [398, 396],
+      // (Clear of the waterfall's way round, which rejoins the trail 32 m past it.)
+      at: [376, 393],
       len: 46,
       needs: { low: true, diff: true },
+      // (No way round: the creek runs on through the trees either side.)
+      round: false,
       mix: [
         { kind: 'creek', from: 0, to: 30 },
         { kind: 'thicket', from: 0, to: 46, p: { w: 4.6 } },
