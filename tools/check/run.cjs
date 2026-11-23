@@ -171,6 +171,14 @@ const CHECKS = [
     for (const [name, file, fn, limit, knownAt = 0] of CHECKS) {
       const known = typeof knownAt === 'number' ? knownAt : knownAt[course] ?? 0;
       if (only && !only.test(name)) continue;
+      // (The island and lawn checks on a fresh page: every check before them
+      // leaves its own index of the whole map in memory, and with the
+      // whole map's lawn one sheet the page ran out at the first of them.)
+      if (fn === '__checkIslandTops' && loaded.size) {
+        await p.reload();
+        await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
+        loaded.clear();
+      }
       // (drive.js uses seams.js's road index; routes.js and walk.js drive with bot.js.)
       for (const f of [...(DEPS[file] ?? []), file]) {
         if (!loaded.has(f)) await p.addScriptTag({ path: path.join(__dirname, f) });
