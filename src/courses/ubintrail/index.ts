@@ -825,6 +825,8 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   // ground is sunk under its middle): wheel-width ruts and a notch's crack
   // need finer ground than the tiles have.
   const fineMeshes: THREE.Mesh[] = [];
+  // (The tiles' drawn ground as if not sunk, for the checks.)
+  let fineTileGround: ((x: number, z: number) => number) | null = null;
   {
     const mat = groundMat.clone();
     // (A clone keeps the textures but not the ground's shader patch, which
@@ -838,6 +840,14 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const HALF = UbinTrail.FINE_HALF;
     // The tiles' drawn ground (its points 2 m apart, in two triangles a
     // square, as gridIdx lays them) at a point, as if it were not sunk.
+    // (The tiles' points' heights, remembered: asked for many times a point.)
+    const nodeMemo = new Map<number, number>();
+    const nodeH = (X: number, Z: number) => {
+      const key = (Math.round(X / NEAR_STEP) + 50000) * 100000 + Math.round(Z / NEAR_STEP) + 50000;
+      let h = nodeMemo.get(key);
+      if (h === undefined) nodeMemo.set(key, (h = heightAt(X, Z)));
+      return h;
+    };
     const tileGround = (x: number, z: number) => {
       const x0 = Math.max(B.minX, Math.floor(x / TILE) * TILE);
       const z0 = Math.max(B.minZ, Math.floor(z / TILE) * TILE);
@@ -847,15 +857,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       const fz = (z - z0) / NEAR_STEP - j;
       const X = x0 + i * NEAR_STEP;
       const Z = z0 + j * NEAR_STEP;
-      const h10 = heightAt(X + NEAR_STEP, Z);
-      const h01 = heightAt(X, Z + NEAR_STEP);
+      const h10 = nodeH(X + NEAR_STEP, Z);
+      const h01 = nodeH(X, Z + NEAR_STEP);
       if (fx + fz <= 1) {
-        const h00 = heightAt(X, Z);
+        const h00 = nodeH(X, Z);
         return h00 + fx * (h10 - h00) + fz * (h01 - h00);
       }
-      const h11 = heightAt(X + NEAR_STEP, Z + NEAR_STEP);
+      const h11 = nodeH(X + NEAR_STEP, Z + NEAR_STEP);
       return h11 + (1 - fx) * (h01 - h11) + (1 - fz) * (h10 - h11);
     };
+    fineTileGround = tileGround;
     for (const { o, a: sA, b: sB } of trail.fineStrips()) {
       const nu = Math.round((sB - sA) / 0.5) + 1;
       // (Across: every 0.25 m over the middle 8 m, every half metre out to the
@@ -880,11 +891,15 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         const hl = trail.fineHalf(o, u, 1);
         const hr = trail.fineHalf(o, u, -1);
         for (let j = 0; j < nv; j++) {
-          const off = offs[j] * (offs[j] > 0 ? hl : hr) / HALF;
+          // (The middle 8 m always as it is; only the outer band narrows on a bend.)
+          const hh = offs[j] > 0 ? hl : hr;
+          const off = Math.abs(offs[j]) <= 4 ? offs[j] : Math.sign(offs[j]) * (4 + ((Math.abs(offs[j]) - 4) * (hh - 4)) / (HALF - 4));
           const { x, z } = trail.fineAt(o, u, off);
           const y = heightAt(x, z);
           const k = i * nv + j;
-          solid.set([x, y, z], k * 3);
+          // (The solid ground at the same place across, square to the line itself.)
+          const sp = trail.fineAtSolid(o, u, off);
+          solid.set([sp.x, heightAt(sp.x, sp.z), sp.z], k * 3);
           // Drawn: the ground itself in the middle, easing out to the
           // tiles' own drawn ground at the edges and ends, so the strip meets
           // the tiles with no step, gap or flap (the solid ground keeps the
@@ -922,16 +937,21 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       // Where it lies on the tiles' own ground its corners sit on that ground,
       // but between them its flat triangles cut across the tiles' creases,
       // where the tiles' coarser ground would poke through as dark wedges and
-      // pale triangles. So each such triangle is lifted (by its inner corners:
-      // the edge and end rows stay on the tiles' ground) until it clears the
+      // pale triangles. So each such triangle is lifted (by its corners, 6 cm at most,
+      // never so far as to stand up as a spike) until it clears the
       // tiles' ground at points all over it.
-      const edgeRow = (k: number) => {
+      const LIFT_MAX = 0.06;
+      // (Its edge and end rows stay on the tiles' ground.)
+      const capOf = (k: number) => {
         const i = Math.floor(k / nv);
         const j = k % nv;
-        return i === 0 || i === nu - 1 || j === 0 || j === nv - 1;
+        return j === 0 || j === nv - 1 || i === 0 || i === nu - 1 ? 0 : LIFT_MAX;
       };
-      const SAMPLES = [[1 / 3, 1 / 3], [0.6, 0.2], [0.2, 0.6], [0.2, 0.2], [0.45, 0.45], [0.1, 0.45], [0.45, 0.1], [0.8, 0.1], [0.1, 0.8]];
-      for (let pass = 0; pass < 3; pass++) {
+      const SAMPLES = [[1 / 3, 1 / 3], [0.6, 0.2], [0.2, 0.6], [0.2, 0.2], [0.45, 0.45], [0.1, 0.45], [0.45, 0.1], [0.8, 0.1], [0.1, 0.8],
+        // (and along its sides, where a crease crosses an end row)
+        [0.5, 0.5], [0.5, 0], [0, 0.5], [0.25, 0.75], [0.75, 0.25], [0.25, 0], [0.75, 0], [0, 0.25], [0, 0.75]];
+      const lifted = new Float32Array(nu * nv);
+      for (let pass = 0; pass < 8; pass++) {
         const lift = new Float32Array(nu * nv);
         for (let q = 0; q < idx.length; q += 3) {
           const A = idx[q], Bv = idx[q + 1], Cv = idx[q + 2];
@@ -943,17 +963,18 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
             const yS = pos[A * 3 + 1] * l1 + pos[Bv * 3 + 1] * l2 + pos[Cv * 3 + 1] * l3;
             const short = tileGround(x, z) + 0.004 - yS;
             if (short <= 0) continue;
-            // (Shared over the corners that may move, by how much each counts there.)
-            let w = 0;
-            for (const [v, l] of [[A, l1], [Bv, l2], [Cv, l3]] as const) if (!edgeRow(v)) w += l;
-            if (w < 0.05) continue;
-            for (const v of [A, Bv, Cv]) if (!edgeRow(v)) lift[v] = Math.max(lift[v], Math.min(0.2, short / w));
+            // (Each corner that may move by the shortfall itself, never more:
+            // spread by how much a corner counts there it would spike up as a
+            // dark shard beside an edge row; and none ever more than LIFT_MAX
+            // in all.)
+            for (const v of [A, Bv, Cv]) lift[v] = Math.max(lift[v], Math.min(short, capOf(v) - lifted[v]));
           }
         }
         let any = false;
         for (let k = 0; k < lift.length; k++)
           if (lift[k] > 0) {
             pos[k * 3 + 1] += lift[k];
+            lifted[k] += lift[k];
             any = true;
           }
         if (!any) break;
@@ -1537,7 +1558,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     },
     prepareAt: (x, z) => streamer.prepare(x, z, 300),
     // (For the checks: the fine strips and the tiles' ground material.)
-    fineGround: { strips: fineMeshes, groundMat },
+    fineGround: { strips: fineMeshes, groundMat, tileGround: (x: number, z: number) => fineTileGround?.(x, z) ?? null },
     retryAt: (x, z) => trail.retryAt(x, z),
     ...(def.ruts
       ? {

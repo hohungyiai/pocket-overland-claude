@@ -890,7 +890,49 @@ export class UbinTrail {
     const L = o.line.length;
     const a = o.line.at(clamp(s, 0, L));
     const k = s < 0 ? s : s > L ? s - L : 0;
+    if (!off) return { x: a.x + a.tx * k, z: a.z + a.tz * k };
+    const { tx, tz } = this.fineDir(o, s);
+    return { x: a.x + a.tx * k + tz * off, z: a.z + a.tz * k - tx * off };
+  }
+  /**
+   * As fineAt, but square to the line itself, not its smoothed direction:
+   * where the strip's solid ground is laid, as the obstacles' shapes were
+   * tuned on (its rows may cross far out on a sharp turn, which the wheels
+   * never feel; the drawn rows, which would show it, use fineAt).
+   */
+  fineAtSolid(o: Obstacle, s: number, off: number): { x: number; z: number } {
+    const L = o.line.length;
+    const a = o.line.at(clamp(s, 0, L));
+    const k = s < 0 ? s : s > L ? s - L : 0;
     return { x: a.x + a.tx * k + a.tz * off, z: a.z + a.tz * k - a.tx * off };
+  }
+  private dirMemo = new Map<string, { tx: number; tz: number }>();
+  /**
+   * A strip's direction at s, smoothed over 4 m either way (weighted to the
+   * middle): the line's own turns at its points are sharp, and far out
+   * across them a strip's rows would cross over, folding triangles face
+   * down (dark shards). Smoothed, its rows turn gently, and fineHalf keeps
+   * them from crossing.
+   */
+  fineDir(o: Obstacle, s: number): { tx: number; tz: number } {
+    const key = `${o.s0}:${Math.round(s * 4)}`;
+    let d = this.dirMemo.get(key);
+    if (!d) {
+      const L = o.line.length;
+      const c = Math.round(s * 4) / 4;
+      let tx = 0;
+      let tz = 0;
+      for (let e = -4; e <= 4; e += 0.25) {
+        const w = 1 - Math.abs(e) / 4.25;
+        const q = o.line.at(clamp(c + e, 0, L));
+        tx += q.tx * w;
+        tz += q.tz * w;
+      }
+      const n = Math.hypot(tx, tz) || 1;
+      d = { tx: tx / n, tz: tz / n };
+      this.dirMemo.set(key, d);
+    }
+    return d;
   }
   /** Where a point is on a stretch's strip: s along (as fineAt) and its distance across. */
   fineNear(o: Obstacle, x: number, z: number, maxR: number): { s: number; d: number; sd: number } | null {
@@ -915,14 +957,16 @@ export class UbinTrail {
     // on the inside of the bend there; then widening no faster than a third
     // of a metre a metre from it, so the strip narrows and widens gently.)
     let half = UbinTrail.FINE_HALF;
-    for (let c = s - 24; c <= s + 24; c += 1) {
-      const p = o.line.at(clamp(c - 3, 0, L));
-      const q = o.line.at(clamp(c + 3, 0, L));
-      // (Turning left, the cross product of the tangents is negative; near a
-      // full turn back, either side.)
+    for (let c = s - 24; c <= s + 24; c += 0.5) {
+      // (How fast the strip's rows turn there, a metre apart, as fineDir lays
+      // them: out at d across, on the inside, they close up by d times that,
+      // and cross where it reaches the row spacing. Kept to 60% of that.)
+      const p = this.fineDir(o, clamp(c - 0.5, -UbinTrail.FINE_PAST, L + UbinTrail.FINE_PAST));
+      const q = this.fineDir(o, clamp(c + 0.5, -UbinTrail.FINE_PAST, L + UbinTrail.FINE_PAST));
+      // (Turning left, the cross product of the tangents is negative.)
       const turn = Math.atan2(p.tx * q.tz - p.tz * q.tx, p.tx * q.tx + p.tz * q.tz);
-      const bend = Math.abs(turn) > 2.5 ? Math.abs(turn) : Math.max(0, -side * turn);
-      half = Math.min(half, (0.75 * 6) / Math.max(bend, 1e-6) + Math.max(0, Math.abs(c - s) - 3) / 3);
+      const bend = Math.max(0, -side * turn);
+      half = Math.min(half, 0.6 / Math.max(bend, 1e-6) + Math.max(0, Math.abs(c - s) - 3) / 3);
     }
     return clamp(half, 4, UbinTrail.FINE_HALF);
   }

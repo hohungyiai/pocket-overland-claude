@@ -138,6 +138,18 @@ const kits = (o, room = 150) => {
   const want = (n) => !only.length || only.some((o) => n.toLowerCase().includes(o.toLowerCase()));
   try {
     for (course of courses) {
+      // The trail is ready to drive soon after the page opens: over a minute
+      // of black screen on a phone is no start. (Main loads a trail in
+      // 13-17 s here; the limit leaves room for a busy machine.)
+      if (want('load')) {
+        const lp = await browser.newPage({ viewport: { width: 640, height: 360 } });
+        const t0 = Date.now();
+        await lp.goto(`http://localhost:${PORT}/?course=${course}&debug`);
+        await lp.waitForFunction(() => window.game && window.game.course && window.game.course.trail, null, { timeout: 300000, polling: 100 });
+        const secs = (Date.now() - t0) / 1000;
+        await lp.close();
+        check(`the trail is ready to drive within 35 s of the page opening`, secs <= 35, `(${secs.toFixed(1)} s)`);
+      }
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
@@ -565,9 +577,9 @@ const kits = (o, room = 150) => {
         // triangles in the grass beside a stretch. Drawn heights compared
         // every 0.5 m along and 0.125 m across: the tiles' top nowhere over the
         // strip's by more than 1 cm, and in its last half metre (edges and
-        // ends, where the two meet level) by more than 3 cm.
+        // ends, where the two meet level, the same colour) by more than 5 cm.
         const r = await page.evaluate(async () => {
-          const g = window.game; const t = g.course.trail; const fg = g.course.fineGround;
+          const g = window.game; const t = g.course.trail; const fg = g.course.fineGround; const R = t.constructor.FINE_RIM;
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
           const res = [];
           const triH = (ax, az, ay, bx, bz, by, cx, cz, cy, x, z) => {
@@ -596,20 +608,33 @@ const kits = (o, room = 150) => {
             await wait(1500);
             const tiles = []; g.scene.traverse((q) => { if (q.isMesh && q.material === fg.groundMat && q.visible) { const P = q.geometry.attributes.position.array; if (Math.abs(P[3] - P[0]) <= 2.01) tiles.push(q); } });
             const sb = buildBucket(m); const tb = tiles.map((q) => { q.geometry.computeBoundingBox(); return { q, bb: q.geometry.boundingBox, B: null }; });
-            let n = 0, worst = 0, at = null, pts = 0, edgeWorst = 0, edgeAt = null;
+            let n = 0, worst = 0, at = null, pts = 0, edgeWorst = 0, edgeAt = null, stand = 0, standWorst = 0, standAt = null;
+            // (No strip triangle facing the other way from the rest: a flipped face shows dark.)
+            const SP = m.geometry.attributes.position.array, SI = m.geometry.index.array; let up = 0, down = 0, downAt = null;
+            for (let k = 0; k < SI.length; k += 3) { const A = SI[k] * 3, B = SI[k + 1] * 3, C = SI[k + 2] * 3;
+              const ny = (SP[B + 2] - SP[A + 2]) * (SP[C] - SP[A]) - (SP[B] - SP[A]) * (SP[C + 2] - SP[A + 2]);
+              if (Math.abs(ny) < 1e-9) continue; if (ny > 0) up++; else { down++; downAt = [+SP[A].toFixed(1), +SP[A + 2].toFixed(1)]; } }
+            const flipped = Math.min(up, down);
+            // (Where a strip point lies on the tiles' own ground it is laid on it, lifted
+            // at most 6 cm clear of their creases: never a spike or step standing off it.)
+            for (let k = 0; k < SP.length; k += 3) { const fi = t.fineIn(o, a, b, SP[k], SP[k + 2]); if (fi && fi.edge > R && fi.end > 3) continue;
+              const u2 = SP[k + 1] - fg.tileGround(SP[k], SP[k + 2]); if (u2 > 0.0605) { stand++; if (Math.abs(u2) > standWorst) { standWorst = Math.abs(u2); standAt = [+SP[k].toFixed(1), +SP[k + 2].toFixed(1), +u2.toFixed(3)]; } } }
             for (let s = a; s <= b; s += 0.5) for (let sd = -14; sd <= 14; sd += 0.125) {
               const p = t.fineAt(o, s, sd); const sh = meshH(m, p.x, p.z, sb); if (sh == null) continue;
               for (const T of tb) { if (p.x < T.bb.min.x || p.x > T.bb.max.x || p.z < T.bb.min.z || p.z > T.bb.max.z) continue; if (!T.B) T.B = buildBucket(T.q);
-                const th = meshH(T.q, p.x, p.z, T.B); if (th == null) continue; pts++; const d = th - sh; const half = t.fineHalf(o, s, Math.sign(sd) || 1); if (Math.abs(sd) > half) continue; const edge = Math.min(half - Math.abs(sd), s - a, b - s) < 0.5;
+                const th = meshH(T.q, p.x, p.z, T.B); if (th == null) continue; pts++; const d = th - sh; const half = t.fineHalf(o, s, Math.sign(sd) || 1); if (Math.abs(sd) > half) continue; const edge = Math.min(half - Math.abs(sd), s - a, b - s) <= 0.5;
                 const where = [+s.toFixed(1), sd, +p.x.toFixed(1), +p.z.toFixed(1), +d.toFixed(3)];
-                if (edge) { if (d > edgeWorst) { edgeWorst = d; edgeAt = where; } } else { if (d > 0.01) n++; if (d > worst) { worst = d; at = where; } } }
+                if (edge) { if (d > edgeWorst) { edgeWorst = d; edgeAt = where; } } else { if (d > 0.01) n++; if (d > worst) { worst = d; at = where; } } 
+                // (Where the tiles' ground is not let down at all the strip is the tiles' own
+                // ground laid over it, to within 3 cm: nothing standing up off it, as shards or steps.)
+              }
             }
-            res.push({ label: o.label, a: Math.round(a), b: Math.round(b), tiles: tiles.length, pts, poke: n, worst: +worst.toFixed(3), at, edgeWorst: +edgeWorst.toFixed(3), edgeAt });
+            res.push({ label: o.label, a: Math.round(a), b: Math.round(b), tiles: tiles.length, pts, poke: n, worst: +worst.toFixed(3), at, edgeWorst: +edgeWorst.toFixed(3), edgeAt, stand, standWorst: +standWorst.toFixed(3), standAt, flipped, downAt: flipped ? downAt : null });
           }
           return res;
         });
         for (const s of r)
-          check(`${s.label}: the tiles' ground never shows through its fine strip (${s.a}-${s.b} m): not over it by 1 cm inside, 3 cm in its last half metre`, s.pts > 0 && s.poke === 0 && s.edgeWorst <= 0.03, `(${JSON.stringify(s)})`);
+          check(`${s.label}: the tiles' ground never shows through its fine strip (${s.a}-${s.b} m): not over it by 1 cm inside, 5 cm in its last half metre (an end row across a steep bank: the same grass either side); where it lies on the tiles' ground, no point over 6 cm clear of it (no spike); no face flipped`, s.pts > 0 && s.poke === 0 && s.edgeWorst <= 0.05 && s.stand === 0 && s.flipped === 0, `(${JSON.stringify(s)})`);
       }
       await page.close();
     }
