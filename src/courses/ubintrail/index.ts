@@ -63,7 +63,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   ground.shape = (x, z) => trail.shape(x, z);
   trail.base = (x, z) => ground.baseAt(x, z);
   const B = map.bounds;
-  const heightAt = (x: number, z: number) => ground.heightAt(x, z);
+  // (Counted: how many times the build asks, the most of its load time; see the 'load' check.)
+  let heightAsks = 0;
+  const heightAt = (x: number, z: number) => (heightAsks++, ground.heightAt(x, z));
 
   // Building footprints, for keeping trees off them.
   const houses = new Uint8Array(ground.w * ground.h);
@@ -108,7 +110,10 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     granite: new THREE.Color(0.6, 0.58, 0.55),
   };
   const col = new THREE.Color();
-  function colorAt(x: number, z: number, y: number, out: THREE.Color) {
+  // (y may be given as a way to work it out, asked only where the colour
+  // depends on it: by the shore and in a creek's cut.)
+  function colorAt(x: number, z: number, yIn: number | (() => number), out: THREE.Color) {
+    const yOf = () => (typeof yIn === 'number' ? yIn : yIn());
     const shore = ground.shore.at(x, z);
     if (shore < -1) return out.copy(C.sea);
     const m = ground.maskAt(x, z);
@@ -118,7 +123,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     if (m & MASK.wetland) out.lerp(C.mud, 0.6);
     const lvl = ground.waterAt(x, z);
     if (lvl !== null || ground.wet.at(x, z) > -2.5) out.copy(ground.deep[ground.wetId[ground.cellAt(x, z)]] ? C.rock : C.bed);
-    if (m & MASK.beach || (shore < 6 && y < 1.4)) out.lerp(C.sand, m & MASK.beach ? 1 : 0.7);
+    if (m & MASK.beach || (shore < 6 && yOf() < 1.4)) out.lerp(C.sand, m & MASK.beach ? 1 : 0.7);
     const r = ground.road(x, z, 6);
     if (r) {
       const kind = map.roads[r.road].kind;
@@ -135,7 +140,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         // (Redder than the sandy track's colour, so the ground shader
         // draws it as earth, not sand ripples.)
         out.lerp(C.dirt, 0.75);
-        const cut = trail.base ? smoothstep(0.15, 1.1, trail.base(x, z) - y) : 0;
+        const cut = trail.base ? smoothstep(0.15, 1.1, trail.base(x, z) - yOf()) : 0;
         out.lerp(EARTH, cut);
         if (/creek/i.test(o.name)) out.lerp(C.wetMud, 0.35 * cut);
       } else if (/mud|ford|slick|bog/i.test(o.name)) {
@@ -731,11 +736,17 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const nx = Math.ceil((x1 - x0) / C);
     const nz = Math.ceil((z1 - z0) / C);
     const W = nx + 1;
-    const g = new Float32Array(W * (nz + 1));
-    for (let j = 0; j <= nz; j++) for (let i = 0; i <= nx; i++) g[j * W + i] = heightAt(x0 + i * C, z0 + j * C);
+    // (The ground's height at a grid point, worked out only when the fill
+    // or its edge first asks: most of the grid is dry and never looked at.)
+    const gm = new Float32Array(W * (nz + 1)).fill(NaN);
+    const gAt = (k: number) => {
+      let h = gm[k];
+      if (h !== h) gm[k] = h = heightAt(x0 + (k % W) * C, z0 + Math.floor(k / W) * C);
+      return h;
+    };
     // Wet cells: all four corners under the water (a hair over, at most),
     // joined to the ford's line.
-    const wetOk = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < nz && g[j * W + i] < lvl + 0.04 && g[j * W + i + 1] < lvl + 0.04 && g[(j + 1) * W + i] < lvl + 0.04 && g[(j + 1) * W + i + 1] < lvl + 0.04;
+    const wetOk = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < nz && gAt(j * W + i) < lvl + 0.04 && gAt(j * W + i + 1) < lvl + 0.04 && gAt((j + 1) * W + i) < lvl + 0.04 && gAt((j + 1) * W + i + 1) < lvl + 0.04;
     const wet = new Uint8Array(nx * nz);
     const stack: number[] = [];
     for (let s = creek ? len / 2 - 1 : flood ? 10 : 0; s <= (creek ? len / 2 + 1 : flood ? len - 10 : len); s += 0.5) {
@@ -787,13 +798,13 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         if (isWet(i - 1, j - 1) && isWet(i, j - 1) && isWet(i - 1, j) && isWet(i, j)) continue;
         let bx = x0 + i * C;
         let bz = z0 + j * C;
-        const gv = g[k];
+        const gv = gAt(k);
         let best = -Infinity;
         for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
           const a2 = i + di;
           const b2 = j + dj;
           if (a2 < 0 || b2 < 0 || a2 > nx || b2 > nz) continue;
-          const gn = g[b2 * W + a2];
+          const gn = gAt(b2 * W + a2);
           if (gn <= lvl || gn <= best) continue;
           best = gn;
           const t = clamp((lvl - gv) / (gn - gv), 0, 0.95);
@@ -866,6 +877,48 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       const h11 = nodeH(X + NEAR_STEP, Z + NEAR_STEP);
       return h11 + (1 - fx) * (h01 - h11) + (1 - fz) * (h10 - h11);
     };
+    // The tiles' drawn shading there (their vertex normals: each point's six
+    // triangles' slopes summed, as three.js reckons them, then laid across
+    // the triangle as tileGround lays the heights).
+    const S2 = NEAR_STEP;
+    const nodeN = (X: number, Z: number, out: number[]) => {
+      const h = (di: number, dj: number) => nodeH(X + di * S2, Z + dj * S2);
+      const h0 = h(0, 0);
+      // Cell (i,j) splits into (00,10,01) and (10,11,01); with gx, gz the
+      // slopes across x and z of a face, its normal is (-gx, 1, -gz).
+      let gx = 0, gz = 0;
+      // the cell to the +x+z: face (00,10,01), the point as its 00
+      gx += h(1, 0) - h0; gz += h(0, 1) - h0;
+      // the cell to the -x+z: the point is its 10: faces (00,10,01) and (10,11,01)
+      gx += h0 - h(-1, 0); gz += h(-1, 1) - h(-1, 0);
+      gx += h(0, 1) - h(-1, 1); gz += h(0, 1) - h0;
+      // the cell to the +x-z: the point is its 01: faces (00,10,01) and (10,11,01)
+      gx += h(1, -1) - h(0, -1); gz += h0 - h(0, -1);
+      gx += h(1, 0) - h0; gz += h(1, 0) - h(1, -1);
+      // the cell to the -x-z: the point is its 11: face (10,11,01)
+      gx += h0 - h(-1, 0); gz += h0 - h(0, -1);
+      const l = Math.hypot(gx / S2, 6, gz / S2);
+      out[0] = -gx / S2 / l; out[1] = 6 / l; out[2] = -gz / S2 / l;
+    };
+    const nA = [0, 0, 0], nB = [0, 0, 0], nC = [0, 0, 0];
+    const tileNormal = (x: number, z: number, out: number[]) => {
+      const x0 = Math.max(B.minX, Math.floor(x / TILE) * TILE);
+      const z0 = Math.max(B.minZ, Math.floor(z / TILE) * TILE);
+      const i = Math.floor((x - x0) / S2);
+      const j = Math.floor((z - z0) / S2);
+      const fx = (x - x0) / S2 - i;
+      const fz = (z - z0) / S2 - j;
+      const X = x0 + i * S2;
+      const Z = z0 + j * S2;
+      nodeN(X + S2, Z, nB);
+      nodeN(X, Z + S2, nC);
+      let wa: number, wb: number, wc: number;
+      if (fx + fz <= 1) { nodeN(X, Z, nA); wa = 1 - fx - fz; wb = fx; wc = fz; }
+      else { nodeN(X + S2, Z + S2, nA); wa = fx + fz - 1; wb = 1 - fz; wc = 1 - fx; }
+      for (let c = 0; c < 3; c++) out[c] = nA[c] * wa + nB[c] * wb + nC[c] * wc;
+      const l = Math.hypot(out[0], out[1], out[2]);
+      out[0] /= l; out[1] /= l; out[2] /= l;
+    };
     fineTileGround = tileGround;
     for (const { o, a: sA, b: sB } of trail.fineStrips()) {
       const nu = Math.round((sB - sA) / 0.5) + 1;
@@ -885,6 +938,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       const clr = new Float32Array(nu * nv * 3);
       const uvs = new Float32Array(nu * nv * 2);
       const onTiles = new Uint8Array(nu * nv);
+      const tOf = new Float32Array(nu * nv);
       for (let i = 0; i < nu; i++) {
         const u = sA + ((sB - sA) * i) / (nu - 1);
         // (Narrower on the inside of a tight bend: see trail.fineHalf.)
@@ -898,8 +952,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
           const y = heightAt(x, z);
           const k = i * nv + j;
           // (The solid ground at the same place across, square to the line itself.)
+          // (Where the two lie within a millimetre, as on a straight, the one height.)
           const sp = trail.fineAtSolid(o, u, off);
-          solid.set([sp.x, heightAt(sp.x, sp.z), sp.z], k * 3);
+          solid.set([sp.x, Math.abs(sp.x - x) + Math.abs(sp.z - z) < 1e-3 ? y : heightAt(sp.x, sp.z), sp.z], k * 3);
           // Drawn: the ground itself in the middle, easing out to the
           // tiles' own drawn ground at the edges and ends, so the strip meets
           // the tiles with no step, gap or flap (the solid ground keeps the
@@ -910,13 +965,15 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
           const t = f ? 1 - smoothstep(UbinTrail.FINE_RIM, UbinTrail.FINE_RIM + 2, f.edge) * smoothstep(3, 6, f.end) : 1;
           pos.set([x, t > 0 ? y + (tileGround(x, z) - y) * t : y, z], k * 3);
           onTiles[k] = t > 0.999 ? 1 : 0;
+          tOf[k] = t;
           uvs.set([x / DETAIL_M, z / DETAIL_M], k * 2);
           // (Its colour softened over about a metre and a half, as soft as
           // the tiles' own: a kind of ground's edge, or the strip's own end,
           // no sawtooth at the strip's finer spacing.)
           col.setRGB(0, 0, 0);
-          for (const [ax, az] of BLUR) {
-            colorAt(x + ax, z + az, ax || az ? heightAt(x + ax, z + az) : y, tmpCol);
+          // (Not where it lies wholly on the tiles' ground: their colour alone, below.)
+          if (t < 1) for (const [ax, az] of BLUR) {
+            colorAt(x + ax, z + az, ax || az ? () => heightAt(x + ax, z + az) : y, tmpCol);
             col.r += tmpCol.r / BLUR.length;
             col.g += tmpCol.g / BLUR.length;
             col.b += tmpCol.b / BLUR.length;
@@ -941,11 +998,14 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       // never so far as to stand up as a spike) until it clears the
       // tiles' ground at points all over it.
       const LIFT_MAX = 0.06;
-      // (Its edge and end rows stay on the tiles' ground.)
+      // (Its edge and end rows stay on the tiles' ground, and the lift
+      // allowed grows from them by 6 cm a metre: a row lifted hard next to
+      // one held down would stand as a thin ridge along the edge.)
       const capOf = (k: number) => {
         const i = Math.floor(k / nv);
         const j = k % nv;
-        return j === 0 || j === nv - 1 || i === 0 || i === nu - 1 ? 0 : LIFT_MAX;
+        const d = Math.min(HALF - Math.abs(offs[j]), i * ((sB - sA) / (nu - 1)), (nu - 1 - i) * ((sB - sA) / (nu - 1)));
+        return Math.min(LIFT_MAX, 0.06 * d);
       };
       const SAMPLES = [[1 / 3, 1 / 3], [0.6, 0.2], [0.2, 0.6], [0.2, 0.2], [0.45, 0.45], [0.1, 0.45], [0.45, 0.1], [0.8, 0.1], [0.1, 0.8],
         // (and along its sides, where a crease crosses an end row)
@@ -985,6 +1045,21 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       if (detailed) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
       geo.setIndex(new THREE.BufferAttribute(idx, 1));
       geo.computeVertexNormals();
+      // Shaded as the tiles are where it lies on them, easing to its own
+      // shading inwards: its own edge triangles slope a little otherwise than
+      // the tiles' 2 m ones, which would show as a thin line along its edge.
+      const nrm = geo.attributes.normal.array as Float32Array;
+      const tn = [0, 0, 0];
+      for (let k = 0; k < nu * nv; k++) {
+        const t = tOf[k];
+        if (t <= 0) continue;
+        tileNormal(pos[k * 3], pos[k * 3 + 2], tn);
+        const nx = nrm[k * 3] + (tn[0] - nrm[k * 3]) * t;
+        const ny = nrm[k * 3 + 1] + (tn[1] - nrm[k * 3 + 1]) * t;
+        const nz = nrm[k * 3 + 2] + (tn[2] - nrm[k * 3 + 2]) * t;
+        const l = Math.hypot(nx, ny, nz);
+        nrm[k * 3] = nx / l; nrm[k * 3 + 1] = ny / l; nrm[k * 3 + 2] = nz / l;
+      }
       geo.computeBoundingSphere();
       const mesh = new THREE.Mesh(geo, mat);
       mesh.receiveShadow = true;
@@ -1538,7 +1613,9 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     if (rutMarks.instanceColor) rutMarks.instanceColor.needsUpdate = true;
   };
 
+  const loadHeightAsks = heightAsks;
   return {
+    loadStats: { heightAsks: loadHeightAsks },
     name: def.name,
     map: mapData,
     styles: true,

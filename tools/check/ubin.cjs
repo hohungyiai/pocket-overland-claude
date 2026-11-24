@@ -142,13 +142,39 @@ const kits = (o, room = 150) => {
       // of black screen on a phone is no start. (Main loads a trail in
       // 13-17 s here; the limit leaves room for a busy machine.)
       if (want('load')) {
-        const lp = await browser.newPage({ viewport: { width: 640, height: 360 } });
-        const t0 = Date.now();
-        await lp.goto(`http://localhost:${PORT}/?course=${course}&debug`);
-        await lp.waitForFunction(() => window.game && window.game.course && window.game.course.trail, null, { timeout: 300000, polling: 100 });
-        const secs = (Date.now() - t0) / 1000;
-        await lp.close();
-        check(`the trail is ready to drive within 35 s of the page opening`, secs <= 35, `(${secs.toFixed(1)} s)`);
+        // Time to ready, one page at a time. With UBIN_MAIN_DIST (a build of
+        // main) it is timed against main in the same run: no more than main + 3 s.
+        const timeIt = async (port) => {
+          const lp = await browser.newPage({ viewport: { width: 640, height: 360 } });
+          const t0 = Date.now();
+          await lp.goto(`http://localhost:${port}/?course=${course}&debug`);
+          await lp.waitForFunction(() => window.game && window.game.course && window.game.course.trail, null, { timeout: 300000, polling: 100 });
+          const secs = (Date.now() - t0) / 1000;
+          const asks = await lp.evaluate(() => window.game.course.loadStats?.heightAsks ?? null);
+          await lp.close();
+          return { secs, asks };
+        };
+        const mine = await timeIt(PORT);
+        // The ground's height is what the build spends most of its time
+        // asking: a count, the same on any machine. It may only go down.
+        // (Main before this check: Ketam 188490, Puaka 579957, Chek Jawa 971996.)
+        const ASKS = { ubintrail: 183628, ubinpuaka: 443806, ubinchekjawa: 638014 };
+        check(`building it asks the ground's height no more than ${ASKS[course]} times`, mine.asks !== null && mine.asks <= ASKS[course], `(${mine.asks})`);
+        const MAIN = process.env.UBIN_MAIN_DIST;
+        if (MAIN) {
+          const mport = PORT + 50;
+          const ms = spawn('python3', ['-m', 'http.server', String(mport), '-d', MAIN], { stdio: 'ignore', detached: true });
+          await new Promise((r) => setTimeout(r, 1500));
+          const main = [];
+          const me = [mine.secs];
+          for (let k = 0; k < 2; k++) {
+            main.push((await timeIt(mport)).secs);
+            if (k === 0) me.push((await timeIt(PORT)).secs);
+          }
+          process.kill(-ms.pid);
+          const a = Math.min(...me), b = Math.min(...main);
+          check(`the trail is ready to drive no more than 3 s later than main's, timed in the same run`, a <= b + 3, `(${me.map((v) => v.toFixed(1)).join('/')} s; main ${main.map((v) => v.toFixed(1)).join('/')} s)`);
+        } else check(`the trail is ready to drive within 35 s of the page opening (set UBIN_MAIN_DIST to time it against main)`, mine.secs <= 35, `(${mine.secs.toFixed(1)} s)`);
       }
       let page = await fresh();
       const info = await page.evaluate(() => {
