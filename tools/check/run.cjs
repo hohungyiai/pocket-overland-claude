@@ -125,17 +125,25 @@ const CHECKS = [
   // the next change, one sheet of lawn kerb to kerb, to fix. Held again at
   // 263 and 29, more islands on main's lawn, the user's call on 22 Nov
   // (09:22 UTC).)
-  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 263, trial: 29 }],
+  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 53, trial: 15 }],
   ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0, { pasirris: 4, whole: 1 }],
-  ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, { whole: 21, trial: 6 }],
+  // (The whole map's held at 31, the user's call on 24 Nov (00:27 UTC):
+  // ten more with the one-sheet lawn, 0.1 to 2.4 cm low; may only go down.)
+  ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, { whole: 31, trial: 6 }],
   // (The reviewer's and feedback thread's rule, 20 Nov. The user held today's
   // dips and holes, and the top-edge count's six small lips in those holes,
   // at a count that may only go down (21 Nov), for a follow-up to fix. Its
   // holes at main's count once its lawn is main's again (23:06 UTC), 762
   // with more islands on main's lawn (22 Nov, 09:22 UTC).)
   // (The trial map's held at 15, the user's call on 23 Nov (08:21 UTC): the one-sheet lawn eases gently down to a footpath crossing an island, where main stepped down to it; a follow-up builds the step.)
-  ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0, { whole: 178, trial: 15 }],
-  ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0, { whole: 762, trial: 23 }],
+  // (The whole map's held at 336, the user's call on 24 Nov (00:27 UTC):
+  // most the same easing to footpaths as the trial map's, 14 where the
+  // lawn slopes from both kerbs down to the ground at an island's open
+  // end; the follow-up's level lawn fixes both. May only go down.)
+  // (Lowered with the one-sheet lawn, 24 Nov: the top-edge, hole and
+  // lawn-in-kerbs counts to what it has, 53/15, 229/6 and 5/0.)
+  ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0, { whole: 336, trial: 15 }],
+  ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0, { whole: 229, trial: 6 }],
   // (The reviewer's rule, 21 Nov. The user held its places at today's count,
   // 21 Nov, 11 of the whole map's 12 on main before it; may only go down.)
   // (The user's pick, 22 Nov: each island's lawn one sheet. Zero, on every map.)
@@ -145,7 +153,7 @@ const CHECKS = [
   // paths, high islands between ramps, none seen at eye level; main's own
   // lawn has 56 and 696 by this check. May only go down; follow-ups fix.)
   ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0, { whole: 540, trial: 71 }],
-  ['An island\'s grass stays inside its kerbs: no lawn more than 5 cm out over a road', 'outline.js', '__checkLawnInIsland', 0, { whole: 11, trial: 2 }],
+  ['An island\'s grass stays inside its kerbs: no lawn more than 5 cm out over a road', 'outline.js', '__checkLawnInIsland', 0, { whole: 5 }],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
   ['Every petrol station is a place: a paved, solid forecourt a road runs onto and its lanes end on, clear of public roads, and the pump works only on it', 'fuel.js', '__checkStations', 0],
