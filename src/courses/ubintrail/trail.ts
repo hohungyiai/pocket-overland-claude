@@ -810,7 +810,10 @@ export class UbinTrail {
     }
     return out;
   }
-  static readonly FINE_HALF = 11;
+  // (Wide enough that an obstacle's own shape has died away before the
+  // strip's outer band, where it lies over the tiles' ground: there the two
+  // meet only if the ground is smooth, or the tiles' creases poke through.)
+  static readonly FINE_HALF = 14;
   /**
    * The tiles' ground is sunk under a strip out to this short of its edge
    * (and from 3 m in from each end): out there the strip is the tiles' own
@@ -818,14 +821,62 @@ export class UbinTrail {
    */
   static readonly FINE_RIM = 4;
   static readonly FINE_PAST = 6;
+  /**
+   * How far a point lies inside a strip: from its nearer side edge (the
+   * narrowest the strip is within 4 m along, as it narrows and widens on a
+   * bend) and from its nearer end (measured square to the end's own row, as
+   * the strip's rows lie across it, not by the nearest point on its line,
+   * which on a bend's outside swings past the end). Null if not beside it.
+   */
+  fineIn(o: Obstacle, a: number, b: number, x: number, z: number): { edge: number; end: number } | null {
+    const n = this.fineNear(o, x, z, UbinTrail.FINE_HALF);
+    if (!n) return null;
+    const side = Math.sign(n.sd) || 1;
+    const half = Math.min(this.fineHalfAt(o, n.s - 4, side), this.fineHalfAt(o, n.s, side), this.fineHalfAt(o, n.s + 4, side));
+    const L = o.line.length;
+    const pa = this.fineAt(o, a, 0);
+    const ta = o.line.at(clamp(a, 0, L));
+    const pb = this.fineAt(o, b, 0);
+    const tb = o.line.at(clamp(b, 0, L));
+    const fromA = (x - pa.x) * ta.tx + (z - pa.z) * ta.tz;
+    const toB = (pb.x - x) * tb.tx + (pb.z - z) * tb.tz;
+    return { edge: half - n.d, end: Math.min(fromA, toB, n.s - a, b - n.s) };
+  }
+  private halfMemo = new Map<string, number>();
+  /** fineHalf, remembered to the half metre (asked for every tile point near a strip). */
+  private fineHalfAt(o: Obstacle, s: number, side: number): number {
+    const key = `${o.s0}:${side}:${Math.round(s * 2)}`;
+    let h = this.halfMemo.get(key);
+    if (h === undefined) {
+      h = this.fineHalf(o, Math.round(s * 2) / 2, side);
+      this.halfMemo.set(key, h);
+    }
+    return h;
+  }
+  /**
+   * Under a strip's outer band (between its sunk middle and its edge): a few
+   * centimetres the tiles' ground is let down, so the strip laid over it
+   * covers it even where the two triangulations differ a little. Nothing
+   * within a tile square's diagonal (3 m) of its edge or ends, so every tile
+   * triangle that reaches out past the strip keeps its true corners.
+   */
+  fineSink(x: number, z: number): number {
+    let m = 0;
+    for (const { o, a, b } of this.fineStrips()) {
+      const f = this.fineIn(o, a, b, x, z);
+      if (!f) continue;
+      m = Math.max(m, smoothstep(3, 4.5, f.edge) * smoothstep(3, 4.5, f.end));
+    }
+    return 0.08 * m;
+  }
   /** Under a fine strip's middle, where the tiles' ground is sunk. */
   fineCore(x: number, z: number): boolean {
     for (const { o, a, b } of this.fineStrips()) {
-      const n = this.fineNear(o, x, z, UbinTrail.FINE_HALF);
-      if (!n || n.d >= this.fineHalf(o, n.s, Math.sign(n.sd) || 1) - UbinTrail.FINE_RIM) continue;
-      // (3 m inside the strip's ends: the tiles' ground beside a sunk point
-      // lies under the strip, which is the tiles' own ground out there.)
-      if (n.s >= a + 3 && n.s <= b - 3) return true;
+      const f = this.fineIn(o, a, b, x, z);
+      // (FINE_RIM inside its edges and 3 m inside its ends: the tiles' ground
+      // beside a sunk point lies under the strip, which is the tiles' own
+      // ground out there.)
+      if (f && f.edge > UbinTrail.FINE_RIM && f.end > 3) return true;
     }
     return false;
   }

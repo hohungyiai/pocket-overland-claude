@@ -559,6 +559,58 @@ const kits = (o, room = 150) => {
         for (const s of r)
           check(`${s.label}: its fine strip (${s.a}-${s.b} m) meets the tiles' ground at every edge and end point within 2 cm, with no hole over or beside it`, s.shown && s.tiles > 0 && !s.noTile && !s.edgeOff && !s.holes && s.pts > 0, `(${JSON.stringify(s)})`);
       }
+      if (want('strip')) {
+        // Over a fine strip the tiles' ground never shows through it: their
+        // coarser triangles' creases would show as dark wedges or pale
+        // triangles in the grass beside a stretch. Drawn heights compared
+        // every 0.5 m along and 0.125 m across: the tiles' top nowhere over the
+        // strip's by more than 1 cm, and in its last half metre (edges and
+        // ends, where the two meet level) by more than 3 cm.
+        const r = await page.evaluate(async () => {
+          const g = window.game; const t = g.course.trail; const fg = g.course.fineGround;
+          const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+          const res = [];
+          const triH = (ax, az, ay, bx, bz, by, cx, cz, cy, x, z) => {
+            const d = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz); if (Math.abs(d) < 1e-12) return null;
+            const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / d, l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / d, l3 = 1 - l1 - l2;
+            if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) return null; return l1 * ay + l2 * by + l3 * cy;
+          };
+          const meshH = (m, x, z, bucket) => {
+            const key = Math.floor(x) + ',' + Math.floor(z); const list = bucket.get(key); if (!list) return null;
+            const P = m.geometry.attributes.position.array; let best = null;
+            for (const [a, b, c] of list) { const h = triH(P[a*3], P[a*3+2], P[a*3+1], P[b*3], P[b*3+2], P[b*3+1], P[c*3], P[c*3+2], P[c*3+1], x, z); if (h != null && (best == null || h > best)) best = h; }
+            return best;
+          };
+          const buildBucket = (m) => {
+            const P = m.geometry.attributes.position.array; const I = m.geometry.index.array; const B = new Map();
+            for (let k = 0; k < I.length; k += 3) { const a = I[k], b = I[k+1], c = I[k+2];
+              const xs = [P[a*3], P[b*3], P[c*3]], zs = [P[a*3+2], P[b*3+2], P[c*3+2]];
+              for (let X = Math.floor(Math.min(...xs)); X <= Math.floor(Math.max(...xs)); X++) for (let Z = Math.floor(Math.min(...zs)); Z <= Math.floor(Math.max(...zs)); Z++) { const kk = X + ',' + Z; if (!B.has(kk)) B.set(kk, []); B.get(kk).push([a, b, c]); } }
+            return B;
+          };
+          const strips = t.fineStrips();
+          for (let si = 0; si < strips.length; si++) {
+            const { o, a, b } = strips[si]; const m = fg.strips[si];
+            const mid = t.fineAt(o, (a + b) / 2, 0); g.car.placeAt({ x: mid.x + 30, y: g.course.heightAt(mid.x + 30, mid.z) + 1, z: mid.z }, 0); g.course.prepareAt(mid.x, mid.z);
+            for (let c = 0; c < 200; c++) g.course.update?.(performance.now() / 1000, 0, undefined, { x: mid.x, y: 0, z: mid.z });
+            await wait(1500);
+            const tiles = []; g.scene.traverse((q) => { if (q.isMesh && q.material === fg.groundMat && q.visible) { const P = q.geometry.attributes.position.array; if (Math.abs(P[3] - P[0]) <= 2.01) tiles.push(q); } });
+            const sb = buildBucket(m); const tb = tiles.map((q) => { q.geometry.computeBoundingBox(); return { q, bb: q.geometry.boundingBox, B: null }; });
+            let n = 0, worst = 0, at = null, pts = 0, edgeWorst = 0, edgeAt = null;
+            for (let s = a; s <= b; s += 0.5) for (let sd = -14; sd <= 14; sd += 0.125) {
+              const p = t.fineAt(o, s, sd); const sh = meshH(m, p.x, p.z, sb); if (sh == null) continue;
+              for (const T of tb) { if (p.x < T.bb.min.x || p.x > T.bb.max.x || p.z < T.bb.min.z || p.z > T.bb.max.z) continue; if (!T.B) T.B = buildBucket(T.q);
+                const th = meshH(T.q, p.x, p.z, T.B); if (th == null) continue; pts++; const d = th - sh; const half = t.fineHalf(o, s, Math.sign(sd) || 1); if (Math.abs(sd) > half) continue; const edge = Math.min(half - Math.abs(sd), s - a, b - s) < 0.5;
+                const where = [+s.toFixed(1), sd, +p.x.toFixed(1), +p.z.toFixed(1), +d.toFixed(3)];
+                if (edge) { if (d > edgeWorst) { edgeWorst = d; edgeAt = where; } } else { if (d > 0.01) n++; if (d > worst) { worst = d; at = where; } } }
+            }
+            res.push({ label: o.label, a: Math.round(a), b: Math.round(b), tiles: tiles.length, pts, poke: n, worst: +worst.toFixed(3), at, edgeWorst: +edgeWorst.toFixed(3), edgeAt });
+          }
+          return res;
+        });
+        for (const s of r)
+          check(`${s.label}: the tiles' ground never shows through its fine strip (${s.a}-${s.b} m): not over it by 1 cm inside, 3 cm in its last half metre`, s.pts > 0 && s.poke === 0 && s.edgeWorst <= 0.03, `(${JSON.stringify(s)})`);
+      }
       await page.close();
     }
   } finally {

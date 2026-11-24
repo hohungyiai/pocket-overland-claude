@@ -206,7 +206,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         const x = x0 + i * step;
         const z = z0 + j * step;
         // (Under a fine strip's middle the tile's ground is sunk: the strip is the ground there.)
-        const y = heightAt(x, z) - (sunk && trail.fineCore(x, z) ? 3 : 0);
+        const y = heightAt(x, z) - (sunk ? (trail.fineCore(x, z) ? 3 : trail.fineSink(x, z)) : 0);
         top = Math.max(top, y);
         const k = j * w + i;
         pos[k * 3] = x;
@@ -858,16 +858,22 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     };
     for (const { o, a: sA, b: sB } of trail.fineStrips()) {
       const nu = Math.round((sB - sA) / 0.5) + 1;
-      // (Across: every 0.25 m over the middle 8 m, every metre out to the edges.)
+      // (Across: every 0.25 m over the middle 8 m, every half metre out to the
+      // edges, fine enough to follow the tiles' own creases where it lies on them.)
       const offs: number[] = [];
-      for (let v = -HALF; v < -4; v += 1) offs.push(v);
+      // (And every quarter metre over its last three and a half metres, where
+      // the tiles' ground under it is not let down at all.)
+      for (let v = -HALF; v < -HALF + 3.5; v += 0.25) offs.push(v);
+      for (let v = -HALF + 3.5; v < -4; v += 0.5) offs.push(v);
       for (let v = -4; v < 4; v += 0.25) offs.push(v);
-      for (let v = 4; v <= HALF + 1e-6; v += 1) offs.push(v);
+      for (let v = 4; v < HALF - 3.5; v += 0.5) offs.push(v);
+      for (let v = HALF - 3.5; v <= HALF + 1e-6; v += 0.25) offs.push(v);
       const nv = offs.length;
       const pos = new Float32Array(nu * nv * 3);
       const solid = new Float32Array(nu * nv * 3);
       const clr = new Float32Array(nu * nv * 3);
       const uvs = new Float32Array(nu * nv * 2);
+      const onTiles = new Uint8Array(nu * nv);
       for (let i = 0; i < nu; i++) {
         const u = sA + ((sB - sA) * i) / (nu - 1);
         // (Narrower on the inside of a tight bend: see trail.fineHalf.)
@@ -875,7 +881,6 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         const hr = trail.fineHalf(o, u, -1);
         for (let j = 0; j < nv; j++) {
           const off = offs[j] * (offs[j] > 0 ? hl : hr) / HALF;
-          const half = off > 0 ? hl : hr;
           const { x, z } = trail.fineAt(o, u, off);
           const y = heightAt(x, z);
           const k = i * nv + j;
@@ -884,8 +889,12 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
           // tiles' own drawn ground at the edges and ends, so the strip meets
           // the tiles with no step, gap or flap (the solid ground keeps the
           // true heights, the tiles' as much as the strip's).
-          const t = Math.max(smoothstep(half - UbinTrail.FINE_RIM - 2, half - UbinTrail.FINE_RIM, Math.abs(off)), 1 - smoothstep(sA + 3, sA + 6, u), smoothstep(sB - 6, sB - 3, u));
+          // (How far in it is reckoned as the tiles reckon it, so it keeps its own
+          // shape only where the tiles' ground under it is sunk: see trail.fineCore.)
+          const f = trail.fineIn(o, sA, sB, x, z);
+          const t = f ? 1 - smoothstep(UbinTrail.FINE_RIM, UbinTrail.FINE_RIM + 2, f.edge) * smoothstep(3, 6, f.end) : 1;
           pos.set([x, t > 0 ? y + (tileGround(x, z) - y) * t : y, z], k * 3);
+          onTiles[k] = t > 0.999 ? 1 : 0;
           uvs.set([x / DETAIL_M, z / DETAIL_M], k * 2);
           // (Its colour softened over about a metre and a half, as soft as
           // the tiles' own: a kind of ground's edge, or the strip's own end,
@@ -897,11 +906,58 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
             col.g += tmpCol.g / BLUR.length;
             col.b += tmpCol.b / BLUR.length;
           }
+          // (Out where it lies on the tiles' own ground, their own colour, unsoftened,
+          // so where the two meet neither shows as a patch of another tint.)
+          if (t > 0) {
+            colorAt(x, z, y + (tileGround(x, z) - y) * t, tmpCol);
+            col.r += (tmpCol.r - col.r) * t;
+            col.g += (tmpCol.g - col.g) * t;
+            col.b += (tmpCol.b - col.b) * t;
+          }
           const v = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
           clr.set([col.r * v, col.g * v, col.b * v], k * 3);
         }
       }
       const idx = gridIdx(nv, nu);
+      // Where it lies on the tiles' own ground its corners sit on that ground,
+      // but between them its flat triangles cut across the tiles' creases,
+      // where the tiles' coarser ground would poke through as dark wedges and
+      // pale triangles. So each such triangle is lifted (by its inner corners:
+      // the edge and end rows stay on the tiles' ground) until it clears the
+      // tiles' ground at points all over it.
+      const edgeRow = (k: number) => {
+        const i = Math.floor(k / nv);
+        const j = k % nv;
+        return i === 0 || i === nu - 1 || j === 0 || j === nv - 1;
+      };
+      const SAMPLES = [[1 / 3, 1 / 3], [0.6, 0.2], [0.2, 0.6], [0.2, 0.2], [0.45, 0.45], [0.1, 0.45], [0.45, 0.1], [0.8, 0.1], [0.1, 0.8]];
+      for (let pass = 0; pass < 3; pass++) {
+        const lift = new Float32Array(nu * nv);
+        for (let q = 0; q < idx.length; q += 3) {
+          const A = idx[q], Bv = idx[q + 1], Cv = idx[q + 2];
+          if (!onTiles[A] || !onTiles[Bv] || !onTiles[Cv]) continue;
+          for (const [l1, l2] of SAMPLES) {
+            const l3 = 1 - l1 - l2;
+            const x = pos[A * 3] * l1 + pos[Bv * 3] * l2 + pos[Cv * 3] * l3;
+            const z = pos[A * 3 + 2] * l1 + pos[Bv * 3 + 2] * l2 + pos[Cv * 3 + 2] * l3;
+            const yS = pos[A * 3 + 1] * l1 + pos[Bv * 3 + 1] * l2 + pos[Cv * 3 + 1] * l3;
+            const short = tileGround(x, z) + 0.004 - yS;
+            if (short <= 0) continue;
+            // (Shared over the corners that may move, by how much each counts there.)
+            let w = 0;
+            for (const [v, l] of [[A, l1], [Bv, l2], [Cv, l3]] as const) if (!edgeRow(v)) w += l;
+            if (w < 0.05) continue;
+            for (const v of [A, Bv, Cv]) if (!edgeRow(v)) lift[v] = Math.max(lift[v], Math.min(0.2, short / w));
+          }
+        }
+        let any = false;
+        for (let k = 0; k < lift.length; k++)
+          if (lift[k] > 0) {
+            pos[k * 3 + 1] += lift[k];
+            any = true;
+          }
+        if (!any) break;
+      }
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(clr, 3));
