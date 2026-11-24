@@ -71,6 +71,17 @@ const kits = (o, room = 150) => {
     // A creek with no way round: the right kit gets through at any crawl, not just at one pace.
     for (const c of [1.5, 2, 3]) also.push([`crawling at ${c} m/s`, { ...right, cruise: c }]);
   }
+  if (o.kind === 'flooded') {
+    // A flooded track (taught alone): crawling through at any steady pace with the kit in gets through
+    // (the holes catch a wheel, they do not end the try), and so does a line a little to one side.
+    for (const c of [2, 3, 5]) also.push([`crawling through the flood at ${c} m/s`, { ...right, cruise: c }]);
+    also.push(['half a metre left through the flood', { ...right, off: (right.off ?? 0) + 0.5 }]);
+    also.push(['half a metre right through the flood', { ...right, off: (right.off ?? 0) - 0.5 }]);
+  }
+  if (o.kind === 'rockbed') {
+    // A granite creek bed (taught alone): the kit in and a crawl gets over the rocks.
+    for (const c of [1, 1.5, 2, 3]) also.push([`crawling over the rocks at ${c} m/s`, { ...right, cruise: c }]);
+  }
   if (o.bridge) {
     // Square on the planks is a line a careful driver can hold: a quarter metre either side still crosses.
     also.push(['a quarter metre left of the middle of the planks', { ...right, off: (right.off ?? 0) + 0.25 }]);
@@ -127,10 +138,48 @@ const kits = (o, room = 150) => {
   const want = (n) => !only.length || only.some((o) => n.toLowerCase().includes(o.toLowerCase()));
   try {
     for (course of courses) {
+      // The trail is ready to drive soon after the page opens: over a minute
+      // of black screen on a phone is no start. (Main loads a trail in
+      // 13-17 s here; the limit leaves room for a busy machine.)
+      if (want('load')) {
+        // Time to ready, one page at a time. With UBIN_MAIN_DIST (a build of
+        // main) it is timed against main in the same run: no more than main + 3 s.
+        const timeIt = async (port) => {
+          const lp = await browser.newPage({ viewport: { width: 640, height: 360 } });
+          const t0 = Date.now();
+          await lp.goto(`http://localhost:${port}/?course=${course}&debug`);
+          await lp.waitForFunction(() => window.game && window.game.course && window.game.course.trail, null, { timeout: 300000, polling: 100 });
+          const secs = (Date.now() - t0) / 1000;
+          const asks = await lp.evaluate(() => window.game.course.loadStats?.heightAsks ?? null);
+          await lp.close();
+          return { secs, asks };
+        };
+        const mine = await timeIt(PORT);
+        // The ground's height is what the build spends most of its time
+        // asking: a count, the same on any machine. It may only go down.
+        // (Main before this check: Ketam 188490, Puaka 579957, Chek Jawa 971996.)
+        const ASKS = { ubintrail: 183628, ubinpuaka: 443806, ubinchekjawa: 638014 };
+        check(`building it asks the ground's height no more than ${ASKS[course]} times`, mine.asks !== null && mine.asks <= ASKS[course], `(${mine.asks})`);
+        const MAIN = process.env.UBIN_MAIN_DIST;
+        if (MAIN) {
+          const mport = PORT + 50;
+          const ms = spawn('python3', ['-m', 'http.server', String(mport), '-d', MAIN], { stdio: 'ignore', detached: true });
+          await new Promise((r) => setTimeout(r, 1500));
+          const main = [];
+          const me = [mine.secs];
+          for (let k = 0; k < 2; k++) {
+            main.push((await timeIt(mport)).secs);
+            if (k === 0) me.push((await timeIt(PORT)).secs);
+          }
+          process.kill(-ms.pid);
+          const a = Math.min(...me), b = Math.min(...main);
+          check(`the trail is ready to drive no more than 3 s later than main's, timed in the same run`, a <= b + 3, `(${me.map((v) => v.toFixed(1)).join('/')} s; main ${main.map((v) => v.toFixed(1)).join('/')} s)`);
+        } else check(`the trail is ready to drive within 35 s of the page opening (set UBIN_MAIN_DIST to time it against main)`, mine.secs <= 35, `(${mine.secs.toFixed(1)} s)`);
+      }
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), bridge: o.parts.some((q) => q.kind === 'bridge'), creek: o.parts.some((q) => q.kind === 'creek'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), bridge: o.parts.some((q) => q.kind === 'bridge'), creek: o.parts.some((q) => q.kind === 'creek'), flooded: o.parts.some((q) => q.kind === 'flooded'), rockbed: o.parts.some((q) => q.kind === 'rockbed'), rockbedAt: o.parts.filter((q) => q.kind === 'rockbed').map((q) => [o.s0 + q.from, o.s0 + q.to]), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
       // Water never hangs in the air: every edge point of the ford's water
@@ -188,6 +237,17 @@ const kits = (o, room = 150) => {
           await page.close();
           page = await fresh();
         }
+        // A granite creek bed inside a longer stretch (Chek Jawa's, up the
+        // climb): a careful driver creeping over its rocks with the kit in
+        // gets over them at any crawl, from 15 m before it to 10 m past it.
+        if (o.kind !== 'rockbed')
+          for (const [a, b] of o.rockbedAt ?? [])
+            for (const c of [1, 1.5, 2, 3]) {
+              const r = await drive(page, a - 15, b + 10, { low: true, diff: true, cruise: c }, { timeout: 150 });
+              check(`${o.label}: its granite creek bed (${Math.round(a)}-${Math.round(b)} m), crawling over the rocks at ${c} m/s with low range and the diff lock, the bot gets over it`, r.done, `(${r.seconds}s, lean ${r.maxLeanDeg}°, reached ${r.at}/${r.total})`);
+              await page.close();
+              page = await fresh();
+            }
         if (!o.gate) continue;
         // Tries with no kit, from the run-in each time: the way round
         // opens after the third.
@@ -385,8 +445,10 @@ const kits = (o, room = 150) => {
             for (let k = 0; g.sim.steps < until && k < 30000; k++) await wait(5);
           };
           try {
-            const o = t.obstacles.find((q) => /Mangrove/.test(q.label));
-            const a = o.line.at(40);
+            // (In the mud itself, past any flooded mouth to the channel.)
+            const o = t.obstacles.find((q) => /mangrove/i.test(q.label));
+            const m = o.parts.find((q) => q.kind === 'mud');
+            const a = o.line.at(m.from + 20);
             g.course.prepareAt(a.x, a.z);
             g.car.lowRange = false;
             g.car.diffLock = false;
@@ -545,6 +607,71 @@ const kits = (o, room = 150) => {
         });
         for (const s of r)
           check(`${s.label}: its fine strip (${s.a}-${s.b} m) meets the tiles' ground at every edge and end point within 2 cm, with no hole over or beside it`, s.shown && s.tiles > 0 && !s.noTile && !s.edgeOff && !s.holes && s.pts > 0, `(${JSON.stringify(s)})`);
+      }
+      if (want('strip')) {
+        // Over a fine strip the tiles' ground never shows through it: their
+        // coarser triangles' creases would show as dark wedges or pale
+        // triangles in the grass beside a stretch. Drawn heights compared
+        // every 0.5 m along and 0.125 m across: the tiles' top nowhere over the
+        // strip's by more than 1 cm, and in its last half metre (edges and
+        // ends, where the two meet level, the same colour) by more than 5 cm.
+        const r = await page.evaluate(async () => {
+          const g = window.game; const t = g.course.trail; const fg = g.course.fineGround; const R = t.constructor.FINE_RIM;
+          const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+          const res = [];
+          const triH = (ax, az, ay, bx, bz, by, cx, cz, cy, x, z) => {
+            const d = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz); if (Math.abs(d) < 1e-12) return null;
+            const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / d, l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / d, l3 = 1 - l1 - l2;
+            if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) return null; return l1 * ay + l2 * by + l3 * cy;
+          };
+          const meshH = (m, x, z, bucket) => {
+            const key = Math.floor(x) + ',' + Math.floor(z); const list = bucket.get(key); if (!list) return null;
+            const P = m.geometry.attributes.position.array; let best = null;
+            for (const [a, b, c] of list) { const h = triH(P[a*3], P[a*3+2], P[a*3+1], P[b*3], P[b*3+2], P[b*3+1], P[c*3], P[c*3+2], P[c*3+1], x, z); if (h != null && (best == null || h > best)) best = h; }
+            return best;
+          };
+          const buildBucket = (m) => {
+            const P = m.geometry.attributes.position.array; const I = m.geometry.index.array; const B = new Map();
+            for (let k = 0; k < I.length; k += 3) { const a = I[k], b = I[k+1], c = I[k+2];
+              const xs = [P[a*3], P[b*3], P[c*3]], zs = [P[a*3+2], P[b*3+2], P[c*3+2]];
+              for (let X = Math.floor(Math.min(...xs)); X <= Math.floor(Math.max(...xs)); X++) for (let Z = Math.floor(Math.min(...zs)); Z <= Math.floor(Math.max(...zs)); Z++) { const kk = X + ',' + Z; if (!B.has(kk)) B.set(kk, []); B.get(kk).push([a, b, c]); } }
+            return B;
+          };
+          const strips = t.fineStrips();
+          for (let si = 0; si < strips.length; si++) {
+            const { o, a, b } = strips[si]; const m = fg.strips[si];
+            const mid = t.fineAt(o, (a + b) / 2, 0); g.car.placeAt({ x: mid.x + 30, y: g.course.heightAt(mid.x + 30, mid.z) + 1, z: mid.z }, 0); g.course.prepareAt(mid.x, mid.z);
+            for (let c = 0; c < 200; c++) g.course.update?.(performance.now() / 1000, 0, undefined, { x: mid.x, y: 0, z: mid.z });
+            await wait(1500);
+            const tiles = []; g.scene.traverse((q) => { if (q.isMesh && q.material === fg.groundMat && q.visible) { const P = q.geometry.attributes.position.array; if (Math.abs(P[3] - P[0]) <= 2.01) tiles.push(q); } });
+            const sb = buildBucket(m); const tb = tiles.map((q) => { q.geometry.computeBoundingBox(); return { q, bb: q.geometry.boundingBox, B: null }; });
+            let n = 0, worst = 0, at = null, pts = 0, edgeWorst = 0, edgeAt = null, stand = 0, standWorst = 0, standAt = null;
+            // (No strip triangle facing the other way from the rest: a flipped face shows dark.)
+            const SP = m.geometry.attributes.position.array, SI = m.geometry.index.array; let up = 0, down = 0, downAt = null;
+            for (let k = 0; k < SI.length; k += 3) { const A = SI[k] * 3, B = SI[k + 1] * 3, C = SI[k + 2] * 3;
+              const ny = (SP[B + 2] - SP[A + 2]) * (SP[C] - SP[A]) - (SP[B] - SP[A]) * (SP[C + 2] - SP[A + 2]);
+              if (Math.abs(ny) < 1e-9) continue; if (ny > 0) up++; else { down++; downAt = [+SP[A].toFixed(1), +SP[A + 2].toFixed(1)]; } }
+            const flipped = Math.min(up, down);
+            // (Where a strip point lies on the tiles' own ground it is laid on it, lifted
+            // at most 6 cm clear of their creases: never a spike or step standing off it.)
+            for (let k = 0; k < SP.length; k += 3) { const fi = t.fineIn(o, a, b, SP[k], SP[k + 2]); if (fi && fi.edge > R && fi.end > 3) continue;
+              const u2 = SP[k + 1] - fg.tileGround(SP[k], SP[k + 2]); if (u2 > 0.0605) { stand++; if (Math.abs(u2) > standWorst) { standWorst = Math.abs(u2); standAt = [+SP[k].toFixed(1), +SP[k + 2].toFixed(1), +u2.toFixed(3)]; } } }
+            for (let s = a; s <= b; s += 0.5) for (let sd = -14; sd <= 14; sd += 0.125) {
+              const p = t.fineAt(o, s, sd); const sh = meshH(m, p.x, p.z, sb); if (sh == null) continue;
+              for (const T of tb) { if (p.x < T.bb.min.x || p.x > T.bb.max.x || p.z < T.bb.min.z || p.z > T.bb.max.z) continue; if (!T.B) T.B = buildBucket(T.q);
+                const th = meshH(T.q, p.x, p.z, T.B); if (th == null) continue; pts++; const d = th - sh; const half = t.fineHalf(o, s, Math.sign(sd) || 1); if (Math.abs(sd) > half) continue; const edge = Math.min(half - Math.abs(sd), s - a, b - s) <= 0.5;
+                const where = [+s.toFixed(1), sd, +p.x.toFixed(1), +p.z.toFixed(1), +d.toFixed(3)];
+                if (edge) { if (d > edgeWorst) { edgeWorst = d; edgeAt = where; } } else { if (d > 0.01) n++; if (d > worst) { worst = d; at = where; } } 
+                // (Where the tiles' ground is not let down at all the strip is the tiles' own
+                // ground laid over it, to within 3 cm: nothing standing up off it, as shards or steps.)
+              }
+            }
+            res.push({ label: o.label, a: Math.round(a), b: Math.round(b), tiles: tiles.length, pts, poke: n, worst: +worst.toFixed(3), at, edgeWorst: +edgeWorst.toFixed(3), edgeAt, stand, standWorst: +standWorst.toFixed(3), standAt, flipped, downAt: flipped ? downAt : null });
+          }
+          return res;
+        });
+        for (const s of r)
+          check(`${s.label}: the tiles' ground never shows through its fine strip (${s.a}-${s.b} m): not over it by 1 cm inside, 5 cm in its last half metre (an end row across a steep bank: the same grass either side); where it lies on the tiles' ground, no point over 6 cm clear of it (no spike); no face flipped`, s.pts > 0 && s.poke === 0 && s.edgeWorst <= 0.05 && s.stand === 0 && s.flipped === 0, `(${JSON.stringify(s)})`);
       }
       await page.close();
     }
