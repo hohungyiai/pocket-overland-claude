@@ -125,7 +125,7 @@ const CHECKS = [
   // the next change, one sheet of lawn kerb to kerb, to fix. Held again at
   // 263 and 29, more islands on main's lawn, the user's call on 22 Nov
   // (09:22 UTC).)
-  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 53, trial: 15 }],
+  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 50, trial: 14 }],
   ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0, { pasirris: 4, whole: 1 }],
   // (The whole map's held at 31, the user's call on 24 Nov (00:27 UTC):
   // ten more with the one-sheet lawn, 0.1 to 2.4 cm low; may only go down.)
@@ -139,10 +139,13 @@ const CHECKS = [
   // (The whole map's held at 336, the user's call on 24 Nov (00:27 UTC):
   // most the same easing to footpaths as the trial map's, 14 where the
   // lawn slopes from both kerbs down to the ground at an island's open
-  // end; the follow-up's level lawn fixes both. May only go down.)
+  // end; the follow-up's level lawn fixes both. May only go down.) At
+  // 338 by the user's call on 24 Nov (21:54 UTC), with the shared median's
+  // level lawn: two places 1.5 and 0.8 cm past the tolerance.
   // (Lowered with the one-sheet lawn, 24 Nov: the top-edge, hole and
-  // lawn-in-kerbs counts to what it has, 53/15, 229/6 and 5/0.)
-  ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0, { whole: 336, trial: 15 }],
+  // lawn-in-kerbs counts to what it has, 53/15, 229/6 and 5/0; the
+  // top-edge and fold counts to 50/14 and 538/70 with the shared median's.)
+  ['An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step', 'outline.js', '__checkLevelIslands', 0, { whole: 338, trial: 15 }],
   ['An island with both kerbs at one level has no hole in its lawn', 'outline.js', '__checkLevelIslandHoles', 0, { whole: 229, trial: 6 }],
   // (The reviewer's rule, 21 Nov. The user held its places at today's count,
   // 21 Nov, 11 of the whole map's 12 on main before it; may only go down.)
@@ -152,7 +155,7 @@ const CHECKS = [
   // UTC): steep ground beside ramps, kerb-height drops where kerbs end at
   // paths, high islands between ramps, none seen at eye level; main's own
   // lawn has 56 and 696 by this check. May only go down; follow-ups fix.)
-  ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0, { whole: 540, trial: 71 }],
+  ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0, { whole: 538, trial: 70 }],
   ['An island\'s grass stays inside its kerbs: no lawn more than 5 cm out over a road', 'outline.js', '__checkLawnInIsland', 0, { whole: 5 }],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
