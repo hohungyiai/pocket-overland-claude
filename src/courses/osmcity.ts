@@ -8590,16 +8590,57 @@ export async function buildPasirRisCourse(
         const g = groundAtKerb(x, z), g2 = groundAtKerb(hit[0], hit[1]);
         return g <= t + 0.005 && g >= t - ISLE_DEEP && g2 <= hit[2] + 0.005 && g2 >= hit[2] - 0.6;
       };
-      // (And a metre along it, on one side or the other, too: at one place
-      // alone, its top stood the lawn up in a spike 1.7 m over the ground
-      // beside it, -3219.8,-1917.3. Along the line it faces, not its run's
-      // next point: a run of the kerb ends where its tile ends it.)
-      const takes = (x: number, z: number, nx: number, nz: number, t: number) => {
-        if (!takesAt(x, z, nx, nz, t)) return false;
-        const h = hit.slice();
-        const ok = takesAt(x - nz * 0.5, z + nx * 0.5, nx, nz, t) || takesAt(x + nz * 0.5, z - nx * 0.5, nx, nz, t);
-        for (let q = 0; q < 6; q++) hit[q] = h[q];
-        return ok;
+      // (Each of this level's kerb points so asked, and taken only along a
+      // stretch of 3 m or more of points all taken: a shorter one stays the
+      // walls' gap. Taken alone, a point's top stood the lawn up in a spike
+      // 1.7 m over the ground beside it, -3219.8,-1917.3; along 2 m where
+      // two kerbs' tops, one rising and one falling, crossed, the lawn ran
+      // out over the lower road, -2715.6,-2242.6. On across a run's end, in
+      // the run that carries on from it: a tile ends its runs where its own
+      // pieces do.)
+      const tk = new Map<number, boolean[]>();
+      const ends = new Map<string, [number, number][]>();
+      const endKey = (p: XZ) => `${Math.round(p[0] * 100)},${Math.round(p[1] * 100)}`;
+      for (const [ri, r] of KR.entries()) {
+        if (r.lvl !== lvl || r.E.length < 2) continue;
+        tk.set(
+          ri,
+          r.E.map(([x, z], j) => {
+            const t = r.T[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1;
+            return t === t && takesAt(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t);
+          }),
+        );
+        const n = r.E.length;
+        (ends.get(endKey(r.E[0])) ?? ends.set(endKey(r.E[0]), []).get(endKey(r.E[0]))!).push([ri, 0]);
+        (ends.get(endKey(r.E[n - 1])) ?? ends.set(endKey(r.E[n - 1]), []).get(endKey(r.E[n - 1]))!).push([ri, n - 1]);
+      }
+      /** The point next to run ri's point j, the way d (1 or -1) along the kerb, as [run, point], or null. */
+      const step = (ri: number, j: number, d: number): [number, number] | null => {
+        const n = tk.get(ri)!.length;
+        if (j + d >= 0 && j + d < n) return [ri, j + d];
+        for (const [o, q] of ends.get(endKey(KR[ri].E[j])) ?? []) {
+          if (o === ri) continue;
+          const m = tk.get(o)!.length;
+          // (The run that carries on: it starts where this one ends, or ends where this one starts.)
+          if (d > 0 && q === 0 && m > 1) return [o, 1];
+          if (d < 0 && q === m - 1 && m > 1) return [o, m - 2];
+        }
+        return null;
+      };
+      /** How far along the kerb the points all taken run on from run ri's point j, either way, up to 3 m. */
+      const takenLen = (ri: number, j: number) => {
+        let len = 0;
+        for (const d of [-1, 1]) {
+          let at: [number, number] = [ri, j];
+          for (let guard = 0; guard < 64 && len < 3; guard++) {
+            const nx = step(at[0], at[1], d);
+            if (!nx || !tk.get(nx[0])![nx[1]]) break;
+            const [ax, az] = KR[at[0]].E[at[1]], [bx, bz] = KR[nx[0]].E[nx[1]];
+            len += Math.hypot(bx - ax, bz - az);
+            at = nx;
+          }
+        }
+        return len;
       };
       const farGrid = new Map<number, number[]>();
       const farPts: number[] = [];
@@ -8608,27 +8649,30 @@ export async function buildPasirRisCourse(
         const n = r.E.length;
         if (n < 2) continue;
         bands.push(toPath([...r.I, ...r.E.slice().reverse()]));
+        const T = tk.get(ri)!;
+        const far = T.map((v, j) => v && takenLen(ri, j) >= 3);
         const share = r.E.map(([x, z], j) => {
           const t = r.T[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1;
-          if (!(t === t)) return -1;
-          if (takes(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t)) return -1;
+          if (!(t === t) || far[j]) return -1;
           return across(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t);
         });
-        // (Its top along the kerb every half metre, where taken: only at
-        // its points, a few metres apart on a straight, the lawn's edge fell
-        // to the ground between them, in teeth, -3398.9,2598.4. Asked at
-        // each place: run on past where it is taken, the lawn's edge stood
-        // at the kerb's top there with nothing under it, 3080.2,3159.)
+        // (Its top along the kerb every half metre, between two points both
+        // taken: only at its points, a few metres apart on a straight, the
+        // lawn's edge fell to the ground between them, in teeth,
+        // -3398.9,2598.4. Run on to a neighbour whose gap stays the walls',
+        // the lawn's edge stood at the kerb's top there with nothing under
+        // it, 3080.2,3159.)
         for (let j = 0; j + 1 < n; j++) {
+          if (!far[j] || !far[j + 1]) continue;
           const ta = r.T[j], tb = r.T[j + 1];
-          if (!(ta === ta) || !(tb === tb)) continue;
           const [ax, az] = r.E[j], [bx, bz] = r.E[j + 1];
           const L = Math.hypot(bx - ax, bz - az);
           if (L < 1e-4 || L > 12) continue;
           const k = Math.max(1, Math.ceil(L / 0.5));
           for (let q = 0; q <= k; q++) {
             const u = q / k, nx0 = lerp(r.N[j][0], r.N[j + 1][0], u), nz0 = lerp(r.N[j][1], r.N[j + 1][1], u), nl = Math.hypot(nx0, nz0) || 1;
-            if (!takes(lerp(ax, bx, u), lerp(az, bz, u), nx0 / nl, nz0 / nl, lerp(ta, tb, u))) continue;
+            const t = lerp(ta, tb, u);
+            if (!acrossLine(lerp(ax, bx, u), lerp(az, bz, u), nx0 / nl, nz0 / nl, t) || hit[5] < lvl || Math.abs(hit[2] - t) > 0.15) continue;
             const c = Math.floor(hit[0] / 4) * 100003 + Math.floor(hit[1] / 4);
             (farGrid.get(c) ?? farGrid.set(c, []).get(c)!).push(farPts.length);
             farPts.push(hit[0], hit[1]);
