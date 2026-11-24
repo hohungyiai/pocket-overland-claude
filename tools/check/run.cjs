@@ -169,8 +169,14 @@ const CHECKS = [
     await new Promise((r) => setTimeout(r, 2500));
     // (Room for the whole map's lawn: each check reads every tile's meshes, and at the default heap the page ran out at the island checks.)
     const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--max-old-space-size=8192'] });
-    const p = await (await b.newContext({ viewport: { width: 640, height: 360 } })).newPage();
-    p.on('pageerror', (e) => console.log('page error:', e.message));
+    // (A page of its own, in a context of its own: closing the context ends
+    // the renderer and frees all its memory, which a reload did not.)
+    const open = async () => {
+      const q = await (await b.newContext({ viewport: { width: 640, height: 360 } })).newPage();
+      q.on('pageerror', (e) => console.log('page error:', e.message));
+      return q;
+    };
+    let p = await open();
     const t0 = Date.now();
     await p.goto(`http://localhost:${PORT}/?course=${process.env.COURSE || 'pasirris'}&debug`);
     await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
@@ -191,17 +197,30 @@ const CHECKS = [
       // on 23 Nov, so it starts a fresh page as well. On 24 Nov the page ran
       // out at the flat-island check after the top-edge one, so each of the
       // lawn checks now gets a fresh page of its own.)
-      if (FRESH.has(fn) && loaded.size) {
-        await p.reload();
+      const fresh = async () => {
+        await p.context().close().catch(() => {});
+        p = await open();
+        await p.goto(`http://localhost:${PORT}/?course=${course}&debug`);
         await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
         loaded.clear();
-      }
+      };
+      if (FRESH.has(fn) && loaded.size) await fresh();
       // (drive.js uses seams.js's road index; routes.js and walk.js drive with bot.js.)
       for (const f of [...(DEPS[file] ?? []), file]) {
         if (!loaded.has(f)) await p.addScriptTag({ path: path.join(__dirname, f) });
         loaded.add(f);
       }
-      const r = await p.evaluate((fn) => window[fn](), fn);
+      // (A page that runs out of memory fails its check, and the run goes on
+      // on a fresh page, so one crash doesn't hide every check after it.)
+      let r;
+      try {
+        r = await p.evaluate((fn) => window[fn](), fn);
+      } catch (e) {
+        failed = true;
+        console.log(`FAIL  ${name}: the page crashed (${String(e.message).split('\n')[0]})`);
+        await fresh();
+        continue;
+      }
       const worst = r.worst[0]?.over ?? 0;
       const ok = known > 0 ? r.bad <= known : worst <= limit && (limit > 0 || r.bad === 0);
       if (!ok) failed = true;
