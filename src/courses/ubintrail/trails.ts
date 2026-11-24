@@ -63,6 +63,20 @@ export const PUAKA: TrailDef = {
     [[452, 168], 34],
   ],
   obstacles: [
+    // (A dry granite creek bed just past the lane, the first thing on the trail: low range, the diff lock and a crawl.)
+    {
+      kind: 'rockbed',
+      label: 'Granite creek bed',
+      at: [-35, 100],
+      len: 50,
+      needs: { low: true, diff: true },
+      // (No way round: the bed runs between banks of boulders, and the next stretch starts soon after.)
+      round: false,
+      mix: [
+        { kind: 'rockbed', from: 5, to: 45, p: { rockH: 0.55 } },
+        { kind: 'thicket', from: 0, to: 50, p: { w: 5.4 } },
+      ],
+    },
     // (Boulders close in either side of each stretch: no driving round on the grass.)
     { kind: 'rocks', label: 'Roots and rock', at: [65, 24], len: 190, needs: { diff: true }, mix: [{ kind: 'rocks', from: 0, to: 190 }, { kind: 'thicket', from: 0, to: 190 }] },
     // (Fallen logs on the path south of the quarry: the diff lock, and a crawl.)
@@ -78,6 +92,17 @@ export const PUAKA: TrailDef = {
         { kind: 'logs', from: 0, to: 60 },
         { kind: 'thicket', from: 0, to: 60, p: { w: 4.6 } },
       ],
+    },
+    // (The path by the quarry under the tide: hidden holes.)
+    {
+      kind: 'flooded',
+      label: 'Flooded track',
+      at: [371, -116],
+      len: 80,
+      needs: { low: true, diff: true },
+      // (No way round: the sea is on one side, the quarry on the other.)
+      round: false,
+      mix: [{ kind: 'flooded', from: 6, to: 74 }],
     },
     // (Control, not kit: low range makes it easier, but the brakes get you down too.)
     { kind: 'descent', label: 'Loose descent', at: [480, -102], len: 110, needs: {}, mix: [{ kind: 'descent', from: 0, to: 110 }, { kind: 'thicket', from: 0, to: 110 }] },
@@ -95,6 +120,7 @@ export const PUAKA: TrailDef = {
         { kind: 'thicket', from: 0, to: 65 },
       ],
     },
+
     {
       kind: 'rutted',
       label: 'Deep ruts',
@@ -249,8 +275,8 @@ export const CHEK_JAWA: TrailDef = {
     },
     {
       kind: 'summit',
-      label: 'Rock and ledges',
-      nice: 'Over the rock and the ledges. That was a proper climb.',
+      label: 'Creek bed, rock and ledges',
+      nice: 'Up the creek bed, over the rock and the ledges. That was a proper climb.',
       at: [3075, -60],
       len: 280,
       needs: { low: true, diff: true },
@@ -259,7 +285,9 @@ export const CHEK_JAWA: TrailDef = {
       mix: [
         { kind: 'ridge', from: 0, to: 280, p: { w: 2.6, drop: 3.5 } },
         { kind: 'climb', from: 0, to: 280, p: { h: 11, up: 45, top: 90 } },
-        { kind: 'rocks', from: 20, to: 160, p: { humpH: 0.5 } },
+        // (First up a dry granite creek bed, then the rock.)
+        { kind: 'rockbed', from: 4, to: 44 },
+        { kind: 'rocks', from: 44, to: 160, p: { humpH: 0.5 } },
         { kind: 'summit', from: 40, to: 150, p: { ledgeH: 0.3, every: 9 } },
       ],
     },
@@ -283,19 +311,22 @@ export const CHEK_JAWA: TrailDef = {
     },
     {
       kind: 'mud',
-      label: 'Mangrove mud and tidal sand',
-      nice: 'Through the mangrove mud and over the tidal sand.',
+      label: 'Flooded mangrove mud and tidal sand',
+      nice: 'Through the flood, the mangrove mud and over the tidal sand.',
       at: [3501, 79],
       len: 210,
       needs: { low: true, diff: true },
       // (Off the firm sand, down into the mud channel.)
       drop: { at: 16, h: 1, until: 128, back: 28 },
       mix: [
-        // (Soft bog either side of the ruts.)
-        { kind: 'ridge', from: 0, to: 210, p: { w: 2.5, drop: 1, run: 2 } },
-        { kind: 'mud', from: 0, to: 100, p: { rut: 0.3, hole: 0.5 } },
+        // (Soft bog either side of the ruts, past the flood: there the tide
+        // covers the track and its banks hold the water in.)
+        { kind: 'ridge', from: 58, to: 210, p: { w: 2.5, drop: 1, run: 2 } },
+        // (The channel's mouth flooded at high tide, its holes hidden; then the mud.)
+        { kind: 'flooded', from: 18, to: 52, p: { every: 5 } },
+        { kind: 'mud', from: 52, to: 100, p: { rut: 0.3, hole: 0.5 } },
         // (Mangrove trunks fallen across the ruts.)
-        { kind: 'logs', from: 20, to: 84, p: { period: 9, r: 0.15 } },
+        { kind: 'logs', from: 58, to: 92, p: { period: 9, r: 0.15 } },
         // (Then a firm run-up, and a tall, steep tidal dune: low range
         // cannot carry the speed over it.)
         { kind: 'sand', from: 96, to: 135, p: { firm: 1, grip: 0.75, drag: 1, sink: 0, duneH: 0, dip: 0.05 } },

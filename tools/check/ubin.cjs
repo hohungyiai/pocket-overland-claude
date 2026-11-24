@@ -71,6 +71,17 @@ const kits = (o, room = 150) => {
     // A creek with no way round: the right kit gets through at any crawl, not just at one pace.
     for (const c of [1.5, 2, 3]) also.push([`crawling at ${c} m/s`, { ...right, cruise: c }]);
   }
+  if (o.kind === 'flooded') {
+    // A flooded track (taught alone): crawling through at any steady pace with the kit in gets through
+    // (the holes catch a wheel, they do not end the try), and so does a line a little to one side.
+    for (const c of [2, 3, 5]) also.push([`crawling through the flood at ${c} m/s`, { ...right, cruise: c }]);
+    also.push(['half a metre left through the flood', { ...right, off: (right.off ?? 0) + 0.5 }]);
+    also.push(['half a metre right through the flood', { ...right, off: (right.off ?? 0) - 0.5 }]);
+  }
+  if (o.kind === 'rockbed') {
+    // A granite creek bed (taught alone): the kit in and a crawl gets over the rocks.
+    for (const c of [2, 3]) also.push([`crawling over the rocks at ${c} m/s`, { ...right, cruise: c }]);
+  }
   if (o.bridge) {
     // Square on the planks is a line a careful driver can hold: a quarter metre either side still crosses.
     also.push(['a quarter metre left of the middle of the planks', { ...right, off: (right.off ?? 0) + 0.25 }]);
@@ -130,7 +141,7 @@ const kits = (o, room = 150) => {
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), bridge: o.parts.some((q) => q.kind === 'bridge'), creek: o.parts.some((q) => q.kind === 'creek'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), bridge: o.parts.some((q) => q.kind === 'bridge'), creek: o.parts.some((q) => q.kind === 'creek'), flooded: o.parts.some((q) => q.kind === 'flooded'), rockbed: o.parts.some((q) => q.kind === 'rockbed'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
       // Water never hangs in the air: every edge point of the ford's water
@@ -385,8 +396,10 @@ const kits = (o, room = 150) => {
             for (let k = 0; g.sim.steps < until && k < 30000; k++) await wait(5);
           };
           try {
-            const o = t.obstacles.find((q) => /Mangrove/.test(q.label));
-            const a = o.line.at(40);
+            // (In the mud itself, past any flooded mouth to the channel.)
+            const o = t.obstacles.find((q) => /mangrove/i.test(q.label));
+            const m = o.parts.find((q) => q.kind === 'mud');
+            const a = o.line.at(m.from + 20);
             g.course.prepareAt(a.x, a.z);
             g.car.lowRange = false;
             g.car.diffLock = false;

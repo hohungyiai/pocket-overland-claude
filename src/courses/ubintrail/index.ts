@@ -711,13 +711,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
   const waterEdges: { x: number; z: number; y: number }[] = [];
   const puddleRims: { x: number; z: number; y: number; lo: number }[] = [];
   for (const o of trail.obstacles.flatMap((ob) => ob.parts)) {
-    if (o.kind !== 'ford' && o.kind !== 'creek') continue;
+    if (o.kind !== 'ford' && o.kind !== 'creek' && o.kind !== 'flooded') continue;
     const len = o.to - o.from;
+    // (A flooded track: brown tide water a hand deep over its level floor,
+    // thick enough to hide the holes.)
+    const flood = o.kind === 'flooded';
     // (A creek: a little water along the bottom of its channel, which
     // crosses the track at the middle of its part.)
     const creek = o.kind === 'creek';
-    const a = o.line.at(creek ? len / 2 : 0);
-    const lvl = heightAt(a.x, a.z) + (creek ? (o.p.water ?? 0.3) : -0.3);
+    const a = o.line.at(creek || flood ? len / 2 : 0);
+    const lvl = flood ? heightAt(a.x + a.tz * 2.8, a.z - a.tx * 2.8) + (o.p.water ?? 0.3) : heightAt(a.x, a.z) + (creek ? (o.p.water ?? 0.3) : -0.3);
     const C = 0.25;
     let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
     for (let s = 0; s <= len; s += 2) {
@@ -735,7 +738,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const wetOk = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < nz && g[j * W + i] < lvl + 0.04 && g[j * W + i + 1] < lvl + 0.04 && g[(j + 1) * W + i] < lvl + 0.04 && g[(j + 1) * W + i + 1] < lvl + 0.04;
     const wet = new Uint8Array(nx * nz);
     const stack: number[] = [];
-    for (let s = creek ? len / 2 - 1 : 0; s <= (creek ? len / 2 + 1 : len); s += 0.5) {
+    for (let s = creek ? len / 2 - 1 : flood ? 10 : 0; s <= (creek ? len / 2 + 1 : flood ? len - 10 : len); s += 0.5) {
       const p = o.line.at(s);
       const i = Math.floor((p.x - x0) / C);
       const j = Math.floor((p.z - z0) / C);
@@ -804,11 +807,13 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+    // (World-placed texture coordinates, so the ripples show and catch the sky.)
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(P.flatMap((_, k) => (k % 3 === 1 ? [] : [P[k] / 6])), 2));
     geo.setIndex(I);
     geo.computeVertexNormals();
     if (geo.attributes.normal.getY(0) < 0) geo.setIndex(I.map((_, i) => I[i - (i % 3) + [0, 2, 1][i % 3]]));
     geo.computeVertexNormals();
-    const ford = new THREE.Mesh(geo, creek ? waterMat(0x3d6a70, 0.85, 2) : waterMat(0x5b5a3e, 0.93, 2));
+    const ford = new THREE.Mesh(geo, creek ? waterMat(0x3d6a70, 0.85, 2) : flood ? waterMat(0x5e5234, 0.97, 1) : waterMat(0x5b5a3e, 0.93, 2));
     ford.receiveShadow = true;
     scene.add(ford);
   }
