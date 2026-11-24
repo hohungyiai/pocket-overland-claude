@@ -8527,14 +8527,30 @@ export async function buildPasirRisCourse(
           }
         return got;
       };
+      const farTop: number[] = [];
       for (const [ri, r] of KR.entries()) {
         if (r.lvl !== lvl) continue;
         const n = r.E.length;
         if (n < 2) continue;
         bands.push(toPath([...r.I, ...r.E.slice().reverse()]));
+        // (A gap shared with another level over ground a little under the
+        // kerbs, a median between two roads of different structures at
+        // one height: the lower level's lawn, laid level to the other's
+        // kerb, its top taken as a kerb over a drop's; the other level
+        // leaves it. Left to neither, the ground showed in squares between
+        // the lawns, -3398.9,2598.4. Over ground deeper than ISLE_DEEP, or
+        // with the two kerbs' tops more than 15 cm apart, the walls' gap as
+        // before, rule B3: taken between two ramps 70 cm apart in height,
+        // the lawn's edge hung over the lower one's paving, 1834.4,1932.9.)
         const share = r.E.map(([x, z], j) => {
           const t = r.T[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1;
-          return t === t ? across(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t) : -1;
+          if (!(t === t)) return -1;
+          const m = across(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t);
+          if (m < 0 || oP[m + 5] < lvl) return m;
+          const g = groundAtKerb(x, z);
+          if (Math.abs(oP[m + 2] - t) > 0.15 || !(g <= t + 0.005 && g >= t - ISLE_DEEP)) return m;
+          farTop.push(m);
+          return -1;
         });
         // (A kerb with the ground beside it a little under its top: the
         // lawn's. Over a drop deeper than ISLE_DEEP, or with the ground
@@ -8607,6 +8623,35 @@ export async function buildPasirRisCourse(
           slice = performance.now();
         }
       }
+      const farGrid = new Map<number, number[]>();
+      // (Along its kerb every half metre, from each of its points taken to
+      // the next and the one before: only at its points, a few metres apart
+      // on a straight, the lawn's edge fell to the ground between them, in
+      // teeth, -3398.9,2598.4.)
+      const farSeg = new Set<number>();
+      for (const m of farTop) {
+        const c = Math.floor(oP[m] / 4) * 100003 + Math.floor(oP[m + 1] / 4);
+        (farGrid.get(c) ?? farGrid.set(c, []).get(c)!).push(m);
+        for (const a of [m - 6, m]) {
+          const b = a + 6;
+          if (a < 0 || b >= oP.length || farSeg.has(a) || oP[a + 5] !== oP[b + 5]) continue;
+          const L = Math.hypot(oP[b] - oP[a], oP[b + 1] - oP[a + 1]);
+          if (L > 12) continue;
+          farSeg.add(a);
+          const k = Math.max(1, Math.ceil(L / 0.5));
+          for (let q = 0; q <= k; q++) {
+            const t = q / k, nx = lerp(oP[a + 3], oP[b + 3], t), nz = lerp(oP[a + 4], oP[b + 4], t), nl = Math.hypot(nx, nz) || 1;
+            addS(lerp(oP[a], oP[b], t), lerp(oP[a + 1], oP[b + 1], t), lerp(oP[a + 2], oP[b + 2], t), nx / nl, nz / nl, L / k, 1);
+          }
+        }
+      }
+      /** Within r of another level's kerb whose gap this level's lawn takes: the lawn meets its top there, not the ground. */
+      const nearFar = (x: number, z: number, r: number) => {
+        for (let ci = Math.floor((x - r) / 4); ci <= Math.floor((x + r) / 4); ci++)
+          for (let cj = Math.floor((z - r) / 4); cj <= Math.floor((z + r) / 4); cj++)
+            for (const m of farGrid.get(ci * 100003 + cj) ?? []) if (Math.hypot(oP[m] - x, oP[m + 1] - z) < r) return true;
+        return false;
+      };
       if (!lawnLines.length) continue;
       // (The outline's sides with no kerb: the lawn meets the ground there.)
       for (const R of w.rings) {
@@ -8620,6 +8665,10 @@ export async function buildPasirRisCourse(
           const m = Math.max(1, Math.ceil(L));
           for (let c = 0; c < m; c++) {
             const t = (c + 0.5) / m, x = lerp(ax, bx, t) + nx * 0.05, z = lerp(az, bz, t) + nz * 0.05;
+            // (Not along another level's kerb whose gap this lawn takes: its
+            // top there, and the ground's between its points stood the lawn's
+            // edge in teeth, -3398.9,2598.4.)
+            if (farGrid.size && nearFar(x, z, 1)) continue;
             addS(x, z, gnd(x + nx * 0.05, z + nz * 0.05) + 0.02, nx, nz, L / m, 0);
           }
         }
@@ -9119,7 +9168,12 @@ export async function buildPasirRisCourse(
        * 1167,1665.2.) From each such edge's own height, not theirs
        * together: the lowest ramp up from any of them, unbroken along the
        * kerb. Out to 6 m: a lawn kerb meeting a drop's wall foot up to 3 m
-       * down.
+       * down. Over another lawn kerb's top too, one more than a metre
+       * lower: two of one level's kerbs a metre apart, 4 m apart in height,
+       * stood the lawn up between them in a fin, 1568,923; now the lawn
+       * eases up from the lower at 1 in 2, the higher kerb's own side over
+       * it. (Kerbs nearer in height, the lawn sloping between them as
+       * before.)
        */
       // (Each square's lowest edge sample off a lawn kerb, and its longest
       // half: a square that can't bring the cap down is passed by. Asked of
@@ -9133,7 +9187,7 @@ export async function buildPasirRisCourse(
             let lo = capLow.get(c);
             if (!lo) {
               let m = Infinity, h = 0;
-              for (const n of sgrid.get(c) ?? NONE) if (S[n + 6] !== 2) (m = Math.min(m, S[n + 2])), (h = Math.max(h, S[n + 5] / 2));
+              for (const n of sgrid.get(c) ?? NONE) (m = Math.min(m, S[n + 2])), (h = Math.max(h, S[n + 5] / 2));
               capLow.set(c, (lo = [m, h]));
             }
             if (lo[0] >= cap) continue;
@@ -9141,7 +9195,7 @@ export async function buildPasirRisCourse(
             const bd = Math.max(0, Math.sqrt(bx * bx + bz * bz) - lo[1] - 1e-6);
             if (bd >= 6 || lo[0] + 0.5 * bd >= cap) continue;
             for (const n of sgrid.get(c) ?? NONE) {
-              if (S[n + 6] === 2 || S[n + 2] >= cap) continue;
+              if (S[n + 2] >= cap || (S[n + 6] === 2 && S[n + 2] > y - 1)) continue;
               const tx = -S[n + 4], tz = S[n + 3], hl = S[n + 5] / 2;
               const al = Math.max(-hl, Math.min(hl, (x - S[n]) * tx + (z - S[n + 1]) * tz));
               const dd = Math.hypot(x - S[n] - tx * al, z - S[n + 1] - tz * al);
