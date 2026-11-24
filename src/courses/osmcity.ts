@@ -8539,8 +8539,9 @@ export async function buildPasirRisCourse(
         // kerb, its top taken as a kerb over a drop's; the other level
         // leaves it. Left to neither, the ground showed in squares between
         // the lawns, -3398.9,2598.4. Over ground deeper than ISLE_DEEP at
-        // either kerb (at the other's only, the lawn hung 1.6 m over the
-        // ground falling away at an embankment's end, -2847.2,-2072.6), or
+        // this kerb, or than 60 cm at the other's (deeper there, the lawn
+        // hung over the ground falling away at an embankment's end,
+        // -2847.2,-2072.6, and stood up steep beside it, -2716.9,-2239.6), or
         // with the two kerbs' tops more than 15 cm apart, the walls' gap as
         // before, rule B3: taken between two ramps 70 cm apart in height,
         // the lawn's edge hung over the lower one's paving, 1834.4,1932.9.)
@@ -8551,7 +8552,7 @@ export async function buildPasirRisCourse(
           if (m < 0 || oP[m + 5] < lvl) return m;
           const g = groundAtKerb(x, z);
           const g2 = groundAtKerb(oP[m], oP[m + 1]);
-          if (Math.abs(oP[m + 2] - t) > 0.15 || !(g <= t + 0.005 && g >= t - ISLE_DEEP) || !(g2 <= t + 0.005 && g2 >= t - ISLE_DEEP)) return m;
+          if (Math.abs(oP[m + 2] - t) > 0.15 || !(g <= t + 0.005 && g >= t - ISLE_DEEP) || !(g2 <= t + 0.005 && g2 >= t - 0.6)) return m;
           return -2 - m;
         });
         // (Only a stretch of two points or more: one alone stays the walls'
