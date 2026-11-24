@@ -8627,14 +8627,19 @@ export async function buildPasirRisCourse(
       // (Along its kerb every half metre, from each of its points taken to
       // the next and the one before: only at its points, a few metres apart
       // on a straight, the lawn's edge fell to the ground between them, in
-      // teeth, -3398.9,2598.4.)
-      const farSeg = new Set<number>();
-      for (const m of farTop) {
+      // teeth, -3398.9,2598.4. Only between two points both taken: run on
+      // to a neighbour whose gap stays the walls', the lawn's edge stood at
+      // the kerb's top there with nothing under it, 3080.2,3159.)
+      const farSeg = new Set<number>(), farSet = new Set(farTop);
+      for (const m of farSet) {
         const c = Math.floor(oP[m] / 4) * 100003 + Math.floor(oP[m + 1] / 4);
         (farGrid.get(c) ?? farGrid.set(c, []).get(c)!).push(m);
+        let alone = true;
         for (const a of [m - 6, m]) {
           const b = a + 6;
-          if (a < 0 || b >= oP.length || farSeg.has(a) || oP[a + 5] !== oP[b + 5]) continue;
+          if (a < 0 || b >= oP.length || !farSet.has(a) || !farSet.has(b) || oP[a + 5] !== oP[b + 5]) continue;
+          alone = false;
+          if (farSeg.has(a)) continue;
           const L = Math.hypot(oP[b] - oP[a], oP[b + 1] - oP[a + 1]);
           if (L > 12) continue;
           farSeg.add(a);
@@ -8643,6 +8648,10 @@ export async function buildPasirRisCourse(
             const t = q / k, nx = lerp(oP[a + 3], oP[b + 3], t), nz = lerp(oP[a + 4], oP[b + 4], t), nl = Math.hypot(nx, nz) || 1;
             addS(lerp(oP[a], oP[b], t), lerp(oP[a + 1], oP[b + 1], t), lerp(oP[a + 2], oP[b + 2], t), nx / nl, nz / nl, L / k, 1);
           }
+        }
+        if (alone) {
+          const nl = Math.hypot(oP[m + 3], oP[m + 4]) || 1;
+          addS(oP[m], oP[m + 1], oP[m + 2], oP[m + 3] / nl, oP[m + 4] / nl, 1, 1);
         }
       }
       /** Within r of another level's kerb whose gap this level's lawn takes: the lawn meets its top there, not the ground. */
