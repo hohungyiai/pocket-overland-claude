@@ -8498,13 +8498,28 @@ export async function buildPasirRisCourse(
       // judge it alike.
       const oP: number[] = [];
       const oGrid = new Map<number, number[]>();
+      // (And its pieces, each two points of one run: [a, b] by their places
+      // in oP, by 4 m square.)
+      const oSeg: number[] = [];
+      const sGrid = new Map<number, number[]>();
       for (const r of KR) {
         if (r.lvl === lvl) continue;
+        let prev = -1;
         for (let j = 0; j < r.E.length; j++) {
           const t = r.T[j];
-          if (!(t === t)) continue;
+          if (!(t === t)) {
+            prev = -1;
+            continue;
+          }
           const [x, z] = r.E[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1, c = Math.floor(x / 4) * 100003 + Math.floor(z / 4);
           (oGrid.get(c) ?? oGrid.set(c, []).get(c)!).push(oP.length);
+          if (prev >= 0) {
+            const [px, pz] = [oP[prev], oP[prev + 1]], si = oSeg.length;
+            oSeg.push(prev, oP.length);
+            for (let ci = Math.floor(Math.min(px, x) / 4); ci <= Math.floor(Math.max(px, x) / 4); ci++)
+              for (let cj = Math.floor(Math.min(pz, z) / 4); cj <= Math.floor(Math.max(pz, z) / 4); cj++) (sGrid.get(ci * 100003 + cj) ?? sGrid.set(ci * 100003 + cj, []).get(ci * 100003 + cj)!).push(si);
+          }
+          prev = oP.length;
           oP.push(x, z, t, r.N[j][0] / nl, r.N[j][1] / nl, r.lvl);
         }
       }
@@ -8527,47 +8542,99 @@ export async function buildPasirRisCourse(
           }
         return got;
       };
-      const farTop: number[] = [];
+      // (A gap shared with another level over ground a little under the
+      // kerbs, a median between two roads of different structures at one
+      // height: the lower level's lawn, laid level to the other's kerb, its
+      // top taken as a kerb over a drop's; the other level leaves it. Left
+      // to neither, the ground showed in squares between the lawns,
+      // -3398.9,2598.4. Over ground deeper than ISLE_DEEP at this kerb, or
+      // than 60 cm at the other's (deeper there, the lawn hung over the
+      // ground falling away at an embankment's end, -2847.2,-2072.6, and
+      // stood up steep beside it, -2716.9,-2239.6), or with the two kerbs'
+      // tops more than 15 cm apart, the walls' gap as before, rule B3: taken
+      // between two ramps 70 cm apart in height, the lawn's edge hung over
+      // the lower one's paving, 1834.4,1932.9.) Asked at a place, of the
+      // other kerb's line straight across, not of its points: each tile
+      // has the kerbs' points of its own (a run's ends and its half-metre
+      // points by a joint fall where its own pieces put them), and asked of
+      // the nearest point and of the points next to it along the run, the
+      // two tiles took different stretches, and the lawn stepped 3 cm at
+      // their border, -3400.4,2600.
+      /** Straight across from (x, z) facing (nx, nz), its top t: the first other level's kerb line facing it within 6 m, as [x, z, top, out x, out z, level], or null. */
+      const hit: number[] = [0, 0, 0, 0, 0, 0];
+      const acrossLine = (x: number, z: number, nx: number, nz: number, t: number) => {
+        let best = 6.0001, got = false;
+        const ex0 = x + nx * 6, ez0 = z + nz * 6;
+        for (let ci = Math.floor(Math.min(x, ex0) / 4); ci <= Math.floor(Math.max(x, ex0) / 4); ci++)
+          for (let cj = Math.floor(Math.min(z, ez0) / 4); cj <= Math.floor(Math.max(z, ez0) / 4); cj++)
+            for (const si of sGrid.get(ci * 100003 + cj) ?? []) {
+              const a = oSeg[si], b = oSeg[si + 1];
+              const ax = oP[a], az = oP[a + 1], dx = oP[b] - ax, dz = oP[b + 1] - az;
+              const den = nx * dz - nz * dx;
+              if (Math.abs(den) < 1e-9) continue;
+              // (x + s n = a + u (b - a).)
+              const qx = ax - x, qz = az - z, sA = (qx * dz - qz * dx) / den, u = (qx * nz - qz * nx) / den;
+              if (u < -1e-6 || u > 1 + 1e-6 || sA < 0.02 || sA >= best) continue;
+              const fx = lerp(oP[a + 3], oP[b + 3], u), fz = lerp(oP[a + 4], oP[b + 4], u), ft = lerp(oP[a + 2], oP[b + 2], u);
+              if (Math.abs(ft - t) >= 1 || fx * nx + fz * nz > -0.3 * (Math.hypot(fx, fz) || 1)) continue;
+              best = sA;
+              got = true;
+              const fl = Math.hypot(fx, fz) || 1;
+              hit[0] = x + nx * sA, hit[1] = z + nz * sA, hit[2] = ft, hit[3] = fx / fl, hit[4] = fz / fl, hit[5] = oP[a + 5];
+            }
+        return got;
+      };
+      /** Whether this level's lawn takes the gap straight across from (x, z), as above; the other kerb's place in `hit`. */
+      const takesAt = (x: number, z: number, nx: number, nz: number, t: number) => {
+        if (!acrossLine(x, z, nx, nz, t) || hit[5] < lvl || Math.abs(hit[2] - t) > 0.15) return false;
+        const g = groundAtKerb(x, z), g2 = groundAtKerb(hit[0], hit[1]);
+        return g <= t + 0.005 && g >= t - ISLE_DEEP && g2 <= hit[2] + 0.005 && g2 >= hit[2] - 0.6;
+      };
+      // (And a metre along it, on one side or the other, too: at one place
+      // alone, its top stood the lawn up in a spike 1.7 m over the ground
+      // beside it, -3219.8,-1917.3. Along the line it faces, not its run's
+      // next point: a run of the kerb ends where its tile ends it.)
+      const takes = (x: number, z: number, nx: number, nz: number, t: number) => {
+        if (!takesAt(x, z, nx, nz, t)) return false;
+        const h = hit.slice();
+        const ok = takesAt(x - nz * 0.5, z + nx * 0.5, nx, nz, t) || takesAt(x + nz * 0.5, z - nx * 0.5, nx, nz, t);
+        for (let q = 0; q < 6; q++) hit[q] = h[q];
+        return ok;
+      };
+      const farGrid = new Map<number, number[]>();
+      const farPts: number[] = [];
       for (const [ri, r] of KR.entries()) {
         if (r.lvl !== lvl) continue;
         const n = r.E.length;
         if (n < 2) continue;
         bands.push(toPath([...r.I, ...r.E.slice().reverse()]));
-        // (A gap shared with another level over ground a little under the
-        // kerbs, a median between two roads of different structures at
-        // one height: the lower level's lawn, laid level to the other's
-        // kerb, its top taken as a kerb over a drop's; the other level
-        // leaves it. Left to neither, the ground showed in squares between
-        // the lawns, -3398.9,2598.4. Over ground deeper than ISLE_DEEP at
-        // this kerb, or than 60 cm at the other's (deeper there, the lawn
-        // hung over the ground falling away at an embankment's end,
-        // -2847.2,-2072.6, and stood up steep beside it, -2716.9,-2239.6), or
-        // with the two kerbs' tops more than 15 cm apart, the walls' gap as
-        // before, rule B3: taken between two ramps 70 cm apart in height,
-        // the lawn's edge hung over the lower one's paving, 1834.4,1932.9.)
         const share = r.E.map(([x, z], j) => {
           const t = r.T[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1;
           if (!(t === t)) return -1;
-          const m = across(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t);
-          if (m < 0 || oP[m + 5] < lvl) return m;
-          const g = groundAtKerb(x, z);
-          const g2 = groundAtKerb(oP[m], oP[m + 1]);
-          if (Math.abs(oP[m + 2] - t) > 0.15 || !(g <= t + 0.005 && g >= t - ISLE_DEEP) || !(g2 <= t + 0.005 && g2 >= t - 0.6)) return m;
-          return -2 - m;
+          if (takes(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t)) return -1;
+          return across(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t);
         });
-        // (Only a stretch of two points or more: one alone stays the walls'
-        // gap. Taken alone, its top stood the lawn up in a spike 1.7 m over
-        // the ground beside it, -3219.8,-1917.3.)
-        for (let j = 0; j < n; j++) {
-          if (share[j] > -2) continue;
-          if ((j > 0 && share[j - 1] <= -2) || (j + 1 < n && share[j + 1] <= -2)) continue;
-          share[j] = -2 - share[j];
-        }
-        for (let j = 0; j < n; j++)
-          if (share[j] <= -2) {
-            farTop.push(-2 - share[j]);
-            share[j] = -1;
+        // (Its top along the kerb every half metre, where taken: only at
+        // its points, a few metres apart on a straight, the lawn's edge fell
+        // to the ground between them, in teeth, -3398.9,2598.4. Asked at
+        // each place: run on past where it is taken, the lawn's edge stood
+        // at the kerb's top there with nothing under it, 3080.2,3159.)
+        for (let j = 0; j + 1 < n; j++) {
+          const ta = r.T[j], tb = r.T[j + 1];
+          if (!(ta === ta) || !(tb === tb)) continue;
+          const [ax, az] = r.E[j], [bx, bz] = r.E[j + 1];
+          const L = Math.hypot(bx - ax, bz - az);
+          if (L < 1e-4 || L > 12) continue;
+          const k = Math.max(1, Math.ceil(L / 0.5));
+          for (let q = 0; q <= k; q++) {
+            const u = q / k, nx0 = lerp(r.N[j][0], r.N[j + 1][0], u), nz0 = lerp(r.N[j][1], r.N[j + 1][1], u), nl = Math.hypot(nx0, nz0) || 1;
+            if (!takes(lerp(ax, bx, u), lerp(az, bz, u), nx0 / nl, nz0 / nl, lerp(ta, tb, u))) continue;
+            const c = Math.floor(hit[0] / 4) * 100003 + Math.floor(hit[1] / 4);
+            (farGrid.get(c) ?? farGrid.set(c, []).get(c)!).push(farPts.length);
+            farPts.push(hit[0], hit[1]);
+            addS(hit[0], hit[1], hit[2], hit[3], hit[4], L / k, 1);
           }
+        }
         // (A kerb with the ground beside it a little under its top: the
         // lawn's. Over a drop deeper than ISLE_DEEP, or with the ground
         // over it, the ground's: the walls' business, see wallGaps. Across
@@ -8639,36 +8706,11 @@ export async function buildPasirRisCourse(
           slice = performance.now();
         }
       }
-      const farGrid = new Map<number, number[]>();
-      // (Along its kerb every half metre, from each of its points taken to
-      // the next and the one before: only at its points, a few metres apart
-      // on a straight, the lawn's edge fell to the ground between them, in
-      // teeth, -3398.9,2598.4. Only between two points both taken: run on
-      // to a neighbour whose gap stays the walls', the lawn's edge stood at
-      // the kerb's top there with nothing under it, 3080.2,3159.)
-      const farSeg = new Set<number>(), farSet = new Set(farTop);
-      for (const m of farSet) {
-        const c = Math.floor(oP[m] / 4) * 100003 + Math.floor(oP[m + 1] / 4);
-        (farGrid.get(c) ?? farGrid.set(c, []).get(c)!).push(m);
-        for (const a of [m - 6, m]) {
-          const b = a + 6;
-          if (a < 0 || b >= oP.length || !farSet.has(a) || !farSet.has(b) || oP[a + 5] !== oP[b + 5]) continue;
-          if (farSeg.has(a)) continue;
-          const L = Math.hypot(oP[b] - oP[a], oP[b + 1] - oP[a + 1]);
-          if (L > 12) continue;
-          farSeg.add(a);
-          const k = Math.max(1, Math.ceil(L / 0.5));
-          for (let q = 0; q <= k; q++) {
-            const t = q / k, nx = lerp(oP[a + 3], oP[b + 3], t), nz = lerp(oP[a + 4], oP[b + 4], t), nl = Math.hypot(nx, nz) || 1;
-            addS(lerp(oP[a], oP[b], t), lerp(oP[a + 1], oP[b + 1], t), lerp(oP[a + 2], oP[b + 2], t), nx / nl, nz / nl, L / k, 1);
-          }
-        }
-      }
       /** Within r of another level's kerb whose gap this level's lawn takes: the lawn meets its top there, not the ground. */
       const nearFar = (x: number, z: number, r: number) => {
         for (let ci = Math.floor((x - r) / 4); ci <= Math.floor((x + r) / 4); ci++)
           for (let cj = Math.floor((z - r) / 4); cj <= Math.floor((z + r) / 4); cj++)
-            for (const m of farGrid.get(ci * 100003 + cj) ?? []) if (Math.hypot(oP[m] - x, oP[m + 1] - z) < r) return true;
+            for (const m of farGrid.get(ci * 100003 + cj) ?? []) if (Math.hypot(farPts[m] - x, farPts[m + 1] - z) < r) return true;
         return false;
       };
       if (!lawnLines.length) continue;

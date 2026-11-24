@@ -168,10 +168,14 @@ const CHECKS = [
   try {
     await new Promise((r) => setTimeout(r, 2500));
     // (Room for the whole map's lawn: each check reads every tile's meshes, and at the default heap the page ran out at the island checks.)
-    const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--max-old-space-size=8192'] });
+    const launch = () => chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--max-old-space-size=8192'] });
+    let b = await launch();
     // (A page of its own, in a context of its own: closing the context ends
-    // the renderer and frees all its memory, which a reload did not.)
+    // the renderer and frees all its memory, which a reload did not. And a
+    // browser afresh if the crash took the browser down with it, as the
+    // whole map's fold check did on 24 Nov.)
     const open = async () => {
+      if (!b.isConnected()) b = await launch();
       const q = await (await b.newContext({ viewport: { width: 640, height: 360 } })).newPage();
       q.on('pageerror', (e) => console.log('page error:', e.message));
       return q;
