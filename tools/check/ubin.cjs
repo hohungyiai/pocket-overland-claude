@@ -80,7 +80,7 @@ const kits = (o, room = 150) => {
   }
   if (o.kind === 'rockbed') {
     // A granite creek bed (taught alone): the kit in and a crawl gets over the rocks.
-    for (const c of [2, 3]) also.push([`crawling over the rocks at ${c} m/s`, { ...right, cruise: c }]);
+    for (const c of [1, 1.5, 2, 3]) also.push([`crawling over the rocks at ${c} m/s`, { ...right, cruise: c }]);
   }
   if (o.bridge) {
     // Square on the planks is a line a careful driver can hold: a quarter metre either side still crosses.
@@ -179,7 +179,7 @@ const kits = (o, room = 150) => {
       let page = await fresh();
       const info = await page.evaluate(() => {
         const t = window.game.course.trail;
-        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), bridge: o.parts.some((q) => q.kind === 'bridge'), creek: o.parts.some((q) => q.kind === 'creek'), flooded: o.parts.some((q) => q.kind === 'flooded'), rockbed: o.parts.some((q) => q.kind === 'rockbed'), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
+        return { roundKit: t.def.roundKit ?? {}, wayRound: t.def.wayRound, obs: t.obstacles.map((o) => ({ p: o.p, camber: o.parts.find((q) => q.kind === 'camber')?.p ?? null, mixed: o.parts.map((q) => q.kind).join('+'), rutted: o.parts.some((q) => q.kind === 'rutted'), notch: o.parts.some((q) => q.kind === 'notch'), bridge: o.parts.some((q) => q.kind === 'bridge'), creek: o.parts.some((q) => q.kind === 'creek'), flooded: o.parts.some((q) => q.kind === 'flooded'), rockbed: o.parts.some((q) => q.kind === 'rockbed'), rockbedAt: o.parts.filter((q) => q.kind === 'rockbed').map((q) => [o.s0 + q.from, o.s0 + q.to]), closed: o.parts.filter((q) => ['ridge', 'thicket', 'valley'].includes(q.kind)).map((q) => (q.kind === 'thicket' ? (q.p.w ?? 3.4) + 1.6 * ((q.p.rows ?? 2) - 1) : (q.p.w ?? 2.6))), gate: !!o.gate, kind: o.kind, label: o.label, needs: o.needs, then: o.then ?? null, s0: o.s0, s1: o.s1 })), hasCamp: !!t.def.end.camp };
       });
       console.log(course, 'obstacles', JSON.stringify(info.obs.map((o) => [o.kind, Math.round(o.s0), Math.round(o.s1)])));
       // Water never hangs in the air: every edge point of the ford's water
@@ -237,6 +237,17 @@ const kits = (o, room = 150) => {
           await page.close();
           page = await fresh();
         }
+        // A granite creek bed inside a longer stretch (Chek Jawa's, up the
+        // climb): a careful driver creeping over its rocks with the kit in
+        // gets over them at any crawl, from 15 m before it to 10 m past it.
+        if (o.kind !== 'rockbed')
+          for (const [a, b] of o.rockbedAt ?? [])
+            for (const c of [1, 1.5, 2, 3]) {
+              const r = await drive(page, a - 15, b + 10, { low: true, diff: true, cruise: c }, { timeout: 150 });
+              check(`${o.label}: its granite creek bed (${Math.round(a)}-${Math.round(b)} m), crawling over the rocks at ${c} m/s with low range and the diff lock, the bot gets over it`, r.done, `(${r.seconds}s, lean ${r.maxLeanDeg}°, reached ${r.at}/${r.total})`);
+              await page.close();
+              page = await fresh();
+            }
         if (!o.gate) continue;
         // Tries with no kit, from the run-in each time: the way round
         // opens after the third.

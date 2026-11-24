@@ -285,8 +285,10 @@ export const CHEK_JAWA: TrailDef = {
       mix: [
         { kind: 'ridge', from: 0, to: 280, p: { w: 2.6, drop: 3.5 } },
         { kind: 'climb', from: 0, to: 280, p: { h: 11, up: 45, top: 90 } },
-        // (First up a dry granite creek bed, then the rock.)
-        { kind: 'rockbed', from: 4, to: 44 },
+        // (First up a dry granite creek bed, then the rock. Its rocks lower
+        // than on the flat: on a climb this steep a taller one stops a car
+        // crawling up it with all the kit in.)
+        { kind: 'rockbed', from: 4, to: 44, p: { rockH: 0.35 } },
         { kind: 'rocks', from: 44, to: 160, p: { humpH: 0.5 } },
         { kind: 'summit', from: 40, to: 150, p: { ledgeH: 0.3, every: 9 } },
       ],
