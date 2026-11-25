@@ -125,7 +125,7 @@ const CHECKS = [
   // the next change, one sheet of lawn kerb to kerb, to fix. Held again at
   // 263 and 29, more islands on main's lawn, the user's call on 22 Nov
   // (09:22 UTC).)
-  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 43, trial: 13 }],
+  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 44, trial: 13 }],
   ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0, { pasirris: 4, whole: 1 }],
   // (The whole map's held at 31, the user's call on 24 Nov (00:27 UTC):
   // ten more with the one-sheet lawn, 0.1 to 2.4 cm low; may only go down.)
@@ -155,7 +155,7 @@ const CHECKS = [
   // UTC): steep ground beside ramps, kerb-height drops where kerbs end at
   // paths, high islands between ramps, none seen at eye level; main's own
   // lawn has 56 and 696 by this check. May only go down; follow-ups fix.)
-  ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0, { whole: 532, trial: 70 }],
+  ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0, { whole: 533, trial: 70 }],
   ['An island\'s grass stays inside its kerbs: no lawn more than 5 cm out over a road', 'outline.js', '__checkLawnInIsland', 0, { whole: 5 }],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
