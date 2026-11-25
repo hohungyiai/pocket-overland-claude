@@ -8654,6 +8654,38 @@ export async function buildPasirRisCourse(
         }
         return len;
       };
+      // (This level's own kerbs' pieces, by 4 m square: see sameAcross.)
+      const mSeg: number[] = [];
+      const mGrid = new Map<number, number[]>();
+      for (const r of KR) {
+        if (r.lvl !== lvl) continue;
+        for (let j = 0; j + 1 < r.E.length; j++) {
+          if (!(r.T[j] === r.T[j]) || !(r.T[j + 1] === r.T[j + 1])) continue;
+          const [ax, az] = r.E[j], [bx, bz] = r.E[j + 1], si = mSeg.length;
+          const al = Math.hypot(r.N[j][0], r.N[j][1]) || 1, bl = Math.hypot(r.N[j + 1][0], r.N[j + 1][1]) || 1;
+          mSeg.push(ax, az, r.T[j], r.N[j][0] / al, r.N[j][1] / al, bx, bz, r.T[j + 1], r.N[j + 1][0] / bl, r.N[j + 1][1] / bl);
+          for (let ci = Math.floor(Math.min(ax, bx) / 4); ci <= Math.floor(Math.max(ax, bx) / 4); ci++)
+            for (let cj = Math.floor(Math.min(az, bz) / 4); cj <= Math.floor(Math.max(az, bz) / 4); cj++) (mGrid.get(ci * 100003 + cj) ?? mGrid.set(ci * 100003 + cj, []).get(ci * 100003 + cj)!).push(si);
+        }
+      }
+      /** Straight across from (x, z) facing (nx, nz), its top t: how far to the first of this level's own kerbs facing it at its height (within 15 cm), up to m; Infinity if none. */
+      const sameAcross = (x: number, z: number, nx: number, nz: number, t: number, m: number) => {
+        let best = Infinity;
+        const ex0 = x + nx * m, ez0 = z + nz * m;
+        for (let ci = Math.floor(Math.min(x, ex0) / 4); ci <= Math.floor(Math.max(x, ex0) / 4); ci++)
+          for (let cj = Math.floor(Math.min(z, ez0) / 4); cj <= Math.floor(Math.max(z, ez0) / 4); cj++)
+            for (const si of mGrid.get(ci * 100003 + cj) ?? []) {
+              const ax = mSeg[si], az = mSeg[si + 1], dx = mSeg[si + 5] - ax, dz = mSeg[si + 6] - az;
+              const den = nx * dz - nz * dx;
+              if (Math.abs(den) < 1e-9) continue;
+              const qx = ax - x, qz = az - z, sA = (qx * dz - qz * dx) / den, u = (qx * nz - qz * nx) / den;
+              if (u < -1e-6 || u > 1 + 1e-6 || sA < 0.1 || sA > m || sA >= best) continue;
+              const fx = lerp(mSeg[si + 3], mSeg[si + 8], u), fz = lerp(mSeg[si + 4], mSeg[si + 9], u);
+              if (Math.abs(lerp(mSeg[si + 2], mSeg[si + 7], u) - t) > 0.15 || fx * nx + fz * nz > -0.3 * (Math.hypot(fx, fz) || 1)) continue;
+              best = sA;
+            }
+        return best;
+      };
       const farGrid = new Map<number, number[]>();
       const farPts: number[] = [];
       for (const [ri, r] of KR.entries()) {
@@ -8716,6 +8748,24 @@ export async function buildPasirRisCourse(
           const g = groundAtKerb(x, z), t = r.T[j];
           return share[j] < 0 && t === t && g <= t + 0.005 && g >= t - ISLE_DEEP;
         });
+        // (Over a drop deeper than ISLE_DEEP with another of this level's
+        // kerbs facing it 2.5-8 m across, at its height: two raised roads
+        // side by side, each its own structure, each its own wall down to
+        // the ground between, rule B3, as on main; the lawn meets the walls'
+        // foot. Laid at the kerbs' tops, over ground falling 2.6 m under
+        // them, the lawn sagged between the two walls and climbed them in
+        // ears where it met the ground's lawn, -3408.4,2608 (3.3-3.6 m
+        // across). Nearer, one structure's median, level with its kerbs,
+        // as the narrow island 0.3-2.1 m across at 1138.9,1930.7 is on
+        // main. With no such kerb within 8 m, an island's
+        // wide part, laid level as before: lowered, pale squares of the
+        // ground showed through its lawn at 1146,1928.)
+        const deepAt = r.E.map(([x, z], j) => {
+          if (!(r.T[j] === r.T[j]) || groundAtKerb(x, z) >= r.T[j] - ISLE_DEEP) return false;
+          const nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1;
+          const w = sameAcross(x, z, r.N[j][0] / nl, r.N[j][1] / nl, r.T[j], 8);
+          return w > 2.5 && w <= 8;
+        });
         // (And the gap itself off this level's lawn.)
         for (let j = 0; j + 1 < n; j++) {
           const a = share[j], b = share[j + 1];
@@ -8775,7 +8825,7 @@ export async function buildPasirRisCourse(
             // the lawn meets the wall there. At its top, where a median two
             // levels share ends, the lawn stood up the wall in a point,
             // -3404,2605.)
-            if (!both && (share[j] >= 0 || share[j + 1] >= 0)) {
+            if (!both && (share[j] >= 0 || share[j + 1] >= 0 || deepAt[j] || deepAt[j + 1])) {
               const ux = nx / nl, uz = nz / nl;
               addS(x + ux * 0.05, z + uz * 0.05, gnd(x + ux * 0.1, z + uz * 0.1) + 0.02, ux, uz, L / m, 0);
             } else addS(x, z, lerp(r.T[j], r.T[j + 1], t), nx / nl, nz / nl, L / m, both ? 2 : 1);
