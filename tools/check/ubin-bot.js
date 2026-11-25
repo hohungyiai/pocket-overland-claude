@@ -4,7 +4,9 @@
 // It also plays the part of the HUD: it calls the course's coach a few
 // times a second with the same "stuck" timer main.ts keeps, so the tries
 // at an obstacle and the way round opening happen as they would in play.
-window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeout = 240, place = true, giveUp = 6, reverseAfterStall = 0 } = {}) => {
+window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeout = 240, place = true, giveUp = 6, reverseAfterStall = 0, change = null, look = 5 } = {}) => {
+  // (change: { at, low, diff, cruise, look }: from point `at` on, that kit,
+  // pace and how far ahead it steers for, in metres.)
   const g = window.game;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const total = pts.length - 1;
@@ -51,7 +53,7 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
         }
       }
       const v = g.car.speed;
-      const [tx, tz] = pts[Math.min(total, at + Math.max(5, Math.round(Math.abs(v) * 0.8)))];
+      const [tx, tz] = pts[Math.min(total, at + Math.max(look, Math.round(Math.abs(v) * 0.8)))];
       const f = g.car.forward;
       const dx = tx - p.x;
       const dz = tz - p.z;
@@ -68,7 +70,7 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
       const c = pts[Math.min(total, at + 24)];
       let turn = Math.abs(Math.atan2(c[1] - b[1], c[0] - b[0]) - Math.atan2(b[1] - a[1], b[0] - a[0]));
       if (turn > Math.PI) turn = 2 * Math.PI - turn;
-      const want = turn > 0.8 ? 3.5 : turn > 0.4 ? 5 : cruise;
+      const want = Math.min(cruise, turn > 0.8 ? 3.5 : turn > 0.4 ? 5 : cruise);
       this.input.throttle = v < want - 0.5 ? 1 : v > want + 1.5 ? -0.6 : v > want + 0.3 ? 0 : 0.4;
     };
     const t0 = steps;
@@ -76,6 +78,7 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
     let bestStep = steps;
     let lean = 0;
     let stalls = 0;
+    let changedAt = 0;
     const lifted = [0, 0, 0, 0, 0];
     for (let idle = 0, seen = steps; ; ) {
       await after(6); // ten times a second
@@ -102,6 +105,14 @@ window.__ubinDrive = async (pts, { low = false, diff = false, cruise = 8, timeou
         bestStep = steps;
       }
       const res = { at, total, seconds: +((steps - t0) / 60).toFixed(1), maxLeanDeg: +lean.toFixed(1), lifted, stalls, says, tips, pos: [+p.x.toFixed(1), +p.y.toFixed(2), +p.z.toFixed(1)] };
+      if (change && !changedAt && at >= change.at) {
+        if (change.low !== undefined) g.car.lowRange = change.low;
+        if (change.diff !== undefined) g.car.diffLock = change.diff;
+        if (change.cruise !== undefined) cruise = change.cruise;
+        if (change.look !== undefined) look = change.look;
+        changedAt = at;
+      }
+      res.changed = changedAt;
       if (at >= total - 2) return { done: true, ...res };
       if (mode === 'drive' && steps - bestStep > giveUp * 60) {
         stalls++;
@@ -144,3 +155,30 @@ window.__ubinRound = (i) => {
 };
 window.__ubinObstacles = () =>
   window.game.course.trail.obstacles.map((o) => ({ kind: o.kind, s0: +o.s0.toFixed(1), s1: +o.s1.toFixed(1), tries: o.tries, open: o.open, done: o.done, side: o.side }));
+/** Points along the route from s0 to s1, `off` metres to its left (negative: right). */
+window.__ubinRouteOff = (s0, s1, off) => {
+  const t = window.game.course.trail;
+  const R = t.route;
+  const out = [];
+  for (let s = Math.max(0, s0); s <= Math.min(R.length, s1); s += 1) {
+    const p = R.at(s);
+    // (Weaving through rock spurs where there are some.)
+    const o = t.lineAt ? t.lineAt(s, off) : off;
+    // Left of travel, with x east and z south: (tz, -tx).
+    out.push([p.x + p.tz * o, p.z - p.tx * o]);
+  }
+  return out;
+};
+
+/**
+ * The bot along the route from s0 to s1 with a kit from ubin.cjs: `off`
+ * metres left of it (and `runUp` metres more before s0), and a change of
+ * kit at route distance `change.s` (a clashing setup), if any.
+ */
+window.__ubinKitDrive = (s0, s1, kit) => {
+  const from = s0 - (kit.runUp ?? 0);
+  const pts = window.__ubinRouteOff(from, s1, kit.off ?? 0);
+  const opt = { ...kit };
+  if (kit.change) opt.change = { ...kit.change, at: Math.max(1, Math.round(kit.change.s - Math.max(0, from))) };
+  return window.__ubinDrive(pts, opt);
+};

@@ -138,6 +138,12 @@ export class TileStreamer {
     if (name === 'far') this.cover(key, false);
   }
 
+  /** Whether a tile's layer is built (and not still building). */
+  built(layer: LayerName, i: number, j: number): boolean {
+    const l = this.loaded.get(`${layer}:${i},${j}`);
+    return !!l && !l.job;
+  }
+
   /** Show or hide the horizon tile under a finished (or removed) far tile. */
   private cover(farKey: string, covered: boolean) {
     const h = this.loaded.get('horizon' + farKey.slice(3));

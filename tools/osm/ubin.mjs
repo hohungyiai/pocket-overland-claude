@@ -27,7 +27,7 @@ const KX = 111320 * Math.cos((LAT0 * Math.PI) / 180);
 const KZ = 110574;
 // The part of the world that is built (metres). Everything outside is sea
 // or far scenery.
-const BOUNDS = { minX: -1800, maxX: 2400, minZ: -1400, maxZ: 1400 };
+const BOUNDS = { minX: -1800, maxX: 4500, minZ: -1400, maxZ: 1400 };
 
 const xy = (p) => [+((p.lon - LON0) * KX).toFixed(1), +(-(p.lat - LAT0) * KZ).toFixed(1)];
 
@@ -142,6 +142,10 @@ for (const e of els) {
   for (const ring of joinPieces(pieces)) {
     const r = simplifyRing(ring, 1.5);
     if (r.length < 4 || !inBox(r, 400)) continue;
+    // (Not the mainland: Singapore's own island, of which only a piece of
+    // its outline is in the data, would join up wrong.)
+    const xs = r.map((p) => p[0]);
+    if (Math.max(...xs) - Math.min(...xs) > 15000) continue;
     land.push({ name: t.name ?? '', pts: r });
   }
 }

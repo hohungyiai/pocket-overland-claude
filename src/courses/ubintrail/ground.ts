@@ -316,13 +316,17 @@ export class UbinGround {
 
   /** Ground height, roads and trail obstacles included. */
   heightAt(x: number, z: number) {
+    const y = this.baseAt(x, z);
+    return this.shape ? y + this.shape(x, z) : y;
+  }
+  /** Ground height with the roads, without the trail obstacles' shapes. */
+  baseAt(x: number, z: number) {
     let y = this.natural(x, z);
     const r = this.road(x, z);
     if (r) {
       const shoulder = this.roadInfo[r.road].kind === 'path' ? 3 : 6;
       y = lerp(r.h, y, smoothstep(r.half, r.half + shoulder, r.d));
     }
-    if (this.shape) y += this.shape(x, z);
     return y;
   }
 

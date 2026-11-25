@@ -6,6 +6,26 @@ export interface Surface {
   grip: number;
   /** Rolling resistance, applied as a light per-wheel brake. */
   drag: number;
+  /**
+   * Off the road (trails only; no road surface sets it). Here the car's
+   * differential works as a real one does: with it open, both wheels on an
+   * axle get only what the weaker one can grip, so a light or lifted wheel
+   * takes the axle's drive away. Locking the diff gives each wheel its own.
+   */
+  offroad?: boolean;
+  /**
+   * Off the road only: loose rock and gravel that knocks the front wheels
+   * about at speed (0..1). Above a walking pace the steering is jerked off
+   * line at random, harder the faster the car goes and the more it is
+   * already being steered; slow, it stays calm.
+   */
+  rough?: number;
+  /** Soft ground the tyres sink into: rolling resistance as a share of the wheel's load. */
+  sink?: number;
+  /** Water to wade through: it holds the car back with the square of its speed (a bow wave), so charging it does not work. */
+  wade?: number;
+  /** Off the road only: the speed (m/s) below which `wade` does nothing (0 if unset): loose gravel ploughs in only when hit fast. */
+  wadeFrom?: number;
 }
 
 export const SURFACES = {
@@ -52,6 +72,8 @@ export interface Course {
   update?(time: number, dt: number, camera?: { x: number; z: number }, player?: { x: number; z: number }): void;
   /** Nearest safe place to put the car back (on a road, out of the water), if the course knows one. */
   safeSpot?(x: number, z: number): { x: number; z: number; yaw: number } | null;
+  /** On or beside a trail obstacle: where to start it again (a little before it, facing along the trail). */
+  retryAt?(x: number, z: number): { x: number; z: number; yaw: number; label: string } | null;
   /** Height of whatever the car can stand on at (x, z) near height y: a bridge deck, else the ground. */
   surfaceY?(x: number, z: number, y: number): number;
   /** Load the world around a point right away (before placing the car there). */
@@ -66,6 +88,12 @@ export interface Course {
    * of the obstacle you are at. (Courses with obstacles.)
    */
   coach?(c: { x: number; z: number; speed: number; low: boolean; diff: boolean; stuck: number }): { tip?: string; say?: string; zone?: string } | null;
+  /** Ground that remembers: how worn by spinning wheels at (x, z), 0..1 (trails with ruts). */
+  rutAt?(x: number, z: number): number;
+  /** A wheel spinning on soft ground at (x, z) wears it by `amount`. */
+  dig?(x: number, z: number, amount: number): void;
+  /** Fresh ground again (on Try again). */
+  resetRuts?(): void;
   /** Petrol stations: where fuel is used and where you fill up (fuel.ts). */
   fuel?: import('../fuel').Station[];
   /** Places where you can make camp (rest and save). */

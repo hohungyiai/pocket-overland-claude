@@ -7,7 +7,8 @@ import * as D from '../detail';
 import type { ArtStyle } from '../detail';
 import { SURFACES, type Course, type MapData, type Surface, type XZ } from '../types';
 import { fill, MASK, UbinGround, type UbinMap } from './ground';
-import { UbinTrail } from './trail';
+import { UbinTrail, type TrailDef } from './trail';
+import { KETAM } from './trails';
 
 type Rapier = typeof RAPIER_NS;
 
@@ -22,8 +23,16 @@ const SEED = 1965;
 const NEAR_STEP = 2; // metres between ground points (1 m on obstacle tiles)
 
 const LANE: Surface = { name: 'Lane', grip: 0.98, drag: 0.8 };
-const TRACK: Surface = { name: 'Dirt track', grip: 0.82, drag: 1.8 };
-const FOREST: Surface = { name: 'Forest floor', grip: 0.72, drag: 3.5 };
+const TRACK: Surface = { name: 'Dirt track', grip: 0.82, drag: 1.8, offroad: true };
+// The signposted ways round: an easy, well-worn track (a road as far as
+// the car is concerned: the diff does not matter on it).
+const WAY: Surface = { name: 'Way round', grip: 0.85, drag: 1.6 };
+const FOREST: Surface = { name: 'Forest floor', grip: 0.72, drag: 3.5, offroad: true };
+// (Ubin's own copies of the shared beach, wetland and grass: off the road,
+// so the diff and soft ground work as they do on the trails.)
+const BEACH: Surface = { ...SURFACES.sand, offroad: true, sink: 0.08 };
+const MUD: Surface = { ...SURFACES.mud, offroad: true, sink: 0.12 };
+const GRASS: Surface = { ...SURFACES.grass, offroad: true };
 
 interface Tree {
   x: number;
@@ -34,18 +43,29 @@ interface Tree {
   kind: 'rain' | 'almond' | 'palm' | 'casuarina' | 'mangrove' | 'shrub';
 }
 
-export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: Rapier, opts: { style?: ArtStyle } = {}): Promise<Course> {
+export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.World, RAPIER: Rapier, opts: { style?: ArtStyle } = {}, def: TrailDef = KETAM): Promise<Course> {
   const detailed = opts.style !== 'stylized';
   const map: UbinMap = await (await fetch(UBIN_MAP)).json();
-  const trail = new UbinTrail(map);
-  // The ways round the obstacles are tracks too (for the ground and the map).
-  trail.obstacles.forEach((o, i) =>
-    map.roads.push({ id: -1 - i, name: 'Way round', kind: 'track', hw: 'track', surface: 'dirt', width: 3.2, nodes: [], pts: o.bypass.pts }),
-  );
+  const trail = new UbinTrail(map, def);
+  // Paths the trail (or its detour) follows are driven: a track's width.
+  for (const r of map.roads) {
+    if (r.kind !== 'path' || r.pts.length < 2) continue;
+    const on = (l: { nearest(x: number, z: number, r: number): { d: number } | null } | null) => !!l && r.pts.every(([x, z]) => (l.nearest(x, z, 6)?.d ?? 99) < 2);
+    if (on(trail.route) || on(trail.detour)) Object.assign(r, { kind: 'track', width: 3.4 });
+  }
+  // The ways round the obstacles are tracks too (for the ground and the
+  // map). (A hidden detour is on the map's own tracks and paths already.)
+  if (def.wayRound === 'gate')
+    trail.obstacles.forEach((o, i) => {
+      if (o.gate) map.roads.push({ id: -1 - i, name: 'Way round', kind: 'track', hw: 'track', surface: 'dirt', width: 3.2, nodes: [], pts: o.bypass.pts });
+    });
   const ground = new UbinGround(map);
   ground.shape = (x, z) => trail.shape(x, z);
+  trail.base = (x, z) => ground.baseAt(x, z);
   const B = map.bounds;
-  const heightAt = (x: number, z: number) => ground.heightAt(x, z);
+  // (Counted: how many times the build asks, the most of its load time; see the 'load' check.)
+  let heightAsks = 0;
+  const heightAt = (x: number, z: number) => (heightAsks++, ground.heightAt(x, z));
 
   // Building footprints, for keeping trees off them.
   const houses = new Uint8Array(ground.w * ground.h);
@@ -61,15 +81,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const r = ground.road(x, z, 6);
     if (r && r.d < r.half + 0.4) {
       const kind = map.roads[r.road].kind;
-      return kind === 'lane' ? LANE : TRACK;
+      return kind === 'lane' ? LANE : map.roads[r.road].name === 'Way round' ? WAY : TRACK;
     }
     const m = ground.maskAt(x, z);
-    if (m & MASK.beach) return SURFACES.sand;
-    if (m & MASK.wetland) return SURFACES.mud;
-    return valueNoise(x / 20, z / 20, SEED + 3) > 0.55 ? FOREST : SURFACES.grass;
+    if (m & MASK.beach) return BEACH;
+    if (m & MASK.wetland) return MUD;
+    return valueNoise(x / 20, z / 20, SEED + 3) > 0.55 ? FOREST : GRASS;
   }
 
   // ---------- Colours ----------
+  const EARTH = new THREE.Color(0.33, 0.19, 0.11);
   const C = {
     grass: new THREE.Color(0.25, 0.45, 0.16),
     lush: new THREE.Color(0.17, 0.36, 0.12),
@@ -79,12 +100,20 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     lane: new THREE.Color(0.55, 0.55, 0.52),
     sand: new THREE.Color(0.9, 0.82, 0.62),
     mud: new THREE.Color(0.3, 0.27, 0.18),
+    wetMud: new THREE.Color(0.17, 0.13, 0.08),
+    puddle: new THREE.Color(0.1, 0.1, 0.08),
     rock: new THREE.Color(0.55, 0.53, 0.5),
+    gravel: new THREE.Color(0.4, 0.35, 0.28),
     bed: new THREE.Color(0.4, 0.38, 0.3),
     sea: new THREE.Color(0.42, 0.47, 0.4),
+    laterite: new THREE.Color(0.6, 0.3, 0.16),
+    granite: new THREE.Color(0.6, 0.58, 0.55),
   };
   const col = new THREE.Color();
-  function colorAt(x: number, z: number, y: number, out: THREE.Color) {
+  // (y may be given as a way to work it out, asked only where the colour
+  // depends on it: by the shore and in a creek's cut.)
+  function colorAt(x: number, z: number, yIn: number | (() => number), out: THREE.Color) {
+    const yOf = () => (typeof yIn === 'number' ? yIn : yIn());
     const shore = ground.shore.at(x, z);
     if (shore < -1) return out.copy(C.sea);
     const m = ground.maskAt(x, z);
@@ -94,7 +123,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     if (m & MASK.wetland) out.lerp(C.mud, 0.6);
     const lvl = ground.waterAt(x, z);
     if (lvl !== null || ground.wet.at(x, z) > -2.5) out.copy(ground.deep[ground.wetId[ground.cellAt(x, z)]] ? C.rock : C.bed);
-    if (m & MASK.beach || (shore < 6 && y < 1.4)) out.lerp(C.sand, m & MASK.beach ? 1 : 0.7);
+    if (m & MASK.beach || (shore < 6 && yOf() < 1.4)) out.lerp(C.sand, m & MASK.beach ? 1 : 0.7);
     const r = ground.road(x, z, 6);
     if (r) {
       const kind = map.roads[r.road].kind;
@@ -104,7 +133,27 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       else out.lerp(C.lane, edge);
     }
     const o = trail.surface(x, z);
-    if (o) out.lerp(o.name === 'Soft sand' ? C.sand : o.name === 'Loose gravel' ? C.rock : C.dirt, 0.7);
+    if (o) {
+      if (/creek|plank/i.test(o.name)) {
+        // A creek's channel and a bridge's gully: bare dark earth, wet and
+        // darker the deeper it is cut, so the cut reads from the track.
+        // (Redder than the sandy track's colour, so the ground shader
+        // draws it as earth, not sand ripples.)
+        out.lerp(C.dirt, 0.75);
+        const cut = trail.base ? smoothstep(0.15, 1.1, trail.base(x, z) - yOf()) : 0;
+        out.lerp(EARTH, cut);
+        if (/creek/i.test(o.name)) out.lerp(C.wetMud, 0.35 * cut);
+      } else if (/mud|ford|slick|bog/i.test(o.name)) {
+        // Wet, dark mud, with darker puddles in the ruts.
+        out.lerp(C.wetMud, 0.92);
+        if (valueNoise(x / 2.2, z / 2.2, SEED + 11) > 0.62) out.lerp(C.puddle, 0.6);
+      } else if (/laterite/i.test(o.name)) {
+        // Red laterite clay, darker where it is worn low.
+        out.lerp(C.laterite, 0.85);
+        if (valueNoise(x / 1.6, z / 1.6, SEED + 12) > 0.6) out.lerp(C.dirt, 0.4);
+      } else if (/granite/i.test(o.name)) out.lerp(C.granite, 0.8 + 0.15 * valueNoise(x / 1.3, z / 1.3, SEED + 13));
+      else out.lerp(/sand/i.test(o.name) ? C.sand : /rock|ledge|gravel/i.test(o.name) ? C.gravel : C.dirt, 0.75);
+    }
     return out;
   }
 
@@ -117,7 +166,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     groundMat.bumpMap = tex;
     groundMat.bumpScale = 1.6;
     groundMat.color.setScalar(0.82);
-    D.patchGroundMaterial(groundMat);
+    D.patchGroundMaterial(groundMat, true);
   }
   // Tiles with an obstacle get a finer ground (the washout's humps).
   const fineTile = new Set<string>();
@@ -125,6 +174,13 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     for (const [x, z] of o.line.pts.concat(o.bypass.pts))
       for (const dx of [-20, 0, 20])
         for (const dz of [-20, 0, 20]) fineTile.add(`${Math.floor((x + dx) / TILE)},${Math.floor((z + dz) / TILE)}`);
+  // Tiles under a fine strip (see trail.fineStrips()).
+  const fineTiles = new Set<string>();
+  for (const { o, a, b } of trail.fineStrips())
+    for (let s = a - 8; s <= b + 8; s += 4) {
+      const a = trail.fineAt(o, s, 0);
+      for (const dx of [-14, 0, 14]) for (const dz of [-14, 0, 14]) fineTiles.add(`${Math.floor((a.x + dx) / TILE)},${Math.floor((a.z + dz) / TILE)}`);
+    }
   interface Patch {
     w: number;
     h: number;
@@ -147,11 +203,15 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     const uvs = new Float32Array(w * h * 2);
     let top = -Infinity;
     let t0 = performance.now();
+    // (Not the far-off horizon's ground: its points are 10 m apart, too
+    // coarse to sink under a strip without dragging the land around down.)
+    const sunk = step <= NEAR_STEP && fineTiles.has(`${ti},${tj}`);
     for (let j = 0; j < h; j++) {
       for (let i = 0; i < w; i++) {
         const x = x0 + i * step;
         const z = z0 + j * step;
-        const y = heightAt(x, z);
+        // (Under a fine strip's middle the tile's ground is sunk: the strip is the ground there.)
+        const y = heightAt(x, z) - (sunk ? (trail.fineCore(x, z) ? 3 : trail.fineSink(x, z)) : 0);
         top = Math.max(top, y);
         const k = j * w + i;
         pos[k * 3] = x;
@@ -647,6 +707,633 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     scene.add(ponds);
   }
 
+  // Fords: brown water across the track, level with the ground either side.
+  // The water fills the hollow as water would: every bit of ground below its
+  // level that joins up with the ford's line (a ditch beside it too), and its
+  // edge is where the ground comes up to meet it, so it never hangs over
+  // lower ground nor runs into the bank. (Worked out on a 0.25 m grid; each
+  // edge point slid to where the ground crosses the water level.)
+  const waterEdges: { x: number; z: number; y: number }[] = [];
+  const puddleRims: { x: number; z: number; y: number; lo: number }[] = [];
+  for (const o of trail.obstacles.flatMap((ob) => ob.parts)) {
+    if (o.kind !== 'ford' && o.kind !== 'creek' && o.kind !== 'flooded') continue;
+    const len = o.to - o.from;
+    // (A flooded track: brown tide water a hand deep over its level floor,
+    // thick enough to hide the holes.)
+    const flood = o.kind === 'flooded';
+    // (A creek: a little water along the bottom of its channel, which
+    // crosses the track at the middle of its part.)
+    const creek = o.kind === 'creek';
+    const a = o.line.at(creek || flood ? len / 2 : 0);
+    const lvl = flood ? heightAt(a.x + a.tz * 2.8, a.z - a.tx * 2.8) + (o.p.water ?? 0.3) : heightAt(a.x, a.z) + (creek ? (o.p.water ?? 0.3) : -0.3);
+    const C = 0.25;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let s = 0; s <= len; s += 2) {
+      const p = o.line.at(s);
+      x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z);
+    }
+    x0 -= 30; x1 += 30; z0 -= 30; z1 += 30;
+    const nx = Math.ceil((x1 - x0) / C);
+    const nz = Math.ceil((z1 - z0) / C);
+    const W = nx + 1;
+    // (The ground's height at a grid point, worked out only when the fill
+    // or its edge first asks: most of the grid is dry and never looked at.)
+    const gm = new Float32Array(W * (nz + 1)).fill(NaN);
+    const gAt = (k: number) => {
+      let h = gm[k];
+      if (h !== h) gm[k] = h = heightAt(x0 + (k % W) * C, z0 + Math.floor(k / W) * C);
+      return h;
+    };
+    // Wet cells: all four corners under the water (a hair over, at most),
+    // joined to the ford's line.
+    const wetOk = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < nz && gAt(j * W + i) < lvl + 0.04 && gAt(j * W + i + 1) < lvl + 0.04 && gAt((j + 1) * W + i) < lvl + 0.04 && gAt((j + 1) * W + i + 1) < lvl + 0.04;
+    const wet = new Uint8Array(nx * nz);
+    const stack: number[] = [];
+    for (let s = creek ? len / 2 - 1 : flood ? 10 : 0; s <= (creek ? len / 2 + 1 : flood ? len - 10 : len); s += 0.5) {
+      const p = o.line.at(s);
+      const i = Math.floor((p.x - x0) / C);
+      const j = Math.floor((p.z - z0) / C);
+      if (wetOk(i, j) && !wet[j * nx + i]) {
+        wet[j * nx + i] = 1;
+        stack.push(i, j);
+      }
+    }
+    while (stack.length) {
+      const j = stack.pop()!;
+      const i = stack.pop()!;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const a2 = i + di;
+        const b2 = j + dj;
+        if (wetOk(a2, b2) && !wet[b2 * nx + a2]) {
+          wet[b2 * nx + a2] = 1;
+          stack.push(a2, b2);
+        }
+      }
+    }
+    // The mesh: a quad per wet cell, corners shared.
+    const vid = new Int32Array(W * (nz + 1)).fill(-1);
+    const P: number[] = [];
+    const I: number[] = [];
+    const corner = (i: number, j: number) => {
+      const k = j * W + i;
+      if (vid[k] < 0) {
+        vid[k] = P.length / 3;
+        P.push(x0 + i * C, lvl, z0 + j * C);
+      }
+      return vid[k];
+    };
+    const isWet = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < nz && wet[j * nx + i] === 1;
+    for (let j = 0; j < nz; j++)
+      for (let i = 0; i < nx; i++) {
+        if (!wet[j * nx + i]) continue;
+        const v00 = corner(i, j), v10 = corner(i + 1, j), v01 = corner(i, j + 1), v11 = corner(i + 1, j + 1);
+        I.push(v00, v01, v10, v10, v01, v11);
+      }
+    // The edge: corners not wholly inside the water, each slid out towards
+    // the higher ground next to it, to where the ground meets the water.
+    for (let j = 0; j <= nz; j++)
+      for (let i = 0; i <= nx; i++) {
+        const k = j * W + i;
+        if (vid[k] < 0) continue;
+        if (isWet(i - 1, j - 1) && isWet(i, j - 1) && isWet(i - 1, j) && isWet(i, j)) continue;
+        let bx = x0 + i * C;
+        let bz = z0 + j * C;
+        const gv = gAt(k);
+        let best = -Infinity;
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+          const a2 = i + di;
+          const b2 = j + dj;
+          if (a2 < 0 || b2 < 0 || a2 > nx || b2 > nz) continue;
+          const gn = gAt(b2 * W + a2);
+          if (gn <= lvl || gn <= best) continue;
+          best = gn;
+          const t = clamp((lvl - gv) / (gn - gv), 0, 0.95);
+          bx = x0 + (i + di * t) * C;
+          bz = z0 + (j + dj * t) * C;
+        }
+        const v = vid[k];
+        P[v * 3] = bx;
+        P[v * 3 + 2] = bz;
+        waterEdges.push({ x: bx, z: bz, y: lvl });
+      }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+    // (World-placed texture coordinates, so the ripples show and catch the sky.)
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(P.flatMap((_, k) => (k % 3 === 1 ? [] : [P[k] / 6])), 2));
+    geo.setIndex(I);
+    geo.computeVertexNormals();
+    if (geo.attributes.normal.getY(0) < 0) geo.setIndex(I.map((_, i) => I[i - (i % 3) + [0, 2, 1][i % 3]]));
+    geo.computeVertexNormals();
+    const ford = new THREE.Mesh(geo, creek ? waterMat(0x3d6a70, 0.85, 2) : flood ? waterMat(0x5e5234, 0.97, 1) : waterMat(0x5b5a3e, 0.93, 2));
+    ford.receiveShadow = true;
+    scene.add(ford);
+  }
+
+  const BLUR = [[0, 0], [0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]];
+  const tmpCol = new THREE.Color();
+  // ---------- Fine strips: the ground of deep ruts, notches, ditches and ledges ----------
+  // Every 0.5 m along and 0.25 m across, drawn and solid (the tiles' own
+  // ground is sunk under its middle): wheel-width ruts and a notch's crack
+  // need finer ground than the tiles have.
+  const fineMeshes: THREE.Mesh[] = [];
+  // (The tiles' drawn ground as if not sunk, for the checks.)
+  let fineTileGround: ((x: number, z: number) => number) | null = null;
+  {
+    const mat = groundMat.clone();
+    // (A clone keeps the textures but not the ground's shader patch, which
+    // blends them by the ground's colour: without it the detail texture
+    // shows raw, as stripes.)
+    if (detailed) D.patchGroundMaterial(mat, true);
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -1;
+    mat.polygonOffsetUnits = -2;
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const HALF = UbinTrail.FINE_HALF;
+    // The tiles' drawn ground (its points 2 m apart, in two triangles a
+    // square, as gridIdx lays them) at a point, as if it were not sunk.
+    // (The tiles' points' heights, remembered: asked for many times a point.)
+    const nodeMemo = new Map<number, number>();
+    const nodeH = (X: number, Z: number) => {
+      const key = (Math.round(X / NEAR_STEP) + 50000) * 100000 + Math.round(Z / NEAR_STEP) + 50000;
+      let h = nodeMemo.get(key);
+      if (h === undefined) nodeMemo.set(key, (h = heightAt(X, Z)));
+      return h;
+    };
+    const tileGround = (x: number, z: number) => {
+      const x0 = Math.max(B.minX, Math.floor(x / TILE) * TILE);
+      const z0 = Math.max(B.minZ, Math.floor(z / TILE) * TILE);
+      const i = Math.floor((x - x0) / NEAR_STEP);
+      const j = Math.floor((z - z0) / NEAR_STEP);
+      const fx = (x - x0) / NEAR_STEP - i;
+      const fz = (z - z0) / NEAR_STEP - j;
+      const X = x0 + i * NEAR_STEP;
+      const Z = z0 + j * NEAR_STEP;
+      const h10 = nodeH(X + NEAR_STEP, Z);
+      const h01 = nodeH(X, Z + NEAR_STEP);
+      if (fx + fz <= 1) {
+        const h00 = nodeH(X, Z);
+        return h00 + fx * (h10 - h00) + fz * (h01 - h00);
+      }
+      const h11 = nodeH(X + NEAR_STEP, Z + NEAR_STEP);
+      return h11 + (1 - fx) * (h01 - h11) + (1 - fz) * (h10 - h11);
+    };
+    // The tiles' drawn shading there (their vertex normals: each point's six
+    // triangles' slopes summed, as three.js reckons them, then laid across
+    // the triangle as tileGround lays the heights).
+    const S2 = NEAR_STEP;
+    const nodeN = (X: number, Z: number, out: number[]) => {
+      const h = (di: number, dj: number) => nodeH(X + di * S2, Z + dj * S2);
+      const h0 = h(0, 0);
+      // Cell (i,j) splits into (00,10,01) and (10,11,01); with gx, gz the
+      // slopes across x and z of a face, its normal is (-gx, 1, -gz).
+      let gx = 0, gz = 0;
+      // the cell to the +x+z: face (00,10,01), the point as its 00
+      gx += h(1, 0) - h0; gz += h(0, 1) - h0;
+      // the cell to the -x+z: the point is its 10: faces (00,10,01) and (10,11,01)
+      gx += h0 - h(-1, 0); gz += h(-1, 1) - h(-1, 0);
+      gx += h(0, 1) - h(-1, 1); gz += h(0, 1) - h0;
+      // the cell to the +x-z: the point is its 01: faces (00,10,01) and (10,11,01)
+      gx += h(1, -1) - h(0, -1); gz += h0 - h(0, -1);
+      gx += h(1, 0) - h0; gz += h(1, 0) - h(1, -1);
+      // the cell to the -x-z: the point is its 11: face (10,11,01)
+      gx += h0 - h(-1, 0); gz += h0 - h(0, -1);
+      const l = Math.hypot(gx / S2, 6, gz / S2);
+      out[0] = -gx / S2 / l; out[1] = 6 / l; out[2] = -gz / S2 / l;
+    };
+    const nA = [0, 0, 0], nB = [0, 0, 0], nC = [0, 0, 0];
+    const tileNormal = (x: number, z: number, out: number[]) => {
+      const x0 = Math.max(B.minX, Math.floor(x / TILE) * TILE);
+      const z0 = Math.max(B.minZ, Math.floor(z / TILE) * TILE);
+      const i = Math.floor((x - x0) / S2);
+      const j = Math.floor((z - z0) / S2);
+      const fx = (x - x0) / S2 - i;
+      const fz = (z - z0) / S2 - j;
+      const X = x0 + i * S2;
+      const Z = z0 + j * S2;
+      nodeN(X + S2, Z, nB);
+      nodeN(X, Z + S2, nC);
+      let wa: number, wb: number, wc: number;
+      if (fx + fz <= 1) { nodeN(X, Z, nA); wa = 1 - fx - fz; wb = fx; wc = fz; }
+      else { nodeN(X + S2, Z + S2, nA); wa = fx + fz - 1; wb = 1 - fz; wc = 1 - fx; }
+      for (let c = 0; c < 3; c++) out[c] = nA[c] * wa + nB[c] * wb + nC[c] * wc;
+      const l = Math.hypot(out[0], out[1], out[2]);
+      out[0] /= l; out[1] /= l; out[2] /= l;
+    };
+    fineTileGround = tileGround;
+    for (const { o, a: sA, b: sB } of trail.fineStrips()) {
+      const nu = Math.round((sB - sA) / 0.5) + 1;
+      // (Across: every 0.25 m over the middle 8 m, every half metre out to the
+      // edges, fine enough to follow the tiles' own creases where it lies on them.)
+      const offs: number[] = [];
+      // (And every quarter metre over its last three and a half metres, where
+      // the tiles' ground under it is not let down at all.)
+      for (let v = -HALF; v < -HALF + 3.5; v += 0.25) offs.push(v);
+      for (let v = -HALF + 3.5; v < -4; v += 0.5) offs.push(v);
+      for (let v = -4; v < 4; v += 0.25) offs.push(v);
+      for (let v = 4; v < HALF - 3.5; v += 0.5) offs.push(v);
+      for (let v = HALF - 3.5; v <= HALF + 1e-6; v += 0.25) offs.push(v);
+      const nv = offs.length;
+      const pos = new Float32Array(nu * nv * 3);
+      const solid = new Float32Array(nu * nv * 3);
+      const clr = new Float32Array(nu * nv * 3);
+      const uvs = new Float32Array(nu * nv * 2);
+      const onTiles = new Uint8Array(nu * nv);
+      const tOf = new Float32Array(nu * nv);
+      for (let i = 0; i < nu; i++) {
+        const u = sA + ((sB - sA) * i) / (nu - 1);
+        // (Narrower on the inside of a tight bend: see trail.fineHalf.)
+        const hl = trail.fineHalf(o, u, 1);
+        const hr = trail.fineHalf(o, u, -1);
+        for (let j = 0; j < nv; j++) {
+          // (The middle 8 m always as it is; only the outer band narrows on a bend.)
+          const hh = offs[j] > 0 ? hl : hr;
+          const off = Math.abs(offs[j]) <= 4 ? offs[j] : Math.sign(offs[j]) * (4 + ((Math.abs(offs[j]) - 4) * (hh - 4)) / (HALF - 4));
+          const { x, z } = trail.fineAt(o, u, off);
+          const y = heightAt(x, z);
+          const k = i * nv + j;
+          // (The solid ground at the same place across, square to the line itself.)
+          // (Where the two lie within a millimetre, as on a straight, the one height.)
+          const sp = trail.fineAtSolid(o, u, off);
+          solid.set([sp.x, Math.abs(sp.x - x) + Math.abs(sp.z - z) < 1e-3 ? y : heightAt(sp.x, sp.z), sp.z], k * 3);
+          // Drawn: the ground itself in the middle, easing out to the
+          // tiles' own drawn ground at the edges and ends, so the strip meets
+          // the tiles with no step, gap or flap (the solid ground keeps the
+          // true heights, the tiles' as much as the strip's).
+          // (How far in it is reckoned as the tiles reckon it, so it keeps its own
+          // shape only where the tiles' ground under it is sunk: see trail.fineCore.)
+          const f = trail.fineIn(o, sA, sB, x, z);
+          const t = f ? 1 - smoothstep(UbinTrail.FINE_RIM, UbinTrail.FINE_RIM + 2, f.edge) * smoothstep(3, 6, f.end) : 1;
+          pos.set([x, t > 0 ? y + (tileGround(x, z) - y) * t : y, z], k * 3);
+          onTiles[k] = t > 0.999 ? 1 : 0;
+          tOf[k] = t;
+          uvs.set([x / DETAIL_M, z / DETAIL_M], k * 2);
+          // (Its colour softened over about a metre and a half, as soft as
+          // the tiles' own: a kind of ground's edge, or the strip's own end,
+          // no sawtooth at the strip's finer spacing.)
+          col.setRGB(0, 0, 0);
+          // (Not where it lies wholly on the tiles' ground: their colour alone, below.)
+          if (t < 1) for (const [ax, az] of BLUR) {
+            colorAt(x + ax, z + az, ax || az ? () => heightAt(x + ax, z + az) : y, tmpCol);
+            col.r += tmpCol.r / BLUR.length;
+            col.g += tmpCol.g / BLUR.length;
+            col.b += tmpCol.b / BLUR.length;
+          }
+          // (Out where it lies on the tiles' own ground, their own colour, unsoftened,
+          // so where the two meet neither shows as a patch of another tint.)
+          if (t > 0) {
+            colorAt(x, z, y + (tileGround(x, z) - y) * t, tmpCol);
+            col.r += (tmpCol.r - col.r) * t;
+            col.g += (tmpCol.g - col.g) * t;
+            col.b += (tmpCol.b - col.b) * t;
+          }
+          const v = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
+          clr.set([col.r * v, col.g * v, col.b * v], k * 3);
+        }
+      }
+      const idx = gridIdx(nv, nu);
+      // Where it lies on the tiles' own ground its corners sit on that ground,
+      // but between them its flat triangles cut across the tiles' creases,
+      // where the tiles' coarser ground would poke through as dark wedges and
+      // pale triangles. So each such triangle is lifted (by its corners, 6 cm at most,
+      // never so far as to stand up as a spike) until it clears the
+      // tiles' ground at points all over it.
+      const LIFT_MAX = 0.06;
+      // (Its edge and end rows stay on the tiles' ground, and the lift
+      // allowed grows from them by 6 cm a metre: a row lifted hard next to
+      // one held down would stand as a thin ridge along the edge.)
+      const capOf = (k: number) => {
+        const i = Math.floor(k / nv);
+        const j = k % nv;
+        const d = Math.min(HALF - Math.abs(offs[j]), i * ((sB - sA) / (nu - 1)), (nu - 1 - i) * ((sB - sA) / (nu - 1)));
+        return Math.min(LIFT_MAX, 0.06 * d);
+      };
+      const SAMPLES = [[1 / 3, 1 / 3], [0.6, 0.2], [0.2, 0.6], [0.2, 0.2], [0.45, 0.45], [0.1, 0.45], [0.45, 0.1], [0.8, 0.1], [0.1, 0.8],
+        // (and along its sides, where a crease crosses an end row)
+        [0.5, 0.5], [0.5, 0], [0, 0.5], [0.25, 0.75], [0.75, 0.25], [0.25, 0], [0.75, 0], [0, 0.25], [0, 0.75]];
+      const lifted = new Float32Array(nu * nv);
+      for (let pass = 0; pass < 8; pass++) {
+        const lift = new Float32Array(nu * nv);
+        for (let q = 0; q < idx.length; q += 3) {
+          const A = idx[q], Bv = idx[q + 1], Cv = idx[q + 2];
+          if (!onTiles[A] || !onTiles[Bv] || !onTiles[Cv]) continue;
+          for (const [l1, l2] of SAMPLES) {
+            const l3 = 1 - l1 - l2;
+            const x = pos[A * 3] * l1 + pos[Bv * 3] * l2 + pos[Cv * 3] * l3;
+            const z = pos[A * 3 + 2] * l1 + pos[Bv * 3 + 2] * l2 + pos[Cv * 3 + 2] * l3;
+            const yS = pos[A * 3 + 1] * l1 + pos[Bv * 3 + 1] * l2 + pos[Cv * 3 + 1] * l3;
+            const short = tileGround(x, z) + 0.004 - yS;
+            if (short <= 0) continue;
+            // (Each corner that may move by the shortfall itself, never more:
+            // spread by how much a corner counts there it would spike up as a
+            // dark shard beside an edge row; and none ever more than LIFT_MAX
+            // in all.)
+            for (const v of [A, Bv, Cv]) lift[v] = Math.max(lift[v], Math.min(short, capOf(v) - lifted[v]));
+          }
+        }
+        let any = false;
+        for (let k = 0; k < lift.length; k++)
+          if (lift[k] > 0) {
+            pos[k * 3 + 1] += lift[k];
+            lifted[k] += lift[k];
+            any = true;
+          }
+        if (!any) break;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(clr, 3));
+      if (detailed) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geo.setIndex(new THREE.BufferAttribute(idx, 1));
+      geo.computeVertexNormals();
+      // Shaded as the tiles are where it lies on them, easing to its own
+      // shading inwards: its own edge triangles slope a little otherwise than
+      // the tiles' 2 m ones, which would show as a thin line along its edge.
+      const nrm = geo.attributes.normal.array as Float32Array;
+      const tn = [0, 0, 0];
+      for (let k = 0; k < nu * nv; k++) {
+        const t = tOf[k];
+        if (t <= 0) continue;
+        tileNormal(pos[k * 3], pos[k * 3 + 2], tn);
+        const nx = nrm[k * 3] + (tn[0] - nrm[k * 3]) * t;
+        const ny = nrm[k * 3 + 1] + (tn[1] - nrm[k * 3 + 1]) * t;
+        const nz = nrm[k * 3 + 2] + (tn[2] - nrm[k * 3 + 2]) * t;
+        const l = Math.hypot(nx, ny, nz);
+        nrm[k * 3] = nx / l; nrm[k * 3 + 1] = ny / l; nrm[k * 3 + 2] = nz / l;
+      }
+      geo.computeBoundingSphere();
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.receiveShadow = true;
+      // (The tiles it lies on.)
+      const tiles = new Set<string>();
+      for (let k = 0; k < pos.length; k += 3) tiles.add(`${Math.floor(pos[k] / TILE)},${Math.floor(pos[k + 2] / TILE)}`);
+      mesh.userData.tiles = [...tiles].map((t) => t.split(',').map(Number));
+      scene.add(mesh);
+      fineMeshes.push(mesh);
+      world.createCollider(RAPIER.ColliderDesc.trimesh(solid, idx).setFriction(0.9), body);
+    }
+  }
+
+  // ---------- The drops' rock lips (built with the props below) ----------
+  // Heights along each lip: its top on the ground above the drop, a few
+  // centimetres proud and uneven (a rough rock edge), tapering into the
+  // ground over its last 1.4 m at either end; its back on the ground; its
+  // foot just under the ground below.
+  type LipPoint = ReturnType<UbinTrail['lipLine']>[number] & { yBack: number; yTop: number; yUpper: number; yFoot: number; yLower: number };
+  const lips: LipPoint[][] = trail.obstacles
+    .filter((o) => o.drop)
+    .map((o) => {
+      const line = trail.lipLine(o);
+      const n = line.length;
+      return line.map((q, k) => {
+        const yUpper = heightAt(q.upper[0], q.upper[1]);
+        const yLower = heightAt(q.lower[0], q.lower[1]);
+        const end = Math.min(k, n - 1 - k) * 0.2; // metres from the nearer end
+        const t = Math.min(1, end / 1.4);
+        const rough = 0.09 + 0.045 * Math.sin(q.off * 2.3 + o.s0) + 0.03 * Math.sin(q.off * 5.1 + 1.3 * o.s0);
+        const ground = heightAt(q.top[0], q.top[1]);
+        return {
+          ...q,
+          yUpper,
+          yLower,
+          yBack: heightAt(q.back[0], q.back[1]),
+          yTop: ground + (yUpper + rough - ground) * t,
+          yFoot: Math.min(heightAt(q.foot[0], q.foot[1]), yLower) - 0.08,
+        };
+      });
+    });
+
+  // ---------- The rough ground, to see ----------
+  // Rocks on the humps, slabs at the ledges, roots across the rocky track,
+  // loose stones on the gravel and scree, puddles in the mud holes. For
+  // looks only: what the car feels is the ground's own shape under them.
+  {
+    const props = trail.props();
+    // (Kept for the checks: each puddle's level and the lowest ground at its rim.)
+    const rockGeo = (() => {
+      const g = new THREE.IcosahedronGeometry(1, 1);
+      const pos = g.attributes.position;
+      const r = mulberry32(SEED + 77);
+      const bump = new Map<string, number>();
+      for (let i = 0; i < pos.count; i++) {
+        const key = `${pos.getX(i).toFixed(3)},${pos.getY(i).toFixed(3)},${pos.getZ(i).toFixed(3)}`;
+        if (!bump.has(key)) bump.set(key, 0.78 + 0.4 * r());
+        const k = bump.get(key)!;
+        pos.setXYZ(i, pos.getX(i) * k, Math.max(pos.getY(i) * k, -0.55), pos.getZ(i) * k);
+      }
+      g.computeVertexNormals();
+      return g;
+    })();
+    const kinds = {
+      rock: { geo: rockGeo, mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.08, 0.2], shadow: true },
+      boulder: { geo: rockGeo, mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.1, 0.1, 0.24], shadow: true },
+      pebble: { geo: new THREE.IcosahedronGeometry(1, 0), mat: new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }), hsl: [0.07, 0.1, 0.24], shadow: false },
+      ledge: { geo: (() => { const g = new THREE.BoxGeometry(1, 1, 1, 3, 1, 1); const pos = g.attributes.position; const r = mulberry32(SEED + 78); for (let i = 0; i < pos.count; i++) if (pos.getY(i) > 0) pos.setY(i, pos.getY(i) - 0.12 * r()); g.computeVertexNormals(); return g; })(), mat: new THREE.MeshStandardMaterial({ roughness: 0.95, flatShading: true }), hsl: [0.08, 0.07, 0.22], shadow: true },
+      root: { geo: new THREE.CylinderGeometry(1, 1, 1, 6).rotateX(Math.PI / 2), mat: new THREE.MeshStandardMaterial({ roughness: 0.9 }), hsl: [0.07, 0.4, 0.13], shadow: true },
+      // (A fallen trunk: grey-brown bark, its cut ends paler.)
+      log: { geo: merge([tint(new THREE.CylinderGeometry(1, 1, 1, 11, 1, true).rotateX(Math.PI / 2), 0x5a4a3c), tint(new THREE.CircleGeometry(1, 11).translate(0, 0, 0.5), 0xa08560), tint(new THREE.CircleGeometry(1, 11).rotateY(Math.PI).translate(0, 0, -0.5), 0xa08560)]), mat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 }), hsl: [0, 0, 0.8], shadow: true },
+      // (A look spot's post: weathered wood, a yellow band at the top.)
+      post: { geo: merge([tint(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), 0x6b5236), tint(new THREE.BoxGeometry(1.15, 0.16, 1.15).translate(0, 0.86, 0), 0xe8c020)]), mat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }), hsl: [0, 0, 0.93], shadow: true },
+      puddle: { geo: new THREE.CircleGeometry(0.5, 14).rotateX(-Math.PI / 2), mat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.9 }), hsl: [0.09, 0.3, 0.11], shadow: false },
+    };
+    const dummy = new THREE.Object3D();
+    const c = new THREE.Color();
+    const rnd = mulberry32(SEED + 79);
+    const boulderBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    for (const [name, k] of Object.entries(kinds)) {
+      const list = props.filter((p) => p.kind === name);
+      if (!list.length) continue;
+      const im = new THREE.InstancedMesh(k.geo, k.mat, list.length);
+      list.forEach((p, i) => {
+        const h = heightAt(p.x, p.z);
+        dummy.rotation.set(0, p.yaw, 0);
+        if (name === 'boulder') {
+          // Bedded in, and solid: the car cannot squeeze between them.
+          dummy.position.set(p.x, h - p.sy * 0.25, p.z);
+          dummy.scale.set(p.sx / 2, p.sy, p.sz / 2);
+          world.createCollider(RAPIER.ColliderDesc.cylinder(1.2, p.sx * 0.45).setTranslation(p.x, h + 0.6, p.z), boulderBody);
+        } else if (name === 'rock') {
+          // As tall as its hump, its top just proud of it.
+          dummy.position.set(p.x, h + 0.05 - p.sy, p.z);
+          dummy.scale.set(p.sx / 2, p.sy, p.sz / 2);
+        } else if (name === 'pebble') {
+          dummy.position.set(p.x, h + p.sy * 0.15, p.z);
+          dummy.rotation.set(rnd() * 3, p.yaw, rnd() * 3);
+          dummy.scale.set(p.sx, p.sy, p.sz);
+        } else if (name === 'ledge') {
+          // Its top flush with the step above.
+          dummy.position.set(p.x, h - p.sy / 2 + 0.03, p.z);
+          dummy.scale.set(p.sz, p.sy, p.sx);
+        } else if (name === 'post') {
+          dummy.position.set(p.x, h - 0.1, p.z);
+          dummy.scale.set(p.sx, p.sy, p.sz);
+        } else if (name === 'log') {
+          // Along its slant, level with the hump's top a little either side
+          // of the track's middle (tilted to follow it), its top just under it.
+          const dx = Math.sin(p.yaw);
+          const dz = Math.cos(p.yaw);
+          const ya = heightAt(p.x - dx * 2.2, p.z - dz * 2.2) - p.sx + 0.02;
+          const yb = heightAt(p.x + dx * 2.2, p.z + dz * 2.2) - p.sx + 0.02;
+          dummy.position.set(p.x, (ya + yb) / 2, p.z);
+          dummy.lookAt(p.x + dx * 2.2, yb, p.z + dz * 2.2);
+          dummy.rotateZ(rnd() * 6.28);
+          dummy.scale.set(p.sx, p.sx, p.sz);
+        } else if (name === 'root') {
+          dummy.position.set(p.x, h + p.sx * 0.25, p.z);
+          dummy.scale.set(p.sx, p.sx * 0.8, p.sz);
+        } else {
+          // Water fills the hole most of the way to its rim, and never above
+          // the lowest point of the rim: on a slope there is no puddle (water
+          // would run off), where a level disc would hang in the air.
+          let rim = 0;
+          let lo = Infinity;
+          const cy = Math.cos(p.yaw);
+          const sy = Math.sin(p.yaw);
+          for (let k = 0; k < 12; k++) {
+            const lx = (Math.cos((k * Math.PI) / 6) * p.sz) / 2;
+            const lz = (Math.sin((k * Math.PI) / 6) * p.sx) / 2;
+            const rh = heightAt(p.x + lx * cy + lz * sy, p.z - lx * sy + lz * cy);
+            rim += rh / 12;
+            lo = Math.min(lo, rh);
+          }
+          const y = Math.max(h + 0.02, Math.min(h + 0.7 * Math.max(0, rim - h) + 0.03, lo + 0.04));
+          // (And none on sloping ground at all, over about 6 degrees across
+          // 4 m: the camber's mud holes sit on a bench beside a steep bank.)
+          let wlo = Infinity;
+          let whi = -Infinity;
+          for (let k = 0; k < 8; k++) {
+            const wh = heightAt(p.x + 2 * Math.cos((k * Math.PI) / 4), p.z + 2 * Math.sin((k * Math.PI) / 4));
+            wlo = Math.min(wlo, wh);
+            whi = Math.max(whi, wh);
+          }
+          if (y - lo > 0.1 || whi - wlo > 0.42) {
+            dummy.position.set(p.x, -1000, p.z);
+            dummy.scale.set(0.001, 0.001, 0.001);
+          } else {
+            dummy.position.set(p.x, y, p.z);
+            dummy.scale.set(p.sz, 1, p.sx); // long along the track
+            puddleRims.push({ x: p.x, z: p.z, y, lo });
+          }
+        }
+        dummy.updateMatrix();
+        im.setMatrixAt(i, dummy.matrix);
+        const [hh, ss, ll] = k.hsl;
+        c.setHSL(hh + (rnd() - 0.5) * 0.04, ss + (rnd() - 0.5) * 0.06, ll + (rnd() - 0.5) * 0.12);
+        im.setColorAt(i, c);
+      });
+      im.castShadow = k.shadow;
+      im.receiveShadow = true;
+      im.computeBoundingSphere();
+      scene.add(im);
+    }
+    // Each drop's rock lip: one piece of rock across the track, its top
+    // following the ground above the drop with a rough, uneven edge, its
+    // face down to the ground below, and tapering into the ground at
+    // either end. Solid: the face is a wall no wheel climbs back up.
+    for (const L of lips) {
+      const n = L.length;
+      const pos: number[] = [];
+      const col: number[] = [];
+      const base = new THREE.Color().setHSL(0.08, 0.08, 0.22);
+      const tc = new THREE.Color();
+      const push = (x: number, y: number, z: number, k: number) => {
+        pos.push(x, y, z);
+        // (Patchy, not striped: slow changes along it.)
+        tc.copy(base).offsetHSL(0, 0, 0.035 * Math.sin(k * 0.37) + 0.02 * Math.sin(k * 0.91 + 2));
+        col.push(tc.r, tc.g, tc.b);
+      };
+      const idx: number[] = [];
+      L.forEach((q, k) => {
+        push(q.back[0], q.yBack, q.back[1], k);
+        // (Its edge not ruler-straight: in and out a little along the track.)
+        const jig = 0.12 * Math.sin(k * 0.8) + 0.06 * Math.sin(k * 2.1 + 1);
+        push(q.top[0] + (q.upper[0] - q.top[0]) * jig, q.yTop, q.top[1] + (q.upper[1] - q.top[1]) * jig, k);
+        push(q.foot[0], q.yFoot, q.foot[1], k);
+        if (k < n - 1) {
+          const a = k * 3;
+          const b = a + 3;
+          // (Wound to face up and out, whichever way the drop runs.)
+          idx.push(a, b, a + 1, b, b + 1, a + 1, a + 1, b + 1, a + 2, b + 1, b + 2, a + 2);
+        }
+      });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      g.setIndex(idx);
+      const ng = g.toNonIndexed();
+      ng.computeVertexNormals();
+      const mesh = new THREE.Mesh(ng, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true, side: THREE.DoubleSide }));
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      // (The wall itself: narrow blocks, each no higher than the lowest
+      // of the lip's top over its width, so none stands above the rock.)
+      for (let k = 0; k + 3 < n; k += 3) {
+        const span = L.slice(k, k + 4);
+        const top = Math.min(...span.map((q) => q.yUpper));
+        const a = span[0];
+        const b = span[span.length - 1];
+        const cx = (a.upper[0] + b.upper[0]) / 2;
+        const cz = (a.upper[1] + b.upper[1]) / 2;
+        const ax = b.upper[0] - a.upper[0];
+        const az = b.upper[1] - a.upper[1];
+        const yaw = Math.atan2(-az, ax);
+        const hh = (top - Math.min(...span.map((q) => q.yLower)) + 0.3) / 2;
+        const qq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+        // (Across: the span's width; along the track: from the back edge to the face.)
+        // (Centred 0.15 m behind the upper point: 1.4 m deep, its face where the lip's is.)
+        const bx = (a.upper[0] - a.top[0]) / 0.55;
+        const bz = (a.upper[1] - a.top[1]) / 0.55;
+        world.createCollider(RAPIER.ColliderDesc.cuboid(Math.hypot(ax, az) / 2 + 0.05, hh, 0.7).setTranslation(cx + bx * 0.15, top - hh, cz + bz * 0.15).setRotation({ x: qq.x, y: qq.y, z: qq.z, w: qq.w }).setFriction(0.9), boulderBody);
+      }
+    }
+  }
+
+  // ---------- Plank bridges: two planks over a gully, solid ----------
+  // Each plank's top a little above the bank at either end, straight
+  // between (tilted if one bank is higher), on a log bearer at each bank.
+  {
+    const planks = trail.planks();
+    if (planks.length) {
+      const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+      const wood = new THREE.MeshStandardMaterial({ color: 0x8a6a48, roughness: 0.85, vertexColors: true });
+      const bark = new THREE.MeshStandardMaterial({ color: 0x5a4a3c, roughness: 0.92 });
+      const T = 0.12;
+      const o3 = new THREE.Object3D();
+      for (const P of planks) {
+        const ya = heightAt(P.a[0], P.a[1]) + 0.08 - T / 2;
+        const yb = heightAt(P.b[0], P.b[1]) + 0.08 - T / 2;
+        const a = new THREE.Vector3(P.a[0], ya, P.a[1]);
+        const b = new THREE.Vector3(P.b[0], yb, P.b[1]);
+        const L = a.distanceTo(b);
+        o3.position.copy(a).add(b).multiplyScalar(0.5);
+        o3.lookAt(b);
+        o3.updateMatrix();
+        // (Two boards side by side, a hair apart.)
+        const g = merge([tint(new THREE.BoxGeometry(P.w / 2 - 0.01, T, L).translate(-P.w / 4, 0, 0), 0xffffff), tint(new THREE.BoxGeometry(P.w / 2 - 0.01, T, L).translate(P.w / 4, 0, 0), 0xe8e0d8)]);
+        const m = new THREE.Mesh(g, wood);
+        m.position.copy(o3.position);
+        m.quaternion.copy(o3.quaternion);
+        m.castShadow = true;
+        m.receiveShadow = true;
+        scene.add(m);
+        const q = o3.quaternion;
+        world.createCollider(RAPIER.ColliderDesc.cuboid(P.w / 2, T / 2, L / 2).setTranslation(o3.position.x, o3.position.y, o3.position.z).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }).setFriction(0.8), body);
+        // (The bearers: a log under each end, bedded in the bank.)
+        for (const e of [a, b]) {
+          const toward = new THREE.Vector3().subVectors(o3.position, e).setY(0).normalize();
+          const c = e.clone().addScaledVector(toward, 0.9);
+          const bm = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.1, 9).rotateZ(Math.PI / 2), bark);
+          // (Its top just under the plank.)
+          const f = e === a ? 0.9 / L : 1 - 0.9 / L;
+          bm.position.set(c.x, ya + (yb - ya) * f - T / 2 - 0.165, c.z);
+          bm.rotation.y = Math.atan2(toward.x, toward.z);
+          bm.castShadow = true;
+          scene.add(bm);
+        }
+      }
+    }
+  }
+
   // ---------- Ubin Jetty and the bumboats ----------
   const jetty = map.piers.find((p) => /public jetty/i.test(p.name)) ?? map.piers[0];
   const boats: THREE.Object3D[] = [];
@@ -732,12 +1419,14 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     // A plane's front faces +z; turn it to face back along the route.
     return makeSign(lines, x, z, Math.atan2(-p.tx, -p.tz));
   };
-  for (const o of trail.obstacles) signAt([o.label], trail.route, o.s0 - 60, -1);
+  // (Named on the easy and medium trails; the hard one has no signs.)
+  if (def.wayRound === 'gate') for (const o of trail.obstacles) signAt([o.label], trail.route, o.s0 - 60, -1);
 
   // ---------- The ways round: a barrier until opened, then marker posts ----------
   const gateBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-  const gates = trail.obstacles.map((o) => {
+  const gates = trail.obstacles.flatMap((o) => {
     const g = o.gate;
+    if (!g) return [];
     const y = heightAt(g.x, g.z);
     const group = new THREE.Group();
     const log = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 5.5, 8).rotateZ(Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x5e4a3a, roughness: 1 }));
@@ -776,12 +1465,11 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     scene.remove(sign);
     posts.visible = false;
     scene.add(posts);
-    return { group, collider, posts, opened: false };
+    return [{ o, group, collider, posts, opened: false }];
   });
   const syncGates = () =>
-    trail.obstacles.forEach((o, i) => {
-      const g = gates[i];
-      if (!o.open || g.opened) return;
+    gates.forEach((g) => {
+      if (!g.o.open || g.opened) return;
       g.opened = true;
       world.removeCollider(g.collider, true);
       // The log is dragged off the track to one side (it lies across the
@@ -793,16 +1481,16 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     });
 
   // ---------- Camp ----------
-  const campPoi = map.pois.find((p) => p.kind === 'camp' && Math.hypot(p.x - trail.camp.x, p.z - trail.camp.z) < 200);
-  const camp = { id: 'ubin-endut-senin', label: 'Endut Senin camp site', x: trail.camp.x, z: trail.camp.z, radius: 26 };
+  const campPoi = def.end.camp ? map.pois.find((p) => p.kind === 'camp' && Math.hypot(p.x - trail.camp.x, p.z - trail.camp.z) < 200) : null;
+  const camp = { id: def.end.camp?.id ?? `ubin-${def.id}-end`, label: def.end.camp?.label ?? def.end.label, x: trail.camp.x, z: trail.camp.z, radius: 26 };
   if (campPoi) {
     // On the lane by the camp site.
     camp.x = (trail.camp.x + campPoi.x) / 2;
     camp.z = (trail.camp.z + campPoi.z) / 2;
   }
 
-  signAt(['Endut Senin', 'Campsite'], trail.route, trail.route.length - 30, -1);
-  signAt(['Pulau Ubin', 'Ketam Trail \u2192 7 km'], trail.route, 22, -1);
+  signAt(def.end.sign, trail.route, trail.route.length - 30, -1);
+  signAt(def.startSign, trail.route, 22, -1);
 
   // ---------- Map ----------
   const mapData: MapData = {
@@ -832,7 +1520,7 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
         const p = o.line.at((o.s1 - o.s0) / 2);
         return { x: p.x, z: p.z, label: o.label };
       }),
-      { x: camp.x, z: camp.z, label: 'Camp' },
+      { x: camp.x, z: camp.z, label: def.end.camp ? 'Camp' : def.end.label },
       ...(jetty ? [{ x: jetty.pts[0][0], z: jetty.pts[0][1], label: 'Ubin Jetty' }] : []),
       ...map.pois.filter((p) => p.name && ['quarry', 'peak', 'place'].includes(p.kind)).map((p) => ({ x: p.x, z: p.z, label: p.name })),
     ],
@@ -872,8 +1560,63 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     return { pos: new THREE.Vector3(p.x, heightAt(p.x, p.z), p.z), yaw: Math.atan2(-p.tz, p.tx) };
   };
 
+  // Ruts: a dark, wet mark on each worn half-metre square, laid on the
+  // ground's slope, darker the deeper it is dug.
+  const lastDig = { x: 0, z: 0 };
+  let rutShown = 0;
+  const RUT_MAX = 4000;
+  const rutMarks = new THREE.InstancedMesh(
+    // (A dug-in patch: a dark, wet hollow, round, a little bigger than its cell so they run together.)
+    new THREE.CircleGeometry(UbinTrail.RUT_CELL * 0.75, 10).rotateX(-Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, transparent: true, opacity: 0.8, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }),
+    RUT_MAX,
+  );
+  rutMarks.count = 0;
+  rutMarks.frustumCulled = false;
+  rutMarks.renderOrder = 2;
+  if (def.ruts) scene.add(rutMarks);
+  const drawRuts = () => {
+    rutShown = trail.rutVersion;
+    const cells = trail.rutCells();
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    const nrm = new THREE.Vector3();
+    const col = new THREE.Color();
+    const wet = new THREE.Color(0x140e08);
+    const dry = new THREE.Color(0x33261a);
+    let n = 0;
+    // (On the ground as drawn: a metre between its points on the trail, so
+    // between them it is flatter than the bumps it was made from.)
+    const drawn = (x: number, z: number) => {
+      const x0 = Math.floor(x);
+      const z0 = Math.floor(z);
+      const fx = x - x0;
+      const fz = z - z0;
+      const a = heightAt(x0, z0) * (1 - fx) + heightAt(x0 + 1, z0) * fx;
+      const b = heightAt(x0, z0 + 1) * (1 - fx) + heightAt(x0 + 1, z0 + 1) * fx;
+      return a * (1 - fz) + b * fz;
+    };
+    for (const c of cells) {
+      if (n >= RUT_MAX || c.w < 0.12) continue;
+      const h = Math.max(drawn(c.x, c.z), heightAt(c.x, c.z));
+      nrm.set(drawn(c.x - 0.5, c.z) - drawn(c.x + 0.5, c.z), 1, drawn(c.x, c.z - 0.5) - drawn(c.x, c.z + 0.5)).normalize();
+      q.setFromUnitVectors(up, nrm);
+      const sc = 0.7 + 0.3 * c.w;
+      m.compose(new THREE.Vector3(c.x, h + 0.06, c.z), q, new THREE.Vector3(sc, 1, sc));
+      rutMarks.setMatrixAt(n, m);
+      rutMarks.setColorAt(n, col.copy(dry).lerp(wet, c.w));
+      n++;
+    }
+    rutMarks.count = n;
+    rutMarks.instanceMatrix.needsUpdate = true;
+    if (rutMarks.instanceColor) rutMarks.instanceColor.needsUpdate = true;
+  };
+
+  const loadHeightAsks = heightAsks;
   return {
-    name: 'Pulau Ubin: Ketam Trail',
+    loadStats: { heightAsks: loadHeightAsks },
+    name: def.name,
     map: mapData,
     styles: true,
     sky: { background: 0xb9d3df, fog: 0xc8d8dc, fogNear: 140, fogFar: 560 },
@@ -891,21 +1634,53 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
       return { x: p.x, z: p.z, yaw: Math.atan2(-p.tz, p.tx) };
     },
     prepareAt: (x, z) => streamer.prepare(x, z, 300),
+    // (For the checks: the fine strips and the tiles' ground material.)
+    fineGround: { strips: fineMeshes, groundMat, tileGround: (x: number, z: number) => fineTileGround?.(x, z) ?? null },
+    retryAt: (x, z) => trail.retryAt(x, z),
+    ...(def.ruts
+      ? {
+          rutAt: (x: number, z: number) => trail.rutAt(x, z),
+          dig: (x: number, z: number, amount: number) => {
+            trail.dig(x, z, amount);
+            lastDig.x = x;
+            lastDig.z = z;
+          },
+          resetRuts: () => trail.resetRuts(),
+        }
+      : {}),
     solidAt: (x, z) => streamer.solidAt(x, z),
     streamStats: () => ({ ...streamer.stats, horizon: streamer.stats.horizon }),
-    camps: [camp],
+    camps: def.end.camp ? [camp] : [],
     update(time, _dt, cam, player) {
       wind.value = time;
       const at = player ?? cam;
       if (at) {
         streamer.update(at.x, at.z);
         updateLods(at.x, at.z);
+        // (A strip shows only while all the tiles' ground around it is near
+        // enough to be drawn in full: out on the horizon's coarser ground its
+        // edges would not meet it.)
+        // (And only once those tiles are built: until then the horizon's
+        // coarse ground is drawn there.)
+        for (const m of fineMeshes) {
+          const b = m.geometry.boundingSphere!;
+          m.visible = Math.hypot(at.x - b.center.x, at.z - b.center.z) + b.radius < 410 && (m.userData.tiles as [number, number][]).every(([i, j]) => streamer.built('far', i, j));
+        }
+      }
+      if (def.ruts) {
+        // (Left far behind, the trail's ruts settle: fresh ground next time.)
+        if (at && trail.ruts.size && Math.hypot(at.x - lastDig.x, at.z - lastDig.z) > 150) trail.resetRuts();
+        if (trail.rutVersion !== rutShown) drawRuts();
       }
       for (let i = 0; i < boats.length; i++) {
         boats[i].position.y = 0.05 * Math.sin(time * 1.1 + i * 2);
         boats[i].rotation.z = 0.02 * Math.sin(time * 0.9 + i);
       }
     },
+    /** For the checks: the water's edge points and each puddle's level. */
+    water: () => ({ edges: waterEdges, puddles: puddleRims }),
+    /** For the checks: each drop's rock lip as built. */
+    lips: () => lips,
     coach(c) {
       const out = trail.coach(c);
       syncGates();

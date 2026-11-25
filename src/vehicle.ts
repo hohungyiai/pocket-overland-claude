@@ -33,6 +33,24 @@ const TUNING = {
   steerCrawl: 0.62,
   steerFast: 0.14,
   steerRate: 2.6, // rad/s
+  // Rough ground (Surface.rough) knocking the steering: calm below roughFrom
+  // (m/s), full by roughFull; the knock is up to roughBase radians, plus
+  // roughSteer times how hard the car is being steered.
+  roughFrom: 5,
+  roughFull: 10,
+  roughBase: 0.12,
+  roughSteer: 0.9,
+  // Ruts: power on and the car under rutSlip m/s on soft ground, the
+  // wheels spin and wear it at up to rutDig a second; fully worn ground
+  // keeps 1 - rutGrip of its grip and sinks rutSink more.
+  rutSlip: 1.5,
+  rutDig: 0.3,
+  rutGrip: 0.45,
+  rutSink: 0.15,
+  // The diff locked off the road: both wheels of an axle made to turn at
+  // the same speed scrub, and the front pushes wide: the car turns no
+  // tighter than diffTurn of full lock. Tight turns want it open.
+  diffTurn: 0.65,
 };
 
 const DUST = new THREE.Color(0x8a7458);
@@ -60,6 +78,13 @@ export class Vehicle {
   /** Signed forward speed, m/s. */
   speed = 0;
   surface: Surface = SURFACES.gravel;
+  /** How rough the ground under the front wheels is (Surface.rough), from the last step. */
+  private rough = 0;
+  /** The rough ground's knock on the steering: where it is heading, and where it is. */
+  private knockTo = 0;
+  private knock = 0;
+  private knockFor = 0;
+  private knockSeed = 0x2545f491;
   private waterTime = 0;
   wheelsOnGround = 4;
   private steerAngle = 0;
@@ -72,6 +97,8 @@ export class Vehicle {
   }
   private readonly tmpQ = new THREE.Quaternion();
   private readonly tmpV = new THREE.Vector3();
+  private readonly grips = [0, 0, 0, 0];
+  private readonly off = [false, false, false, false];
 
   constructor(
     world: RAPIER_NS.World,
@@ -274,8 +301,27 @@ export class Vehicle {
     const target = -input.steer * maxSteer; // positive rotation about +Y turns left
     const delta = clamp(target - this.steerAngle, -TUNING.steerRate * dt, TUNING.steerRate * dt);
     this.steerAngle += delta;
-    c.setWheelSteering(0, this.steerAngle);
-    c.setWheelSteering(1, this.steerAngle);
+    // Loose rock and gravel at speed: the front wheels get knocked off line,
+    // a new jolt every quarter second or so, more the harder the car is
+    // being steered. (Only off the road: no road surface is rough.)
+    let knock = 0;
+    if (this.rough > 0) {
+      const fast = clamp((absV - TUNING.roughFrom) / (TUNING.roughFull - TUNING.roughFrom), 0, 1);
+      this.knockFor -= dt;
+      if (this.knockFor <= 0) {
+        this.knockSeed = (Math.imul(this.knockSeed, 1664525) + 1013904223) >>> 0;
+        const r = this.knockSeed / 4294967296;
+        this.knockFor = 0.18 + 0.2 * r;
+        this.knockTo = (r * 2 - 1) * this.rough * fast * (TUNING.roughBase + TUNING.roughSteer * Math.abs(input.steer));
+      }
+      this.knock += (this.knockTo - this.knock) * Math.min(1, dt * 14);
+      knock = this.knock;
+    } else this.knock = this.knockTo = 0;
+    // (A locked diff off the road pushes wide: the front will not turn in tight.)
+    let turn = this.steerAngle + knock;
+    if (this.diffLock && (this.off[0] || this.off[1])) turn = clamp(turn, -TUNING.steerCrawl * TUNING.diffTurn, TUNING.steerCrawl * TUNING.diffTurn);
+    c.setWheelSteering(0, turn);
+    c.setWheelSteering(1, turn);
 
     // Engine: simple torque falloff toward top speed of the selected range.
     const low = this.lowRange;
@@ -301,15 +347,45 @@ export class Vehicle {
     let onGround = 0;
     let worst: Surface | null = null;
     const axleLift = [0, 0];
+    // Off the road (surfaces marked offroad): what each wheel can put down
+    // (grip times the load on it), and the soft ground's pull.
+    const grips = this.grips;
+    const off = this.off;
+    let sink = 0;
+    let wade = 0;
+    let rough = 0;
+    const lv0 = this.body.linvel();
+    const sp0 = Math.hypot(lv0.x, lv0.z);
     for (let i = 0; i < 4; i++) {
+      off[i] = false;
+      grips[i] = 0;
       if (c.wheelIsInContact(i)) {
         onGround++;
         const cp = c.wheelContactPoint(i);
         if (cp) {
           const s = this.course.surfaceAt(cp.x, cp.z, cp.y);
-          c.setWheelFrictionSlip(i, s.grip);
+          // Soft ground remembers: where wheels have spun it is dug in,
+          // slicker and softer (trails with ruts; never a road).
+          const soft = s.offroad && (s.sink ?? 0) > 0;
+          const worn = soft ? (this.course.rutAt?.(cp.x, cp.z) ?? 0) : 0;
+          const grip = s.grip * (1 - TUNING.rutGrip * worn);
+          c.setWheelFrictionSlip(i, grip);
           if (!worst || s.drag > worst.drag) worst = s;
           c.setWheelBrake(i, brake + s.drag);
+          if (s.offroad) {
+            off[i] = true;
+            if (i < 2) rough = Math.max(rough, s.rough ?? 0);
+            const load = Math.max(0, c.wheelSuspensionForce(i) ?? 0);
+            grips[i] = grip * load;
+            sink += ((s.sink ?? 0) + TUNING.rutSink * worn) * load;
+            // Power on and going nowhere on soft ground, the wheels spin
+            // and dig in.
+            if (soft && this.course.dig && Math.abs(input.throttle) > 0.2 && absV < TUNING.rutSlip) {
+              this.course.dig(cp.x, cp.z, dt * TUNING.rutDig * Math.abs(input.throttle) * (1 - absV / TUNING.rutSlip));
+            }
+            // (v-squared above the surface's wadeFrom speed; the ford's is 0.)
+            if (s.wade) wade += (s.wade / 4) * Math.max(0, sp0 - (s.wadeFrom ?? 0)) ** 2;
+          }
         }
       } else {
         axleLift[i < 2 ? 0 : 1]++;
@@ -317,18 +393,36 @@ export class Vehicle {
       }
     }
     this.wheelsOnGround = onGround;
+    this.rough = rough;
     if (worst) this.surface = worst;
     for (let i = 0; i < 4; i++) {
       const axle = i < 2 ? 0 : 1;
       const open = !this.diffLock && axleLift[axle] > 0;
       const inAir = !c.wheelIsInContact(i);
       let f = drive;
-      if (open) f *= 0.2;
+      if (off[2 * axle] || off[2 * axle + 1]) {
+        // Off the road. Open: both wheels get what the weaker one can grip
+        // (a lifted wheel grips nothing). Locked: each wheel its own.
+        if (!this.diffLock) f = Math.sign(drive) * Math.min(Math.abs(drive), grips[2 * axle], grips[2 * axle + 1]);
+        else if (inAir) f = 0;
+      } else if (open) f *= 0.2;
       else if (this.diffLock && inAir && axleLift[axle] < 2) f = 0; // locked: grounded wheel gets it
       c.setWheelEngineForce(i, f);
     }
+    // Soft ground: the tyres sink in and it pulls against the way the car
+    // is rolling (never so hard that it starts it rolling back).
+    if (sink > 0 || wade > 0) {
+      const lv = this.body.linvel();
+      const sp = Math.hypot(lv.x, lv.z);
+      if (sp > 0.01) {
+        const m = this.body.mass();
+        const dv = Math.min(sp, (sink / m + wade) * dt);
+        this.body.applyImpulse({ x: (-lv.x / sp) * dv * m, y: 0, z: (-lv.z / sp) * dv * m }, true);
+      }
+    }
 
     c.updateVehicle(dt);
+
 
     // Hill-hold. The wheel brakes only slow the car in proportion to its
     // speed, so off the pedals on a hill it crept downhill at half a metre

@@ -1,37 +1,168 @@
-import { clamp, smoothstep } from '../../noise';
+import { clamp, mulberry32, smoothstep } from '../../noise';
 import { Polyline } from '../../world/polyline';
 import { inRing } from '../../world/segindex';
 import type { Surface, XZ } from '../types';
 import type { UbinMap } from './ground';
 
-// The first trail: Ubin Jetty, through the village, west along Jalan
-// Jelutong and Jalan Endut Senin, over Puaka Bridge, north up Jalan Wat
-// Siam, then the Ketam Trail clockwise round Ketam Quarry and back down to
-// the camp site at the end of Jalan Endut Senin. The route is found on the
-// real OpenStreetMap lanes and tracks between a few waypoints.
+// Pulau Ubin's trails (the trail definitions are in trails.ts). Each is a
+// route found on the real OpenStreetMap lanes, tracks and paths between a
+// few waypoints, with obstacles along it that each teach a skill. Nothing
+// ever fails: the worst that happens is a few minutes.
 //
-// Three light obstacles on the Ketam loop, one skill each:
-//   1. a steep loose climb: low range,
-//   2. a washout of humps on alternate sides that lifts a wheel: diff lock,
-//   3. soft sand along the shore: carry speed (high range).
-// After three honest tries at one, an easier way round opens beside it
-// (a signposted side track, slower, and it skips the reward). Nothing ever
-// fails: the worst that happens is a few minutes.
+// The easy trail (Ketam) has a signposted way round each obstacle that
+// opens after three honest tries. Harder trails have no sign: a longer
+// detour exists, on an old track, for whoever finds it.
 
-const WAYPOINTS: XZ[] = [
-  [1640, 830], // Ubin Jetty
-  [-60, 60], // Puaka Bridge
-  [-250, -700], // Jalan Wat Siam, north
-  [-1055, -115], // the shore below Ketam Quarry
-  [-560, -125], // Ketam Trail, back towards Jalan Wat Siam
-  [-60, 60], // Puaka Bridge again
-  [-177, 300], // Endut Senin camp site
-];
+export type ObstacleKind = 'climb' | 'washout' | 'sand' | 'rocks' | 'descent' | 'summit' | 'mud' | 'ford' | 'camber'
+  // The sides of a stretch, closing it in: 'ridge', the track on a crest
+  // with soft bog below either side (slide off and you are stuck); 'thicket',
+  // boulders either side, too close together to drive between.
+  // 'valley', the track down in a narrow valley, a boggy ditch at the foot
+  // of each steep, slick wall.
+  | 'ridge' | 'thicket' | 'valley'
+  // Terrain from the big off-road games, Ubin versions: 'ditches', cross-axle
+  // ditches (diagonal troughs: opposite wheels hang, so the diff lock);
+  // 'rutted', deep laterite ruts (in them the belly drags: straddle them);
+  // 'notch', a V-notch between granite faces (keep the wheels up on the
+  // faces); 'falls', a rock waterfall, stacked granite ledges.
+  | 'ditches' | 'rutted' | 'notch' | 'falls'
+  // And: 'logs', fallen trunks across the track at a slant (a wheel up on
+  // one at a time: the diff lock, and a slow crawl); 'creek', a narrow,
+  // steep-sided stream channel crossed on a slant, water at the bottom;
+  // 'bridge', two planks over a gully (a careful line: a wheel off them
+  // and the car is on its belly).
+  | 'logs' | 'creek' | 'bridge'
+  // And: 'flooded', the track under brown tide water with holes you cannot
+  // see (the same holes every time: remember them); 'rockbed', a dry
+  // granite creek bed packed with rounded rocks.
+  | 'flooded' | 'rockbed';
+/** Kinds with ground finer than the 1 m solid ground resolves: drawn and made solid at 0.5 m along their stretch. */
+export const FINE_KINDS: ReadonlySet<ObstacleKind> = new Set(['ditches', 'rutted', 'notch', 'falls', 'logs', 'creek', 'bridge', 'flooded', 'rockbed']);
 
-export type ObstacleKind = 'climb' | 'washout' | 'sand';
+/** What an obstacle needs to get through (for the hints and the checks). */
+export interface Needs {
+  low?: boolean;
+  diff?: boolean;
+  /** Carry speed into it. */
+  speed?: boolean;
+}
+
+export interface ObstacleDef {
+  kind: ObstacleKind;
+  label: string;
+  /** A point on the route where it starts. */
+  at: XZ;
+  len: number;
+  needs: Needs;
+  /** false: no way round this one, even on a signposted trail. */
+  round?: boolean;
+  /** Shape numbers for this kind (see shape()). */
+  p?: Record<string, number>;
+  /**
+   * A mixed stretch: several kinds of ground at once, each over its own part
+   * of the stretch (metres from its start), overlapping where they mix (a
+   * climb with loose rock on it, a ford with a sand bed). Their shapes add;
+   * where they overlap, the later one's surface is the ground. Left out, the
+   * stretch is all `kind`.
+   */
+  mix?: { kind: ObstacleKind; from: number; to: number; p?: Record<string, number> }[];
+  /** Said when it is passed on the hard line (else the kind's own line). */
+  nice?: string;
+  /** Clashing setups: from `at` metres in, the kit in `off` must come out (see Change). */
+  then?: Change;
+  /** A commitment point: a drop you cannot back up (see Drop). */
+  drop?: Drop;
+}
+
+/**
+ * A commitment point: `at` metres in, a step down of `h` metres too steep
+ * to climb back up, even in reverse with all the kit in. Before it, a
+ * marker post where you can stop and look, and a word about the kit; the
+ * ground comes back up gently, the way you are going, over the `back`
+ * metres before `until` (so the rest of the stretch sits h lower).
+ */
+export interface Drop {
+  at: number;
+  h: number;
+  until: number;
+  back: number;
+}
+
+/**
+ * A change of kit part way along a stretch: what got you this far stops
+ * you on what comes next (low range cannot carry the speed up a dune; a
+ * locked diff will not turn tight round rocks). Said as the car gets near.
+ */
+export interface Change {
+  at: number;
+  off: ('low' | 'diff')[];
+  say: string;
+}
+
+/** Something to see on an obstacle's ground (no collider: the ground's own shape is what the car feels). */
+export interface Prop {
+  kind: 'rock' | 'pebble' | 'ledge' | 'root' | 'puddle' | 'boulder' | 'post' | 'log';
+  x: number;
+  z: number;
+  /** Heading of its long side (radians, like the car's yaw). */
+  yaw: number;
+  /** Size: across, up, along. */
+  sx: number;
+  sy: number;
+  sz: number;
+}
+
+/** One kind of ground over a part of an obstacle's stretch. */
+export interface Part {
+  kind: ObstacleKind;
+  /** Metres from the obstacle's start. */
+  from: number;
+  to: number;
+  p: Record<string, number>;
+  /** This part's own stretch of route. */
+  line: Polyline;
+  /** Its ground, when its numbers change the kind's own. */
+  surf?: Surface;
+}
+
+export interface TrailDef {
+  id: string;
+  name: string;
+  grade: 'easy' | 'medium' | 'hard';
+  waypoints: XZ[];
+  /** Paths may carry the route (not just lanes and tracks). */
+  paths?: boolean;
+  obstacles: ObstacleDef[];
+  /** What the ways round need (none, if left out). */
+  roundKit?: { low?: boolean; diff?: boolean };
+  /** 'gate': a signposted way round each obstacle, opened after three tries. 'hidden': one unmarked detour, always open. */
+  wayRound: 'gate' | 'hidden';
+  /** The hidden detour's waypoints (found on the map's tracks and paths), and the obstacles it skips. */
+  detour?: { waypoints: XZ[]; skips: number[] };
+  /** Extra height along the route: [a point on the route, metres]. Smoothly between them, fading out beside the route. */
+  profile?: [XZ, number][];
+  end: { label: string; sign: string[]; camp?: { id: string; label: string } };
+  startSign: string[];
+  /** Said at the end: when every obstacle went on the hard line, and otherwise. */
+  hardWay: string;
+  finish: string;
+  /** Ground that remembers: spinning wheels dig ruts that lose grip (Chek Jawa). */
+  ruts?: boolean;
+}
 export interface Obstacle {
   kind: ObstacleKind;
   label: string;
+  needs: Needs;
+  nice?: string;
+  then?: Change;
+  /** The change's line said on this try (it is said once a try). */
+  thenSaid: boolean;
+  drop?: Drop;
+  /** The look spot's word said on this approach. */
+  dropSaid: boolean;
+  p: Record<string, number>;
+  /** Its kinds of ground (one, unless a mixed stretch). */
+  parts: Part[];
   /** Where on the route it starts and ends (metres). */
   s0: number;
   s1: number;
@@ -40,8 +171,8 @@ export interface Obstacle {
   /** The easier way round, and the side it leaves on (+1 left). */
   bypass: Polyline;
   side: number;
-  /** Where the barrier closing the way round stands. */
-  gate: { x: number; z: number; yaw: number };
+  /** Where the barrier closing the way round stands (signposted ways round only). */
+  gate: { x: number; z: number; yaw: number } | null;
   tries: number;
   open: boolean;
   /** How it was passed: on the hard line, or round. */
@@ -61,7 +192,9 @@ export interface Obstacle {
 const TUNE = {
   climbH: 8, // metres up
   climbUp: 18, // over this run
-  looseGrip: 0.66,
+  looseGrip: 0.8,
+  looseWade: 0.5, // loose gravel hit fast: it ploughs in (per (m/s over looseFrom)^2), so charging the climb does not work
+  looseFrom: 4.5,
   looseDrag: 1.6,
   humpH: 0.9,
   humpLen: 2.2,
@@ -72,17 +205,160 @@ const TUNE = {
   sandDip: 0.22,
   duneH: 3.5,
   duneFace: 12,
+  sandSink: 0.02,
+  fordSink: 0.18,
+  fordWade: 0.18,
+  // A creek channel: its depth, how much higher its far bank stands, its banks' run, its slant.
+  creekDepth: 1.5,
+  // The flooded track: its holes' depth, how often, the water's grip and drag.
+  floodHole: 0.9,
+  floodEvery: 6,
+  floodGrip: 0.85,
+  floodWade: 1.5,
+  // The granite creek bed: its rocks' height and spacing.
+  rockH: 0.6,
+  rockGrip: 0.8,
+  rockWade: 1.5,
+  rockFrom: 0,
+  rockGap: 1.5,
+  creekUp: 0.75,
+  creekGrip: 0.7,
+  creekSink: 0.1,
+  creekWade: 0.8,
+  creekRun: 3.4,
+  creekSkew: 0.8,
   ...((globalThis as { __ubinTune?: object }).__ubinTune ?? {}),
 };
-const SOFT_SAND: Surface = { name: 'Soft sand', grip: TUNE.sandGrip, drag: TUNE.sandDrag };
-const LOOSE: Surface = { name: 'Loose gravel', grip: TUNE.looseGrip, drag: TUNE.looseDrag };
-const RUTS: Surface = { name: 'Washout', grip: 0.78, drag: 1.5 };
+const SOFT_SAND: Surface = { name: 'Soft sand', grip: TUNE.sandGrip, drag: TUNE.sandDrag, offroad: true, sink: TUNE.sandSink };
+const LOOSE: Surface = { name: 'Loose gravel', grip: TUNE.looseGrip, drag: TUNE.looseDrag, offroad: true, wade: TUNE.looseWade, wadeFrom: TUNE.looseFrom, rough: 0.8 };
+const RUTS: Surface = { name: 'Washout', grip: 0.78, drag: 1.5, offroad: true };
+// The harder trails' ground.
+const ROCKS: Surface = { name: 'Roots and rock', grip: 0.62, drag: 1.5, offroad: true, rough: 0.8 };
+const SCREE: Surface = { name: 'Loose rock', grip: 0.5, drag: 1.2, offroad: true, rough: 1 };
+const DEEP_MUD: Surface = { name: 'Deep mud', grip: 0.32, drag: 3, offroad: true, sink: 0.16 };
+const TIDAL: Surface = { name: 'Tidal sand', grip: 0.3, drag: 4, offroad: true, sink: 0.2 };
+const FORD: Surface = { name: 'Ford', grip: 0.72, drag: 3, offroad: true, sink: TUNE.fordSink, wade: TUNE.fordWade };
+const LEDGES: Surface = { name: 'Rock ledges', grip: 0.78, drag: 1.2, offroad: true, rough: 0.6 };
+const CAMBER: Surface = { name: 'Off-camber shore', grip: 0.8, drag: 1.8, offroad: true };
+const SLICK: Surface = { name: 'Slick bank', grip: 0.25, drag: 1.2, offroad: true };
+// Below a ridge: soft, wet bog that holds the car (only the try-again button gets you out).
+const BOG: Surface = { name: 'Bog', grip: 0.2, drag: 6, offroad: true, sink: 0.6 };
+// A valley's walls: too steep and slick to climb out.
+const WALL: Surface = { name: 'Steep bank', grip: 0.25, drag: 1.2, offroad: true };
+// (Soft clay: hit fast it ploughs in, like loose gravel, so charging the ditches does not work.)
+const LATERITE: Surface = { name: 'Laterite', grip: 0.6, drag: 1.6, offroad: true, sink: 0.03, wade: 0.5, wadeFrom: 6.5 };
+const GRANITE: Surface = { name: 'Granite', grip: 0.85, drag: 1.2, offroad: true, rough: 0.7 };
+const WET_GRANITE: Surface = { name: 'Wet granite', grip: 0.62, drag: 1.2, offroad: true, rough: 0.6 };
+const WET_LATERITE: Surface = { name: 'Wet laterite', grip: 0.45, drag: 2, offroad: true, sink: 0.06, wade: 0.5, wadeFrom: 6.5 };
+// (The forest floor round fallen logs: soft leaf litter. Hit the logs fast and the car is thrown about and stopped.)
+const LOG_FLOOR: Surface = { name: 'Forest floor', grip: 0.62, drag: 1.6, offroad: true, sink: 0.03, rough: 0.5, wade: 0.6, wadeFrom: 5 };
+// (A creek's banks: wet clay, and water at the bottom.)
+const CREEK: Surface = { name: 'Creek bank', grip: TUNE.creekGrip, drag: 2, offroad: true, sink: 0.05, wade: 0.6, wadeFrom: 4 };
+const CREEK_BED: Surface = { name: 'Creek', grip: TUNE.creekGrip, drag: 2, offroad: true, sink: TUNE.creekSink, wade: TUNE.creekWade, wadeFrom: 0 };
+// (Under the tide: soft, and the water drags at any speed, so the holes are met at a crawl.)
+const FLOODED: Surface = { name: 'Flooded track', grip: TUNE.floodGrip, drag: 2, offroad: true, sink: 0.08, wade: TUNE.floodWade, wadeFrom: 0 };
+// (Rounded granite: grippy, but fast it throws the car about and stops it.)
+const ROCKBED: Surface = { name: 'Granite creek bed', grip: TUNE.rockGrip, drag: 1.4, offroad: true, rough: 0.8, wade: TUNE.rockWade, wadeFrom: TUNE.rockFrom };
+const PLANKS: Surface = { name: 'Plank bridge', grip: 0.75, drag: 1.2, offroad: true };
+const KIND_SURFACE: Record<ObstacleKind, Surface> = {
+  logs: LOG_FLOOR,
+  flooded: FLOODED,
+  rockbed: ROCKBED,
+  creek: CREEK,
+  bridge: PLANKS,
+  ditches: LATERITE,
+  rutted: LATERITE,
+  notch: GRANITE,
+  falls: WET_GRANITE,
+  climb: LOOSE,
+  washout: RUTS,
+  sand: SOFT_SAND,
+  rocks: ROCKS,
+  descent: SCREE,
+  summit: LEDGES,
+  mud: DEEP_MUD,
+  ford: FORD,
+  camber: CAMBER,
+  ridge: CAMBER,
+  thicket: CAMBER,
+  valley: CAMBER,
+};
+
+const NICE: Record<ObstacleKind, string> = {
+  climb: 'Up and over. Nicely done.',
+  washout: 'Through the washout. Nicely done.',
+  sand: 'Through the sand, and the view over the strait is yours.',
+  rocks: 'Through the roots and rock. Nicely done.',
+  descent: 'Down in one piece, nice and slow.',
+  summit: 'On top of Puaka Hill. Take in the view.',
+  mud: 'Through the mud. That took some doing.',
+  ford: 'Across the ford and up the bank.',
+  camber: 'Along the shore without sliding off. Good line.',
+  ridge: 'Along the ridge without slipping off. Nicely done.',
+  valley: 'Up and out of the valley. Nicely done.',
+  thicket: 'Through. Nicely done.',
+  ditches: 'Across the ditches, never a wheel left spinning.',
+  rutted: 'Out of the ruts and over them. Good line.',
+  notch: 'Up through the notch without wedging. Neat.',
+  falls: 'Up the rock waterfall, ledge by ledge.',
+  logs: 'Over the fallen logs, a wheel at a time.',
+  creek: 'Down into the creek and up out of it.',
+  bridge: 'Across the planks without putting a wheel wrong.',
+  flooded: 'Through the flood, holes and all.',
+  rockbed: 'Across the creek bed, rock by rock.',
+};
+const TIP_WHY: Record<ObstacleKind, string> = {
+  climb: 'Steep and loose',
+  washout: 'A wheel is in the air',
+  sand: 'Soft sand',
+  rocks: 'A wheel is light on the rocks and spinning',
+  descent: 'Steep and loose going down',
+  summit: 'Rock ledges, steep',
+  mud: 'Deep mud, and a wheel spinning in a hole',
+  ford: 'Soft bed and a slick bank out',
+  camber: 'The track leans to the sea',
+  ridge: 'A narrow ridge',
+  valley: 'A narrow valley',
+  thicket: 'A tight squeeze',
+  ditches: 'Cross-axle ditches: two wheels are hanging',
+  rutted: 'Deep ruts: the belly is dragging',
+  notch: 'A V-notch: you have slipped into the bottom',
+  falls: 'A stack of rock ledges',
+  logs: 'Fallen logs: a wheel is up on one and another is hanging',
+  creek: 'A steep creek bank',
+  bridge: 'A wheel is off the planks',
+  flooded: 'A wheel is down a hole under the water',
+  rockbed: 'Rounded rocks: a wheel is up on one and another is hanging',
+};
+const TIP_HOW: Record<ObstacleKind, string> = {
+  climb: 'Back down a little and take it slow and steady.',
+  washout: 'Keep the wheels turning slowly; let the car rock across.',
+  sand: 'Back up and take a run at it, and keep your speed up.',
+  rocks: 'Slow and steady: let each wheel climb its rock in turn.',
+  descent: 'Off the pedals in low range and let it crawl down.',
+  summit: 'Slow and steady at each ledge; do not bounce up them.',
+  mud: 'Keep moving: a steady pace, and do not stop in the holes.',
+  ford: 'A steady walking pace in, and keep the wheels turning up the bank.',
+  camber: 'Keep to the high side of the track, and go slow.',
+  ridge: 'Keep to the middle and go slow: off the edge is bog.',
+  valley: 'Keep to the middle of the floor: the ditches either side are bog.',
+  thicket: 'Slow, and keep to the track.',
+  ditches: 'The open diff sends the power to the hanging wheels: crawl across with the diff locked.',
+  rutted: 'Climb out of the ruts and straddle them: one wheel on the middle ridge, one on the bank.',
+  notch: 'Keep the wheels up on the two faces, the car square in the middle, and follow the bend.',
+  falls: 'Low range and the diff lock, and climb each ledge slowly, a corner at a time.',
+  logs: 'Lock the diff and crawl: let each wheel climb its log in turn. Fast, they throw you about.',
+  creek: 'Ease down the bank slowly, then low range and the diff lock to climb out the far side.',
+  bridge: 'Line the car up square before the planks and creep across, wheels in the middle of each plank.',
+  flooded: 'Low range and the diff lock, and a crawl: the holes are always in the same places, so remember them next time.',
+  rockbed: 'Low range and the diff lock, and crawl, letting each wheel climb its rock in turn.',
+};
 
 /** Find the route on the lanes and tracks (paths only if nothing else joins). */
-function findRoute(map: UbinMap): XZ[] {
+function findRoute(map: UbinMap, waypoints: XZ[], paths = false): XZ[] {
   const pos = new Map<number, XZ>();
   const adj = new Map<number, { to: number; w: number }[]>();
-  const cost = { lane: 1, track: 1, path: 1000 };
+  const cost = { lane: 1, track: 1, path: paths ? 1.3 : 1000 };
   for (const r of map.roads) {
     if (r.nodes.length !== r.pts.length) continue;
     for (let i = 0; i + 1 < r.nodes.length; i++) {
@@ -101,7 +377,7 @@ function findRoute(map: UbinMap): XZ[] {
     let best = Infinity;
     let id = -1;
     for (const r of map.roads) {
-      if (r.kind === 'path') continue;
+      if (r.kind === 'path' && !paths) continue;
       r.nodes.forEach((n, i) => {
         const d = Math.hypot(r.pts[i][0] - x, r.pts[i][1] - z);
         if (d < best) {
@@ -172,7 +448,7 @@ function findRoute(map: UbinMap): XZ[] {
     for (let i = 0; i + 1 < out.length; i++) used.add(ek(out[i], out[i + 1]));
     return out;
   };
-  const nodes = WAYPOINTS.map(nearestNode);
+  const nodes = waypoints.map(nearestNode);
   const all = [nodes[0]];
   for (let i = 0; i + 1 < nodes.length; i++) all.push(...path(nodes[i], nodes[i + 1]).slice(1));
   // Drop repeated points (ways that share a node twice in a row).
@@ -195,17 +471,32 @@ function stretch(line: Polyline, s0: number, s1: number): Polyline {
   return new Polyline(pts);
 }
 
+export interface Coaching {
+  tip?: string;
+  say?: string;
+  zone?: string;
+}
+
 export class UbinTrail {
   readonly route: Polyline;
   readonly obstacles: Obstacle[] = [];
   /** Where the off-road part starts and the camp is. */
   readonly camp: { x: number; z: number };
 
-  constructor(readonly map: UbinMap) {
-    this.route = new Polyline(findRoute(map));
+  /** The hidden detour (harder trails), if there is one. */
+  readonly detour: Polyline | null = null;
+  /** Extra height along the route: (s, metres), in order. */
+  private readonly lift: [number, number][] = [];
+
+  constructor(
+    readonly map: UbinMap,
+    readonly def: TrailDef,
+  ) {
+    this.route = new Polyline(findRoute(map, def.waypoints, def.paths));
     const R = this.route;
+    const L = R.length;
     const onRoute = (x: number, z: number, from: number, to: number) => {
-      // Nearest point on a part of the route (it passes Puaka Bridge twice).
+      // Nearest point on a part of the route (it can pass a place twice).
       let best = Infinity;
       let bs = from;
       for (let s = from; s <= to; s += 1) {
@@ -218,27 +509,47 @@ export class UbinTrail {
       }
       return bs;
     };
-    const L = R.length;
-    const offroad = onRoute(-250, -700, 0, L);
-    const shore = onRoute(-1055, -115, offroad, L);
-    const at = (x: number, z: number) => onRoute(x, z, offroad, shore + 200);
-    const make = (kind: ObstacleKind, label: string, s0: number, len: number) => {
-      const s1 = s0 + len;
+    if (def.wayRound === 'hidden' && def.detour) this.detour = new Polyline(findRoute(map, def.detour.waypoints, true));
+    // Obstacles in order along the route.
+    let from = 0;
+    for (const od of def.obstacles) {
+      const s0 = onRoute(od.at[0], od.at[1], from, L);
+      const s1 = Math.min(L - 1, s0 + od.len);
+      from = s1;
       const line = stretch(R, s0, s1);
-      const { bypass, side } = this.wayRound(s0, s1);
-      const g = bypass.at(14);
-      const g2 = bypass.at(15);
+      let bypass: Polyline;
+      let side = 1;
+      let gate: Obstacle['gate'] = null;
+      // (Nothing to go round where nothing stops you: a descent, a camber.)
+      if (def.wayRound === 'gate' && od.round !== false && od.kind !== 'descent' && od.kind !== 'camber') {
+        const w = this.wayRound(s0, s1);
+        bypass = w.bypass;
+        side = w.side;
+        const g = bypass.at(14);
+        const g2 = bypass.at(15);
+        gate = { x: g.x, z: g.z, yaw: Math.atan2(-(g2.z - g.z), g2.x - g.x) };
+      } else bypass = this.detour ?? line;
+      const mix = od.mix ?? [{ kind: od.kind, from: 0, to: s1 - s0, p: od.p }];
+      const parts = mix.map((m) => ({ kind: m.kind, from: m.from, to: Math.min(m.to, s1 - s0), p: m.p ?? {}, line: stretch(R, s0 + m.from, Math.min(s1, s0 + m.to)) }));
       this.obstacles.push({
-        kind,
-        label,
+        kind: od.kind,
+        label: od.label,
+        needs: od.needs,
+        nice: od.nice,
+        then: od.then,
+        thenSaid: false,
+        drop: od.drop,
+        dropSaid: false,
+        p: od.p ?? parts.find((q) => q.kind === od.kind)?.p ?? {},
+        parts,
         s0,
         s1,
         line,
         bypass,
         side,
-        gate: { x: g.x, z: g.z, yaw: Math.atan2(-(g2.z - g.z), g2.x - g.x) },
+        gate,
         tries: 0,
-        open: false,
+        open: !gate,
         done: null,
         inside: false,
         counted: false,
@@ -246,12 +557,114 @@ export class UbinTrail {
         idle: 0,
         tipFor: 0,
       });
-    };
-    make('climb', 'Steep climb', at(-420, -575), 80);
-    make('washout', 'Washout', at(-1370, -560), 60);
-    make('sand', 'Soft sand', at(-1080, -175), 90);
+    }
+    // The height profile: anchors in order along the route.
+    let pf = 0;
+    for (const [[x, z], h] of def.profile ?? []) {
+      pf = onRoute(x, z, pf, L);
+      this.lift.push([pf, h]);
+    }
     const end = R.at(L);
     this.camp = { x: end.x, z: end.z };
+  }
+
+  // ---------------- Ruts ----------------
+
+  /** Half-metre squares of soft ground worn by spinning wheels: 0 new, 1 dug right in. */
+  readonly ruts = new Map<number, number>();
+  /** Bumped whenever the ruts change (for the marks). */
+  rutVersion = 0;
+  static readonly RUT_CELL = 0.5;
+  private rutKey(x: number, z: number): number {
+    const c = UbinTrail.RUT_CELL;
+    return Math.floor(x / c) * 100003 + Math.floor(z / c);
+  }
+  /** How worn the ground is at (x, z), 0..1. */
+  rutAt(x: number, z: number): number {
+    return this.ruts.get(this.rutKey(x, z)) ?? 0;
+  }
+  /** A spinning wheel at (x, z) wears the ground there by `amount`. */
+  dig(x: number, z: number, amount: number) {
+    const k = this.rutKey(x, z);
+    const was = this.ruts.get(k) ?? 0;
+    const now = Math.min(1, was + amount);
+    if (now === was) return;
+    this.ruts.set(k, now);
+    if (Math.floor(now * 8) !== Math.floor(was * 8)) this.rutVersion++;
+  }
+  /** Fresh ground again (Try again, or leaving the trail). */
+  resetRuts() {
+    if (!this.ruts.size) return;
+    this.ruts.clear();
+    this.rutVersion++;
+  }
+  /** Each worn square: its middle and how worn, for the marks. */
+  rutCells(): { x: number; z: number; w: number }[] {
+    const c = UbinTrail.RUT_CELL;
+    const out: { x: number; z: number; w: number }[] = [];
+    for (const [k, w] of this.ruts) {
+      const ix = Math.round(k / 100003);
+      const iz = k - ix * 100003;
+      out.push({ x: (ix + 0.5) * c, z: (iz + 0.5) * c, w });
+    }
+    return out;
+  }
+
+  // The profile spread beside the route: route samples every 4 m in a
+  // grid, blended by distance, so the ground is smooth where the route
+  // bends back near itself (a nearest point would jump from one part of
+  // the route to another, and the ground with it).
+  private liftGrid: Map<string, [number, number, number][]> | null = null;
+  private liftNear(x: number, z: number) {
+    const G = 25;
+    if (!this.liftGrid) {
+      this.liftGrid = new Map();
+      for (let s = 0; s <= this.route.length; s += 4) {
+        const p = this.route.at(s);
+        const k = `${Math.floor(p.x / G)},${Math.floor(p.z / G)}`;
+        if (!this.liftGrid.has(k)) this.liftGrid.set(k, []);
+        this.liftGrid.get(k)!.push([p.x, p.z, this.liftAt(s)]);
+      }
+    }
+    const cx = Math.floor(x / G);
+    const cz = Math.floor(z / G);
+    let dmin = Infinity;
+    const near: [number, number][] = [];
+    for (let i = cx - 2; i <= cx + 2; i++)
+      for (let j = cz - 2; j <= cz + 2; j++)
+        for (const [px, pz, h] of this.liftGrid.get(`${i},${j}`) ?? []) {
+          const d2 = (px - x) ** 2 + (pz - z) ** 2;
+          if (d2 > 2500) continue;
+          near.push([d2, h]);
+          dmin = Math.min(dmin, d2);
+        }
+    if (!near.length) return 0;
+    let sw = 0;
+    let sh = 0;
+    for (const [d2, h] of near) {
+      const w = Math.exp(-(d2 - dmin) / 200);
+      sw += w;
+      sh += w * h;
+    }
+    return (sh / sw) * (1 - smoothstep(7, 50, Math.sqrt(dmin)));
+  }
+
+  /** Extra height of the route's profile at s along it. */
+  liftAt(s: number) {
+    const A = this.lift;
+    if (!A.length) return 0;
+    if (s <= A[0][0]) return A[0][1];
+    for (let i = 0; i + 1 < A.length; i++) {
+      const [s0, h0] = A[i];
+      const [s1, h1] = A[i + 1];
+      if (s <= s1) {
+        // Nearly even all the way (a smoothstep alone is half as steep
+        // again in the middle), easing in and out at the ends.
+        const t = (s - s0) / Math.max(1e-6, s1 - s0);
+        return h0 + (h1 - h0) * (0.6 * t + 0.4 * smoothstep(0, 1, t));
+      }
+    }
+    return A[A.length - 1][1];
   }
 
   /**
@@ -288,57 +701,1036 @@ export class UbinTrail {
   /** The obstacle's shape at (x, z): extra height on and beside the trail. */
   shape(x: number, z: number): number {
     let y = 0;
+    if (this.lift.length) y += this.liftNear(x, z);
     for (const o of this.obstacles) {
       const n = o.line.nearest(x, z, 40);
       if (!n) continue;
-      const s = n.s;
-      const len = o.s1 - o.s0;
-      if (o.kind === 'climb') {
-        // Up 6.5 m in 22 m, a short top, then easing down to the trail again.
-        const up = smoothstep(4, 4 + TUNE.climbUp, s);
-        const down = 1 - smoothstep(12 + TUNE.climbUp, len, s);
-        const across = 1 - smoothstep(4, 20, n.d);
-        y += TUNE.climbH * Math.min(up, down) * across;
-      } else if (o.kind === 'washout') {
-        // A gully: down into it gently, then out up a washed-out bank of
-        // humps on alternate sides, a wheelbase apart, so the car rocks
-        // corner to corner with one wheel at a time hanging in the air.
-        const out0 = TUNE.washOut * len; // where the climb out starts
-        const across = 1 - smoothstep(5, 18, n.d);
-        y -= TUNE.washDepth * smoothstep(0, out0 - 6, s) * (1 - smoothstep(out0, len, s)) * across;
-        const k = 5.6;
-        const fade = smoothstep(out0 - 2, out0 + 3, s) * (1 - smoothstep(len - 5, len - 1, s));
-        const hump = (c: number, side: number) => {
-          const t = (s - c) / TUNE.humpLen;
-          if (Math.abs(t) > 1) return 0;
-          const lateral = clamp(1 - Math.abs(n.sd - side * 1.0) / 1.6, 0, 1);
-          return TUNE.humpH * (0.5 + 0.5 * Math.cos(Math.PI * t)) * lateral;
-        };
-        let h = 0;
-        for (let c = out0 + 1; c < len - 3; c += k) h += hump(c, 1) + hump(c + k / 2, -1);
-        y += h * fade;
-      } else {
-        // Sand: soft dips, then a low dune across the trail. With speed
-        // you float over it; slow, the sand holds the wheels and you dig in.
-        const across = 1 - smoothstep(3, 8, n.d);
-        const fade = smoothstep(0, 10, s) * (1 - smoothstep(len - 10, len, s));
-        y += -TUNE.sandDip * fade * (0.5 + 0.5 * Math.sin(s * 0.45)) * across;
-        const dune = smoothstep(0.55 * len - TUNE.duneFace, 0.55 * len, s) * (1 - smoothstep(0.75 * len, len - 4, s));
-        y += TUNE.duneH * dune * (1 - smoothstep(4, 14, n.d));
+      let h = this.stretchShape(o, n.s, n.sd);
+      if (o.drop) {
+        // The look spot: a flat shelf across the track, level with its
+        // middle (the ground there whatever the stretch's shape).
+        const D = o.drop;
+        const [l0, l1] = UbinTrail.LOOK;
+        const u = n.s - D.at;
+        const w = smoothstep(l0 - 4, l0, u) * (1 - smoothstep(l1, l1 + 2.5, u)) * (1 - smoothstep(3.5, 6.5, n.d));
+        if (w > 0) h += (this.stretchShape(o, D.at + (l0 + l1) / 2, 0) - h) * w;
       }
+      y += h;
     }
     return y;
+  }
+
+  /** A stretch's own shape s metres in, sd metres left of its line (its drop's step too). */
+  private stretchShape(o: Obstacle, ns: number, nsd: number): number {
+    let y = 0;
+    // (Fallen logs lie on the ground, they do not follow it down into mud
+    // ruts and holes: the logs' shape stands on the ground without them,
+    // and fills the ruts up to the log where it crosses them.)
+    let cut = 0;
+    let logs = -1;
+    for (const part of o.parts) {
+      const s = ns - part.from;
+      const len = part.to - part.from;
+      if (s < -20 || s > len + 20) continue;
+      // (shift: a part laid along a line beside the route, like mud ruts
+      // on the high side of an off-camber bench.)
+      const sd = nsd - (part.p.shift ?? 0);
+      const h = this.partShape(o, part.kind, part.p, s, Math.abs(sd), sd, len, part.from);
+      if (part.kind === 'logs') logs = Math.max(logs, h);
+      else {
+        y += h;
+        if (part.kind === 'mud') cut += h;
+      }
+    }
+    // (From the foot of the log's hump, where the ruts are, the ground
+    // rises out of them to the log's own level over its first 0.15 m.)
+    if (logs >= 0) y = Math.max(y, y - cut + logs + cut * (1 - clamp(logs / 0.15, 0, 1)));
+    if (o.drop) y += this.dropShape(o.drop, ns, Math.abs(nsd));
+    return y;
+  }
+
+  /** A commitment point's step, s metres into the stretch: a metre-wide face, down. */
+  dropShape(D: Drop, s: number, d: number): number {
+    const down = smoothstep(D.at - 0.5, D.at + 0.5, s);
+    const back = smoothstep(D.until - D.back, D.until, s);
+    return -D.h * down * (1 - back) * (1 - smoothstep(6, 14, d));
+  }
+  /**
+   * A drop's rock lip, across the track where a car can be (on a camber,
+   * its bench from the slick edge up to the bank), every 0.2 m: where its
+   * top sits (just above the face), where it meets the ground behind, the
+   * foot of its face below, and the upper ground its top follows.
+   */
+  lipLine(o: Obstacle): { off: number; back: XZ; top: XZ; upper: XZ; foot: XZ; lower: XZ }[] {
+    const D = o.drop;
+    if (!D) return [];
+    const camber = o.parts.find((q) => q.kind === 'camber');
+    const dir = camber ? (camber.p.dir ?? 1) : 1;
+    const [lo, hi] = camber ? [(camber.p.edge ?? 1) - 2.2, (camber.p.edge ?? 1) + (camber.p.width ?? 3.2) + 0.2] : [-2.9, 2.9];
+    const pt = (s: number, off: number): XZ => {
+      const a = o.line.at(s);
+      return [a.x + a.tz * off, a.z - a.tx * off];
+    };
+    const out: { off: number; back: XZ; top: XZ; upper: XZ; foot: XZ; lower: XZ }[] = [];
+    const n = Math.round((hi - lo) / 0.2);
+    for (let k = 0; k <= n; k++) {
+      const off = dir * (lo + ((hi - lo) * k) / n);
+      out.push({ off, back: pt(D.at - 1.6, off), top: pt(D.at - 0.05, off), upper: pt(D.at - 0.6, off), foot: pt(D.at + 0.2, off), lower: pt(D.at + 0.6, off) });
+    }
+    return out;
+  }
+
+  /**
+   * The parts with ground finer than the solid 1 m ground resolves (deep
+   * ruts, a V-notch's crack, cross-axle troughs, ledges): each is drawn and
+   * made solid on its own 0.5 m strip, FINE_HALF either side of its line,
+   * and under its middle (out to FINE_RIM short of its edges) the tiles' own ground is
+   * sunk out of the way.
+   */
+  /**
+   * Where the fine strips run: along each stretch, the fine parts' spans
+   * (a little past each end) joined into one wherever they meet or overlap,
+   * so no strip ends on top of another.
+   */
+  fineStrips(): { o: Obstacle; a: number; b: number }[] {
+    return (this.fine_ ??= this.makeFineStrips());
+  }
+  private makeFineStrips() {
+    const out: { o: Obstacle; a: number; b: number }[] = [];
+    for (const o of this.obstacles) {
+      const spans = o.parts
+        .filter((q) => FINE_KINDS.has(q.kind))
+        .map((q) => [q.from - UbinTrail.FINE_PAST, q.to + UbinTrail.FINE_PAST] as [number, number])
+        .sort((p, q) => p[0] - q[0]);
+      for (const [a, b] of spans) {
+        const last = out[out.length - 1];
+        if (last && last.o === o && a <= last.b + 2) last.b = Math.max(last.b, b);
+        else out.push({ o, a, b });
+      }
+    }
+    return out;
+  }
+  // (Wide enough that an obstacle's own shape has died away before the
+  // strip's outer band, where it lies over the tiles' ground: there the two
+  // meet only if the ground is smooth, or the tiles' creases poke through.)
+  static readonly FINE_HALF = 14;
+  /**
+   * The tiles' ground is sunk under a strip out to this short of its edge
+   * (and from 3 m in from each end): out there the strip is the tiles' own
+   * drawn ground, laid over it, and a sunk point's dip stays under it.
+   */
+  static readonly FINE_RIM = 4;
+  static readonly FINE_PAST = 6;
+  /**
+   * How far a point lies inside a strip: from its nearer side edge (the
+   * narrowest the strip is within 4 m along, as it narrows and widens on a
+   * bend) and from its nearer end (measured square to the end's own row, as
+   * the strip's rows lie across it, not by the nearest point on its line,
+   * which on a bend's outside swings past the end). Null if not beside it.
+   */
+  fineIn(o: Obstacle, a: number, b: number, x: number, z: number): { edge: number; end: number } | null {
+    const n = this.fineNear(o, x, z, UbinTrail.FINE_HALF);
+    if (!n) return null;
+    const side = Math.sign(n.sd) || 1;
+    const half = Math.min(this.fineHalfAt(o, n.s - 4, side), this.fineHalfAt(o, n.s, side), this.fineHalfAt(o, n.s + 4, side));
+    const L = o.line.length;
+    const pa = this.fineAt(o, a, 0);
+    const ta = o.line.at(clamp(a, 0, L));
+    const pb = this.fineAt(o, b, 0);
+    const tb = o.line.at(clamp(b, 0, L));
+    const fromA = (x - pa.x) * ta.tx + (z - pa.z) * ta.tz;
+    const toB = (pb.x - x) * tb.tx + (pb.z - z) * tb.tz;
+    return { edge: half - n.d, end: Math.min(fromA, toB, n.s - a, b - n.s) };
+  }
+  private halfMemo = new Map<string, number>();
+  /** fineHalf, remembered to the half metre (asked for every tile point near a strip). */
+  private fineHalfAt(o: Obstacle, s: number, side: number): number {
+    const key = `${o.s0}:${side}:${Math.round(s * 2)}`;
+    let h = this.halfMemo.get(key);
+    if (h === undefined) {
+      h = this.fineHalf(o, Math.round(s * 2) / 2, side);
+      this.halfMemo.set(key, h);
+    }
+    return h;
+  }
+  /**
+   * Under a strip's outer band (between its sunk middle and its edge): a few
+   * centimetres the tiles' ground is let down, so the strip laid over it
+   * covers it even where the two triangulations differ a little. Nothing
+   * within a tile square's diagonal (3 m) of its edge or ends, so every tile
+   * triangle that reaches out past the strip keeps its true corners.
+   */
+  fineSink(x: number, z: number): number {
+    let m = 0;
+    for (const { o, a, b } of this.fineStrips()) {
+      const f = this.fineIn(o, a, b, x, z);
+      if (!f) continue;
+      m = Math.max(m, smoothstep(3, 4.5, f.edge) * smoothstep(3, 4.5, f.end));
+    }
+    return 0.08 * m;
+  }
+  /** Under a fine strip's middle, where the tiles' ground is sunk. */
+  fineCore(x: number, z: number): boolean {
+    for (const { o, a, b } of this.fineStrips()) {
+      const f = this.fineIn(o, a, b, x, z);
+      // (FINE_RIM inside its edges and 3 m inside its ends: the tiles' ground
+      // beside a sunk point lies under the strip, which is the tiles' own
+      // ground out there.)
+      if (f && f.edge > UbinTrail.FINE_RIM && f.end > 3) return true;
+    }
+    return false;
+  }
+  private fine_: { o: Obstacle; a: number; b: number }[] | null = null;
+  /**
+   * A point on a strip, s metres along its stretch (before the start or
+   * past the end: straight on from there, as a strip may run a few metres
+   * beyond its stretch) and `off` to the left.
+   */
+  fineAt(o: Obstacle, s: number, off: number): { x: number; z: number } {
+    const L = o.line.length;
+    const a = o.line.at(clamp(s, 0, L));
+    const k = s < 0 ? s : s > L ? s - L : 0;
+    if (!off) return { x: a.x + a.tx * k, z: a.z + a.tz * k };
+    const { tx, tz } = this.fineDir(o, s);
+    return { x: a.x + a.tx * k + tz * off, z: a.z + a.tz * k - tx * off };
+  }
+  /**
+   * As fineAt, but square to the line itself, not its smoothed direction:
+   * where the strip's solid ground is laid, as the obstacles' shapes were
+   * tuned on (its rows may cross far out on a sharp turn, which the wheels
+   * never feel; the drawn rows, which would show it, use fineAt).
+   */
+  fineAtSolid(o: Obstacle, s: number, off: number): { x: number; z: number } {
+    const L = o.line.length;
+    const a = o.line.at(clamp(s, 0, L));
+    const k = s < 0 ? s : s > L ? s - L : 0;
+    return { x: a.x + a.tx * k + a.tz * off, z: a.z + a.tz * k - a.tx * off };
+  }
+  private dirMemo = new Map<string, { tx: number; tz: number }>();
+  /**
+   * A strip's direction at s, smoothed over 4 m either way (weighted to the
+   * middle): the line's own turns at its points are sharp, and far out
+   * across them a strip's rows would cross over, folding triangles face
+   * down (dark shards). Smoothed, its rows turn gently, and fineHalf keeps
+   * them from crossing.
+   */
+  fineDir(o: Obstacle, s: number): { tx: number; tz: number } {
+    const key = `${o.s0}:${Math.round(s * 4)}`;
+    let d = this.dirMemo.get(key);
+    if (!d) {
+      const L = o.line.length;
+      const c = Math.round(s * 4) / 4;
+      let tx = 0;
+      let tz = 0;
+      for (let e = -4; e <= 4; e += 0.25) {
+        const w = 1 - Math.abs(e) / 4.25;
+        const q = o.line.at(clamp(c + e, 0, L));
+        tx += q.tx * w;
+        tz += q.tz * w;
+      }
+      const n = Math.hypot(tx, tz) || 1;
+      d = { tx: tx / n, tz: tz / n };
+      this.dirMemo.set(key, d);
+    }
+    return d;
+  }
+  /** Where a point is on a stretch's strip: s along (as fineAt) and its distance across. */
+  fineNear(o: Obstacle, x: number, z: number, maxR: number): { s: number; d: number; sd: number } | null {
+    const n = o.line.nearest(x, z, maxR + UbinTrail.FINE_PAST + 1);
+    if (!n) return null;
+    const L = o.line.length;
+    if (n.s > 1e-6 && n.s < L - 1e-6) return n.d < maxR ? n : null;
+    const a = o.line.at(n.s);
+    const along = (x - a.x) * a.tx + (z - a.z) * a.tz;
+    const s = n.s + along;
+    const sd = (x - a.x) * a.tz - (z - a.z) * a.tx;
+    return Math.abs(sd) < maxR ? { s, d: Math.abs(sd), sd } : null;
+  }
+  /**
+   * How far a strip reaches to one side (+1 left, -1 right) at s: the full
+   * FINE_HALF, but on the inside of a tight bend less, so that its rows
+   * never cross over each other there.
+   */
+  fineHalf(o: Obstacle, s: number, side: number): number {
+    const L = o.line.length;
+    // (At each point around: as far as reaches before the rows would cross
+    // on the inside of the bend there; then widening no faster than a third
+    // of a metre a metre from it, so the strip narrows and widens gently.)
+    let half = UbinTrail.FINE_HALF;
+    for (let c = s - 24; c <= s + 24; c += 0.5) {
+      // (How fast the strip's rows turn there, a metre apart, as fineDir lays
+      // them: out at d across, on the inside, they close up by d times that,
+      // and cross where it reaches the row spacing. Kept to 60% of that.)
+      const p = this.fineDir(o, clamp(c - 0.5, -UbinTrail.FINE_PAST, L + UbinTrail.FINE_PAST));
+      const q = this.fineDir(o, clamp(c + 0.5, -UbinTrail.FINE_PAST, L + UbinTrail.FINE_PAST));
+      // (Turning left, the cross product of the tangents is negative.)
+      const turn = Math.atan2(p.tx * q.tz - p.tz * q.tx, p.tx * q.tx + p.tz * q.tz);
+      const bend = Math.max(0, -side * turn);
+      half = Math.min(half, 0.6 / Math.max(bend, 1e-6) + Math.max(0, Math.abs(c - s) - 3) / 3);
+    }
+    return clamp(half, 4, UbinTrail.FINE_HALF);
+  }
+
+  /**
+   * A plank bridge's two planks: each from bank to bank over its gully
+   * (`gap` either side of the middle of the part, and 2 m onto each bank),
+   * under the car's wheels when it is square in the middle of the track.
+   */
+  planks(): { a: XZ; b: XZ; w: number }[] {
+    const out: { a: XZ; b: XZ; w: number }[] = [];
+    for (const o of this.obstacles)
+      for (const q of o.parts) {
+        if (q.kind !== 'bridge') continue;
+        const { a, b } = this.plankLine(o, q);
+        const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        const nx = (b[1] - a[1]) / L;
+        const nz = -(b[0] - a[0]) / L;
+        for (const side of [1, -1]) {
+          const off = side * (q.p.track ?? 0.86);
+          out.push({ a: [a[0] + nx * off, a[1] + nz * off], b: [b[0] + nx * off, b[1] + nz * off], w: q.p.plankW ?? 0.7 });
+        }
+      }
+    return out;
+  }
+  /**
+   * A plank bridge's middle: straight (planks are), from bank to bank,
+   * set over to the inside of any bend by half its bow, so it strays no
+   * more than that either side of the track's line; the line to drive
+   * follows it (see lineAt).
+   */
+  plankLine(o: Obstacle, q: Part): { a: XZ; b: XZ } {
+    const c = q.from + (q.to - q.from) / 2;
+    const reach = (q.p.gap ?? 3) + 2;
+    const p0 = this.fineAt(o, c - reach, 0);
+    const p1 = this.fineAt(o, c + reach, 0);
+    const m = this.fineAt(o, c, 0);
+    const dx = (m.x - (p0.x + p1.x) / 2) / 2;
+    const dz = (m.z - (p0.z + p1.z) / 2) / 2;
+    return { a: [p0.x + dx, p0.z + dz], b: [p1.x + dx, p1.z + dz] };
+  }
+  /** How far left of the track's line a plank bridge's middle is at u metres into its part (0 off the planks' reach, easing in and out). */
+  private plankOff(o: Obstacle, q: Part, u: number): number {
+    const len = q.to - q.from;
+    const reach = (q.p.gap ?? 3) + 2;
+    const c = len / 2;
+    if (u < c - reach - 8 || u > c + reach + 8) return 0;
+    const { a, b } = this.plankLine(o, q);
+    const r = this.fineAt(o, q.from + clamp(u, c - reach, c + reach), 0);
+    const t = o.line.at(clamp(q.from + u, 0, o.line.length));
+    const ex = b[0] - a[0];
+    const ez = b[1] - a[1];
+    const f = clamp(((r.x - a[0]) * ex + (r.z - a[1]) * ez) / (ex * ex + ez * ez), 0, 1);
+    const qx = a[0] + ex * f - r.x;
+    const qz = a[1] + ez * f - r.z;
+    const w = smoothstep(c - reach - 8, c - reach - 1, u) * (1 - smoothstep(c + reach + 1, c + reach + 8, u));
+    return (qx * t.tz - qz * t.tx) * w;
+  }
+
+  /** The ground's height without the obstacles' shapes (set by the course): for a creek's level bed. */
+  base: ((x: number, z: number) => number) | null = null;
+  /** The ground with the route's profile but without the obstacles' own shapes. */
+  private ground0 = (x: number, z: number) => (this.base ? this.base(x, z) + (this.lift.length ? this.liftNear(x, z) : 0) : 0);
+  private flood_ = new Map<string, { floor: number; holes: { s: number; sd: number; depth: number }[] }>();
+  /** A flooded track's level floor and its holes (s along the part, sd across), the same every time. */
+  floodInfo(o: Obstacle, from: number, len: number) {
+    const key = `${o.s0}:${from}`;
+    let f = this.flood_.get(key);
+    if (!f) {
+      const q = o.parts.find((p) => p.kind === 'flooded' && p.from === from)!;
+      let lo = Infinity;
+      for (let s = 0; s <= len; s += 1) {
+        const p = this.fineAt(o, from + s, 0);
+        lo = Math.min(lo, this.ground0(p.x, p.z));
+      }
+      const rand = mulberry32(Math.floor(o.s0 * 13 + from * 7) + 5);
+      const holes: { s: number; sd: number; depth: number }[] = [];
+      const every = q.p.every ?? TUNE.floodEvery;
+      for (let s = (q.p.ramp ?? 7) + 3; s < len - (q.p.ramp ?? 7) - 2; s += every * (0.7 + 0.6 * rand())) {
+        // (Under a wheel's track, one side or the other.)
+        holes.push({ s, sd: (rand() < 0.5 ? 1 : -1) * (0.6 + 0.6 * rand()), depth: (q.p.hole ?? TUNE.floodHole) * (0.8 + 0.4 * rand()) });
+      }
+      f = { floor: lo - (q.p.floor ?? 0.45), holes };
+      this.flood_.set(key, f);
+    }
+    return f;
+  }
+  private rocks_ = new Map<string, { s: number; sd: number; r: number; h: number }[]>();
+  /** A granite creek bed's rocks (s along the part, sd across; radius, height of top), the same every time. */
+  rockInfo(o: Obstacle, from: number, len: number) {
+    const key = `${o.s0}:${from}`;
+    let list = this.rocks_.get(key);
+    if (!list) {
+      const q = o.parts.find((p) => p.kind === 'rockbed' && p.from === from)!;
+      const rand = mulberry32(Math.floor(o.s0 * 17 + from * 3) + 9);
+      const gap = q.p.gap ?? TUNE.rockGap;
+      const H = q.p.rockH ?? TUNE.rockH;
+      list = [];
+      for (let s = 2; s < len - 2; s += gap)
+        for (let sd = -3; sd <= 3.01; sd += gap) {
+          const r = 0.45 + 0.4 * rand();
+          list.push({ s: s + (rand() - 0.5) * gap * 0.6, sd: sd + (rand() - 0.5) * gap * 0.6, r, h: H * (0.45 + 0.75 * rand()) });
+        }
+      list.sort((a, b) => a.s - b.s);
+      this.rocks_.set(key, list);
+    }
+    return list;
+  }
+
+  /** Where to stop and look before a drop: metres into the stretch (it may start before it). */
+  static readonly LOOK = [-12, -3];
+
+  /** One kind of ground's shape, s metres into its part of the stretch. */
+  private partShape(o: Obstacle, kind: ObstacleKind, P: Record<string, number>, s: number, d: number, sd: number, len: number, from = 0): number {
+    const n = { d, sd };
+    let y = 0;
+    if (kind === 'climb') {
+      // Up 6.5 m in 22 m, a short top, then easing down to the trail again.
+      const up = smoothstep(4, 4 + (P.up ?? TUNE.climbUp), s);
+      const down = 1 - smoothstep(12 + (P.up ?? TUNE.climbUp) + (P.top ?? 0), len, s);
+      const across = 1 - smoothstep(4, 20, n.d);
+      y += (P.h ?? TUNE.climbH) * Math.min(up, down) * across;
+    } else if (kind === 'washout') {
+      // A gully: down into it gently, then out up a washed-out bank of
+      // humps on alternate sides, a wheelbase apart, so the car rocks
+      // corner to corner with one wheel at a time hanging in the air.
+      const out0 = TUNE.washOut * len; // where the climb out starts
+      const across = 1 - smoothstep(5, 18, n.d);
+      y -= TUNE.washDepth * smoothstep(0, out0 - 6, s) * (1 - smoothstep(out0, len, s)) * across;
+      const k = 5.6;
+      const fade = smoothstep(out0 - 2, out0 + 3, s) * (1 - smoothstep(len - 5, len - 1, s));
+      const hump = (c: number, side: number) => {
+        const t = (s - c) / TUNE.humpLen;
+        if (Math.abs(t) > 1) return 0;
+        const lateral = clamp(1 - Math.abs(n.sd - side * 1.0) / 1.6, 0, 1);
+        return TUNE.humpH * (0.5 + 0.5 * Math.cos(Math.PI * t)) * lateral;
+      };
+      let h = 0;
+      for (let c = out0 + 1; c < len - 3; c += k) h += hump(c, 1) + hump(c + k / 2, -1);
+      y += h * fade;
+    } else if (kind !== 'sand') {
+      return this.feature(o, kind, P, s, n.d, n.sd, len, from);
+    } else {
+      // Sand: soft dips, then a low dune across the trail. With speed
+      // you float over it; slow, the sand holds the wheels and you dig in.
+      const across = 1 - smoothstep(3, 8, n.d);
+      const fade = smoothstep(0, 10, s) * (1 - smoothstep(len - 10, len, s));
+      y += -(P.dip ?? TUNE.sandDip) * fade * (0.5 + 0.5 * Math.sin(s * 0.45)) * across;
+      const face = P.duneFace ?? TUNE.duneFace;
+      const dune = smoothstep(0.55 * len - face, 0.55 * len, s) * (1 - smoothstep(0.75 * len, len - 4, s));
+      y += (P.duneH ?? TUNE.duneH) * dune * (1 - smoothstep(4, 14, n.d));
+    }
+    return y;
+  }
+
+  /** The harder trails' obstacles: their shape across and along (metres up). */
+  private feature(o: Obstacle, kind: ObstacleKind, P: Record<string, number>, s: number, d: number, sd: number, len: number, from = 0): number {
+    const fade = (a: number) => smoothstep(0, a, s) * (1 - smoothstep(len - a, len, s));
+    // A bump under one side of the car: centred `side` metres off the line.
+    const under = (side: number, w = 1.6) => clamp(1 - Math.abs(sd - side) / w, 0, 1);
+    const bell = (t: number) => (Math.abs(t) > 1 ? 0 : 0.5 + 0.5 * Math.cos(Math.PI * t));
+    // Roots and rock steps on alternate sides, so the car twists corner to
+    // corner and one wheel or another is always light or in the air.
+    const humps = (H: number) => {
+      const k = P.period ?? 5.6;
+      const L = P.humpLen ?? 1.8;
+      let h = 0;
+      const i0 = Math.floor(s / k);
+      for (let i = i0 - 1; i <= i0 + 1; i++) {
+        const c = i * k + 2;
+        const r = Math.sin(i * 12.9898 + o.s0) * 43758.5453;
+        const jig = 0.75 + 0.5 * (r - Math.floor(r));
+        h += H * jig * bell((s - c) / L) * under(1) + H * jig * bell((s - c - k / 2) / L) * under(-1);
+      }
+      return h * fade(4) * (1 - smoothstep(3, 6, d));
+    };
+    if (kind === 'rocks') return humps(P.humpH ?? 0.55);
+    if (kind === 'summit') {
+      // Rock ledges across the track, a step up every few metres.
+      const step = P.every ?? 9;
+      const H = P.ledgeH ?? 0.3;
+      const t = s / step;
+      const ledge = H * (Math.floor(t) + smoothstep(0.75, 0.9, t - Math.floor(t)));
+      // (Held at the top: the ledges are part of the climb.)
+      return (ledge - H * (len / step) * smoothstep(0, len, s)) * (1 - smoothstep(4, 9, d)) * fade(3) + humps(P.humpH ?? 0);
+    }
+    if (kind === 'descent') {
+      // Washed-out ruts down the slope.
+      const rut = (P.rut ?? 0.25) * (under(0.9, 0.5) + under(-0.9, 0.5));
+      return -rut * fade(5) * (1 - smoothstep(3, 5, d));
+    }
+    if (kind === 'mud') {
+      // Deep wheel ruts, and holes on alternate sides that drop one wheel
+      // in and lift the corner opposite.
+      const rut = (P.rut ?? 0.3) * (under(0.85, 0.45) + under(-0.85, 0.45));
+      const k = P.period ?? 7;
+      let holes = 0;
+      const i0 = Math.floor(s / k);
+      for (let i = i0 - 1; i <= i0 + 1; i++) {
+        const c = i * k + 3;
+        holes += (P.hole ?? 0.5) * (bell((s - c) / 1.7) * under(0.9, 1.2) + bell((s - c - k / 2) / 1.7) * under(-0.9, 1.2));
+      }
+      return -(rut + holes) * fade(4) * (1 - smoothstep(3, 6, d));
+    }
+    if (kind === 'ford') {
+      // Down a short bank into the water, across a soft bed, and up a
+      // steep, slick bank out.
+      const depth = P.depth ?? 0.8;
+      const inn = P.inn ?? 8;
+      const out = P.out ?? 6;
+      const down = smoothstep(0, inn, s);
+      const up = smoothstep(len - out, len, s);
+      return -depth * down * (1 - up) * (1 - smoothstep(6, 16, d)) + (P.bank ?? 1.2) * bell((s - (len - out * 0.6)) / (out * 0.6)) * (1 - smoothstep(4, 9, d));
+    }
+    if (kind === 'ridge') {
+      // The track on a crest `w` metres either side of the line, the ground
+      // falling `drop` metres within `run` beyond it, into bog.
+      const w = P.w ?? 2.6;
+      const run = P.run ?? 3;
+      return -(P.drop ?? 3) * smoothstep(w, w + run, d) * (1 - smoothstep(w + run + 8, w + run + 16, d)) * fade(P.ends ?? 8);
+    }
+    if (kind === 'thicket') return 0;
+    if (kind === 'valley') {
+      // Down `depth` metres into a valley: a floor `w` either side of the
+      // line, then a boggy ditch, then a steep wall back up to the land.
+      const w = P.w ?? 2.6;
+      const ditch = P.ditch ?? 1.6;
+      const wall = P.wall ?? 3.5;
+      const floor = -(P.depth ?? 4) * (1 - smoothstep(w + ditch, w + ditch + wall, d));
+      const dip = -(P.ditchDepth ?? 0.6) * clamp(1 - Math.abs(d - (w + ditch / 2)) / (ditch / 2), 0, 1);
+      // (In over `ends` metres, out over `endOut`: gentle enough to climb out on loose ground.)
+      const ein = P.ends ?? 25;
+      const eout = P.endOut ?? ein;
+      return (floor + dip) * smoothstep(0, ein, s) * (1 - smoothstep(len - eout, len, s));
+    }
+    if (kind === 'camber') {
+      // The track is a narrow bench along the bank above the sea: level
+      // enough on its high side (a car's width, against the bank), but from
+      // the middle down it falls away steep and slick. Drive the middle and
+      // the downhill wheels slide, and the car goes down the bank.
+      const E = P.edge ?? 1;
+      const u = (P.dir ?? 1) * sd - E; // metres uphill of the bench's edge
+      const bench = Math.tan(((P.bench ?? 5) * Math.PI) / 180);
+      const steep = Math.tan(((P.deg ?? 27) * Math.PI) / 180);
+      const W = P.width ?? 3.2;
+      let y = u >= 0 ? u * bench : u * steep;
+      if (u > W) y = W * bench + (u - W) * Math.tan(Math.PI / 6); // the bank above
+      return y * fade(10) * (1 - smoothstep(9, 14, d));
+    }
+    if (kind === 'ditches') {
+      // Cross-axle ditches: diagonal troughs across the track, each passing
+      // under the front wheel on one side and the rear wheel on the other at
+      // once (a wheelbase apart along, a track apart across), the next one
+      // slanting the other way. Two diagonally opposite wheels hang: with
+      // the diff open no wheel drives. A low bank of spoil between them.
+      const k = P.period ?? 7;
+      const D = P.depth ?? 0.6;
+      const half = P.half ?? 1;
+      const skew = (P.skew ?? 1.4) / 0.86; // metres along per metre across
+      let h = 0;
+      const i0 = Math.floor(s / k);
+      for (let i = i0 - 1; i <= i0 + 1; i++) {
+        const c = i * k + k / 2;
+        if (c < 2 || c > len - 2) continue;
+        const dir = (i & 1) === 0 ? 1 : -1;
+        const t = (s - c - dir * skew * clamp(sd, -1.7, 1.7)) / half;
+        h -= D * bell(t);
+        h += (P.spoil ?? 0.15) * bell((s - c - k / 2 - dir * skew * clamp(sd, -1.7, 1.7)) / (half * 1.4));
+      }
+      return h * fade(4) * (1 - smoothstep(3, 5.5, d));
+    }
+    if (kind === 'rutted') {
+      // Deep laterite ruts: two wheel-width ruts worn into the clay, a
+      // crown between them, deepening along to `depth` and wandering. In
+      // them the belly drags on the crown and the wheels go light; straddle
+      // them, one wheel on the crown and one on the bank (see lineAt).
+      const D = (P.depth ?? 0.75) * (0.35 + 0.65 * smoothstep(0, len * 0.45, s));
+      const u = sd - this.wander(P, s);
+      const W = P.rutW ?? 0.25;
+      const rut = (c: number) => smoothstep(W + 0.15, W, Math.abs(u - c));
+      return -D * (rut(0.86) + rut(-0.86)) * fade(6) * (1 - smoothstep(3, 6, d));
+    }
+    if (kind === 'notch') {
+      // A V-notch between granite faces: the floor a V, faces at `deg`, a
+      // crack down the bottom, then steep walls from `w` out. It bends (the
+      // weave, as lineAt) and steps up in rock on one face and the other,
+      // so it twists the car. Square in the middle the wheels sit up on the
+      // faces; off it, one drops to the crack and the body leans on a wall.
+      const u = sd - this.weave(P, s, len);
+      const a = Math.abs(u);
+      const w = P.w ?? 1.78;
+      const V = Math.tan(((P.deg ?? 24) * Math.PI) / 180);
+      let y = Math.min(a, w) * V - (P.crack ?? 0.4) * smoothstep(0.32, 0.15, a);
+      if (a > w) y += Math.min(P.wallH ?? 3, (a - w) * Math.tan(Math.PI / 3));
+      // (Rock steps on alternate faces.)
+      const k = P.period ?? 6;
+      const H = P.stepH ?? 0.3;
+      let st = 0;
+      const i0 = Math.floor(s / k);
+      for (let i = i0 - 1; i <= i0 + 1; i++) {
+        const c = i * k + k / 2;
+        const side = (i & 1) === 0 ? 1 : -1;
+        st += H * bell((s - c) / 1.4) * clamp(1 - Math.abs(u - side * 0.95) / 0.9, 0, 1);
+      }
+      return (y + st) * fade(P.ends ?? 8) * (1 - smoothstep(w + 4, w + 8, a));
+    }
+    if (kind === 'logs') {
+      // Fallen logs across the track, `period` apart, each lying at a slant
+      // (`slant` metres further along per metre across, the next the other
+      // way), so one wheel climbs at a time and lifts its corner: the
+      // corners beside it go light. Shaped as a wheel's middle rides over a
+      // log of radius r (the ground as a ray-cast wheel must see it: a
+      // wheel of radius R just touching the log), the log drawn on top.
+      const k = P.period ?? 6;
+      const r = P.r ?? 0.25;
+      const R = 0.42;
+      const sl = P.slant ?? 0.7;
+      const nn = Math.hypot(1, sl);
+      let h = 0;
+      const i0 = Math.floor(s / k);
+      for (let i = i0 - 1; i <= i0 + 1; i++) {
+        const c = i * k + k / 2;
+        if (c < 3 || c > len - 3) continue;
+        const dir = (i & 1) === 0 ? 1 : -1;
+        const t = (s - c - dir * sl * clamp(sd, -4.4, 4.4)) / nn;
+        const q = (R + r) ** 2 - t * t;
+        if (q > 0) h = Math.max(h, r + Math.sqrt(q) - R);
+      }
+      return h * (1 - smoothstep(3.8, 4.8, d));
+    }
+    if (kind === 'creek') {
+      // A creek channel across the track on a slant (`skew` metres along
+      // per metre across): a narrow bed `bed` either side of its middle,
+      // banks rising `depth` over `run`, steep enough that climbing out
+      // wants low range; crossing it slantwise, one wheel goes down (or
+      // up) before the others, so the diff lock too. The far bank stands
+      // `up` higher than the near one, easing back down over `back` beyond
+      // it: the climb out is the longer, a run down the near bank does not
+      // carry you up it.
+      // Its bed is level (water lies level), at `depth` under the ground
+      // where it crosses the track, and out either side among the trees it
+      // rises to a low sill (so its water, `water` deep, stays in it even
+      // where the land falls away), then the channel fades into the land.
+      const c = len / 2;
+      const sk = P.skew ?? TUNE.creekSkew;
+      const tt = (s - c - sk * clamp(sd, -16, 16)) / Math.hypot(1, sk);
+      const t = Math.abs(tt);
+      const wb = P.bed ?? 0.8;
+      const run = P.run ?? TUNE.creekRun;
+      const U = P.up ?? TUNE.creekUp;
+      const far = U * (smoothstep(wb, wb + run + 2.2, tt) - smoothstep(wb + run + 3, wb + run + 3 + (P.back ?? 8), tt));
+      const base = this.base;
+      if (!base) return (-(P.depth ?? TUNE.creekDepth) * (1 - smoothstep(wb, wb + run, t)) + far) * (1 - smoothstep(7, 12, d));
+      const m = this.fineAt(o, from + c, 0);
+      const B = base(m.x, m.z) - (P.depth ?? TUNE.creekDepth);
+      const bed = B + (P.sill ?? 0.8) * smoothstep(6, 10, d);
+      const p = this.fineAt(o, from + s, sd);
+      const b = base(p.x, p.z);
+      const k = smoothstep(wb, wb + run, t);
+      // (The far bank's top `up` over the ground where the creek crosses
+      // the track, whichever way the land slopes.)
+      const farUp = U ? (far / U) * Math.max(0, base(m.x, m.z) + U - b) : 0;
+      return (bed - b) * (1 - k) * (1 - smoothstep(11, 15, d)) + farUp * (1 - smoothstep(9, 14, d));
+    }
+    if (kind === 'flooded') {
+      // The track sunk into a level hollow (its floor `floor` under the
+      // lowest ground along it), a raised verge either side and at each
+      // end, so the tide water lying in it is level and stays in it; under
+      // the water, holes a wheel drops into, the same ones every time.
+      const g0 = this.ground0;
+      const L = this.floodInfo(o, from, len);
+      // (Its edges wander a little, so the water lies in a natural shape, not a box.)
+      const ramp = P.ramp ?? 7;
+      const ph = o.s0 * 0.37 + from;
+      const side = 0.9 * (0.5 + 0.5 * Math.sin(s * 0.41 + ph) * Math.sin(s * 0.17 + 2 * ph));
+      const e0 = 3 * (0.5 + 0.5 * Math.sin(sd * 0.8 + ph));
+      const e1 = 3 * (0.5 + 0.5 * Math.sin(sd * 0.7 - ph));
+      const k = (1 - smoothstep(3.0 + side, 4.6 + side, d)) * smoothstep(e0, e0 + ramp, s) * (1 - smoothstep(len - ramp - e1, len - e1, s));
+      let holes = 0;
+      for (const h of L.holes) {
+        if (Math.abs(h.s - s) > 1.2) continue;
+        const r = Math.hypot(h.s - s, h.sd - sd);
+        holes = Math.min(holes, -h.depth * (1 - smoothstep(0.35, 0.8, r)));
+      }
+      if (!g0) return -0.4 * k + holes * k;
+      const p = this.fineAt(o, from + s, sd);
+      const b = g0(p.x, p.z);
+      const rimW = (1 - smoothstep(6, 9, d)) * smoothstep(-6, 0, s) * (1 - smoothstep(len, len + 6, s));
+      const rim = b + (Math.max(b, L.floor + 0.7) - b) * rimW;
+      return rim + (L.floor - rim) * k - b + holes * k;
+    }
+    if (kind === 'rockbed') {
+      // A dry granite creek bed: a shallow channel along the track packed
+      // with rounded rocks of mixed sizes, each shaped as a wheel's middle
+      // rides over it (see logs). No line between them: crawl across.
+      const R = 0.42;
+      let h = 0;
+      for (const r of this.rockInfo(o, from, len)) {
+        if (Math.abs(r.s - s) > r.r + 0.9) continue;
+        const dd = Math.hypot(r.s - s, r.sd - sd);
+        const q = (R + r.r) ** 2 - dd * dd;
+        if (q > 0) h = Math.max(h, r.h - r.r + Math.sqrt(q) - R);
+      }
+      const ch = -(P.depth ?? 0.4) * (1 - smoothstep(3.5, 5.5, d)) * smoothstep(0, 5, s) * (1 - smoothstep(len - 5, len, s));
+      return ch + h * (1 - smoothstep(3, 4.2, d)) * smoothstep(1, 4, s) * (1 - smoothstep(len - 4, len - 1, s));
+    }
+    if (kind === 'bridge') {
+      // A gully across the track, `gap` either side of the middle of the
+      // stretch, `depth` deep with steep walls; two planks over it (drawn
+      // and made solid on their own, see planks()).
+      // Its floor level, and never lower than 0.6 m over the sea (by the
+      // shore it is shallower: never a pool of sea in it).
+      const c = len / 2;
+      const gw = P.gap ?? 3;
+      const k = (1 - smoothstep(gw, gw + 1.2, Math.abs(s - c))) * (1 - smoothstep(9, 16, d));
+      const base = this.base;
+      if (!base || k <= 0) return -(P.depth ?? 2.2) * k;
+      const m = this.fineAt(o, from + c, 0);
+      const bm = base(m.x, m.z);
+      const floor = bm - Math.min(P.depth ?? 2.2, bm - 0.6);
+      const p = this.fineAt(o, from + s, sd);
+      return Math.min(0, floor - base(p.x, p.z)) * k;
+    }
+    if (kind === 'falls') {
+      // A rock waterfall: granite ledges stacked up a stream bed (or, with
+      // p.clay, steps the rain has cut in a clay climb), each
+      // `ledgeH` up every `every` metres, each edge slanting across the
+      // track (one side `slant` metres ahead of the other, the next the
+      // other way) so the car climbs each one corner by corner.
+      const step = P.every ?? 3.5;
+      const H = P.ledgeH ?? 0.5;
+      const sl = (P.slant ?? 1.2) / 2;
+      const n0 = Math.floor(s / step);
+      const dir = (n0 & 1) === 0 ? 1 : -1;
+      const t = (s - dir * sl * clamp(sd / 1.2, -1, 1)) / step;
+      const f = t - Math.floor(t);
+      const ledge = H * (Math.floor(t) + smoothstep(0.82, 0.92, f));
+      // (Relative to a steady climb, which a climb part gives: held at the top.)
+      return (ledge - H * (len / step) * smoothstep(0, len, s)) * (1 - smoothstep(3.5, 7, d)) * fade(3);
+    }
+    return 0;
+  }
+
+  /**
+   * What the ground you feel looks like: a rock on each hump, ledges at
+   * each step, roots across the rocky track, loose stones on the gravel and
+   * scree, puddles in the mud holes. Worked out from the same numbers as
+   * the shapes in partShape() and feature(), so they sit where the bumps are.
+   */
+  props(): Prop[] {
+    const out: Prop[] = [];
+    for (const o of this.obstacles) {
+      if (o.drop) {
+        // The look spot's post on the high side (the drop's rock lip is one
+        // piece of its own: see lipLine()).
+        const D = o.drop;
+        const camber = o.parts.find((q) => q.kind === 'camber');
+        const side = camber ? (camber.p.dir ?? 1) : 1;
+        const lp = this.route.at(o.s0 + D.at + UbinTrail.LOOK[1] - 1);
+        const off = camber ? (camber.p.edge ?? 1) + (camber.p.width ?? 3.2) + 0.6 : 3.4;
+        out.push({ kind: 'post', x: lp.x + lp.tz * side * off, z: lp.z - lp.tx * side * off, yaw: 0, sx: 0.16, sy: 1.3, sz: 0.16 });
+      }
+      const rand = mulberry32(Math.floor(o.s0 * 7) + 11);
+      for (const q of o.parts) {
+        const P = q.p;
+        const len = q.to - q.from;
+        const shift = P.shift ?? 0;
+        // A point s metres into the part, `side` metres left of its line.
+        const at = (s: number, side: number) => {
+          const a = o.line.at(q.from + s);
+          const lft = side + shift;
+          return { x: a.x + a.tz * lft, z: a.z - a.tx * lft, yaw: Math.atan2(-a.tz, a.tx) };
+        };
+        const fade = (s: number, a: number) => smoothstep(0, a, s) * (1 - smoothstep(len - a, len, s));
+        const rock = (s: number, side: number, h: number, w: number) => {
+          if (h < 0.06) return;
+          const p = at(s, side);
+          out.push({ kind: 'rock', x: p.x, z: p.z, yaw: p.yaw + rand() * 3, sx: w * (0.8 + 0.4 * rand()), sy: h, sz: w * (0.7 + 0.4 * rand()) });
+        };
+        const stones = (perM: number, half: number, big = 1) => {
+          for (let s = 1; s < len - 1; s += 1 / perM) {
+            const p = at(s, (rand() * 2 - 1) * half);
+            const r = (0.07 + 0.16 * rand() ** 2) * big;
+            out.push({ kind: 'pebble', x: p.x, z: p.z, yaw: rand() * 6.28, sx: r * (1 + rand() * 0.6), sy: r * 0.6, sz: r });
+          }
+        };
+        if (q.kind === 'rocks' || q.kind === 'summit') {
+          const H = P.humpH ?? (q.kind === 'rocks' ? 0.55 : 0);
+          if (H > 0) {
+            const k = P.period ?? 5.6;
+            const L = P.humpLen ?? 1.8;
+            for (let i = 0; i * k + 2 < len; i++) {
+              const c = i * k + 2;
+              const r = Math.sin(i * 12.9898 + o.s0) * 43758.5453;
+              const jig = 0.75 + 0.5 * (r - Math.floor(r));
+              rock(c, 1, H * jig * fade(c, 4) + 0.08, L * 1.1);
+              rock(c + k / 2, -1, H * jig * fade(c + k / 2, 4) + 0.08, L * 1.1);
+              // Roots across the track between the rocks, on the rooty ground.
+              if (q.kind === 'rocks' && rand() < 0.55) {
+                const p = at(c + k / 4, (rand() - 0.5) * 1.2);
+                out.push({ kind: 'root', x: p.x, z: p.z, yaw: p.yaw + (rand() - 0.5) * 0.7, sx: 0.1 + 0.06 * rand(), sy: 0.1, sz: 3.2 + 2 * rand() });
+              }
+            }
+          }
+          if (q.kind === 'rocks') stones(1.5, 2.6);
+        }
+        if (q.kind === 'summit') {
+          // A slab at each step, its top flush with the step.
+          const step = P.every ?? 9;
+          const H = P.ledgeH ?? 0.3;
+          for (let m = 0; (m + 0.82) * step < len - 3; m++) {
+            const sm = (m + 0.82) * step;
+            const p = at(sm + 0.5, 0);
+            out.push({ kind: 'ledge', x: p.x, z: p.z, yaw: p.yaw, sx: 5.4 + rand(), sy: H + 0.35, sz: 1.3 });
+          }
+        }
+        if (q.kind === 'washout') {
+          const out0 = TUNE.washOut * len;
+          const k = 5.6;
+          for (let c = out0 + 1; c < len - 3; c += k) {
+            rock(c, 1, TUNE.humpH * 0.85, TUNE.humpLen * 0.9);
+            rock(c + k / 2, -1, TUNE.humpH * 0.85, TUNE.humpLen * 0.9);
+          }
+          stones(1, 2.4);
+        }
+        if (q.kind === 'thicket' && P.jink) {
+          // Rock spurs: from each side in turn, a spur of boulders out
+          // across the track to just short of the line, where the weave
+          // swings the other way (three deep, so there is no slipping
+          // through between them).
+          const A = P.jink;
+          const s0 = (P.in ?? 12) + (P.period ?? 20) / 4;
+          const w = P.w ?? 3.4;
+          for (const [sc, side] of [[s0, -1], [s0 + (P.period ?? 20) / 2, 1]] as const)
+            for (const ds of P.deep ? [-1.3, 0, 1.3] : [0]) {
+              // (Out to `reach` short of the line: the middle row furthest.)
+              const tip = -(A - (P.reach ?? 1.95) - (ds ? 0.5 : 0));
+              const n = Math.ceil((w - tip) / 1.15);
+              for (let k = 0; k <= n; k++) {
+                const off = w - ((w - tip) * k) / n;
+                const r = 0.62 + 0.2 * rand();
+                const p = at(sc + ds, side * off);
+                out.push({ kind: 'boulder', x: p.x, z: p.z, yaw: rand() * 6.28, sx: r * 2, sy: r * (1 + 0.5 * rand()) + 0.3 * (off / w), sz: r * 2 });
+              }
+            }
+        }
+        if (q.kind === 'thicket') {
+          // Two staggered rows of boulders either side, gaps narrower than the car.
+          // (Never on the track: on the inside of a sharp bend a row set off
+          // from one side of the corner lands on the track past it.)
+          const w = P.w ?? 3.4;
+          for (const side of [1, -1])
+            for (let s = 1; s < len - 1; s += P.gap ?? 2.4) {
+              for (let row = 0; row < (P.rows ?? 2); row++) {
+                const r = 0.75 + 0.45 * rand();
+                const p = at(s + (row % 2) * 1.2, side * (w + r * 0.8 + row * 1.6));
+                const sy = r * (0.9 + 0.4 * rand());
+                const yaw = rand() * 6.28;
+                if ((o.line.nearest(p.x, p.z, w + 4)?.d ?? 99) < w + r * 0.5 - 0.6) continue;
+                out.push({ kind: 'boulder', x: p.x, z: p.z, yaw, sx: r * 2, sy, sz: r * 2 });
+              }
+            }
+        }
+        if (q.kind === 'ridge') {
+          // A few rocks on the crest's edges.
+          const w = P.w ?? 2.6;
+          for (let s = 3; s < len - 3; s += 7 + 6 * rand()) {
+            const side = rand() < 0.5 ? 1 : -1;
+            rock(s, side * (w + 0.4), 0.25 + 0.2 * rand(), 0.9);
+          }
+        }
+        if (q.kind === 'falls' && !P.clay) {
+          // A granite slab at each ledge, its top flush with it, slanting
+          // across the track as the ledge does; stones in the stream bed.
+          const step = P.every ?? 3.5;
+          const H = P.ledgeH ?? 0.5;
+          const sl = P.slant ?? 1.2;
+          for (let m = 1; m * step < len - 2; m++) {
+            const sm = m * step - 0.13 * step;
+            const dir = ((m - 1) & 1) === 0 ? 1 : -1;
+            const p = at(sm + 0.55, 0);
+            out.push({ kind: 'ledge', x: p.x, z: p.z, yaw: p.yaw + dir * Math.atan2(sl, 2.4), sx: 5.6 + rand(), sy: H + 0.3, sz: 1.1 });
+          }
+          stones(1, 2.6, 1.4);
+        }
+        if (q.kind === 'notch') {
+          // Granite boulders along the tops of the walls.
+          const w = P.w ?? 1.78;
+          for (let sm = 4; sm < len - 4; sm += 2.6 + 2 * rand())
+            for (const side of [1, -1]) {
+              const a = o.line.at(q.from + sm);
+              const off = side * (w + 2.2 + rand()) + this.weave(P, sm, len);
+              const r = 0.7 + 0.5 * rand();
+              out.push({ kind: 'boulder', x: a.x + a.tz * off, z: a.z - a.tx * off, yaw: rand() * 6.28, sx: r * 2, sy: r * 1.2, sz: r * 2 });
+            }
+        }
+        if (q.kind === 'logs') {
+          // A trunk along each log's line, its top where the hump's top is.
+          const k = P.period ?? 6;
+          const r = P.r ?? 0.25;
+          const sl = P.slant ?? 0.7;
+          for (let i = 0; i * k + k / 2 <= len - 3; i++) {
+            const c = i * k + k / 2;
+            if (c < 3) continue;
+            const dir = (i & 1) === 0 ? 1 : -1;
+            const a = at(c, 0);
+            const b = at(c + dir * sl, 1);
+            out.push({ kind: 'log', x: a.x, z: a.z, yaw: Math.atan2(b.x - a.x, b.z - a.z), sx: r * (0.95 + 0.1 * rand()), sy: r, sz: 9.4 * Math.hypot(1, sl) * (0.9 + 0.15 * rand()) });
+          }
+          stones(0.6, 2.8);
+        }
+        if (q.kind === 'creek' || q.kind === 'bridge') stones(0.6, 3, 1.3);
+        if (q.kind === 'rockbed') {
+          // A granite rock on each hump, its top the hump's (a wheel rides it).
+          for (const r of this.rockInfo(o, q.from, len)) {
+            const p = at(r.s, r.sd);
+            out.push({ kind: 'rock', x: p.x, z: p.z, yaw: rand() * 6.28, sx: r.r * 2.1, sy: Math.max(0.12, r.h * 0.95), sz: r.r * 2 });
+          }
+          stones(1, 3.5, 1.2);
+        }
+        if (q.kind === 'ditches' || q.kind === 'rutted') stones(0.8, 2.8);
+        if (q.kind === 'climb') stones(3, 2.4);
+        if (q.kind === 'descent') stones(3, 2.4, 1.3);
+        if (q.kind === 'ford') stones(0.6, 4, 1.4);
+        if (q.kind === 'mud') {
+          const k = P.period ?? 7;
+          for (let i = 0; i * k + 3 < len; i++) {
+            for (const [c, side] of [[i * k + 3, 0.9], [i * k + 3 + k / 2, -0.9]] as const) {
+              if (c > len - 4 || fade(c, 4) < 0.3) continue;
+              const p = at(c, side);
+              out.push({ kind: 'puddle', x: p.x, z: p.z, yaw: p.yaw, sx: 1.9 + 0.5 * rand(), sy: 1, sz: 3.2 + 1 * rand() });
+            }
+          }
+        }
+      }
+    }
+    return out;
   }
 
   /** Surface on an obstacle's hard line, if (x, z) is on one. */
   surface(x: number, z: number): Surface | null {
     for (const o of this.obstacles) {
       const n = o.line.nearest(x, z, 8);
-      if (!n || n.d > 3.6) continue;
-      if (n.s < 2 || n.s > o.s1 - o.s0 - 2) continue;
-      return o.kind === 'climb' ? LOOSE : o.kind === 'washout' ? RUTS : SOFT_SAND;
+      if (!n) continue;
+      // (The ford is the ford all the way across the water; the camber's
+      // slick side runs down the bank. Where parts overlap, the later one.)
+      const inside = (q: Part) => n.s - q.from >= 2 && n.s - q.from <= q.to - q.from - 2;
+      for (const q of o.parts) if (q.kind === 'camber' && inside(q) && n.d < 8 && (q.p.dir ?? 1) * n.sd < (q.p.edge ?? 1) + 0.2) return SLICK;
+      // (Off the ridge: bog, down the slope and at the bottom.)
+      // (Only where the ground has dropped: not in the fade at its ends, nor
+      // out where it has risen back to the land around, where a track may cross.)
+      for (const q of o.parts) {
+        if (q.kind !== 'valley') continue;
+        const s = n.s - q.from;
+        const e = q.p.ends ?? 25;
+        const w = q.p.w ?? 2.6;
+        const ditch = q.p.ditch ?? 1.6;
+        if (s < e * 0.6 || s > q.to - q.from - (q.p.endOut ?? e) * 0.6 || n.d < w + 0.3) continue;
+        if (n.d < w + ditch + 0.4) return BOG;
+        if (n.d < w + ditch + (q.p.wall ?? 3.5) + 0.5) return WALL;
+      }
+      for (const q of o.parts) {
+        if (q.kind !== 'ridge') continue;
+        const s = n.s - q.from;
+        const e = q.p.ends ?? 8;
+        const w = q.p.w ?? 2.6;
+        if (s > e * 0.6 && s < q.to - q.from - e * 0.6 && n.d > w + 0.3 && n.d < w + (q.p.run ?? 3) + 9) return BOG;
+      }
+      for (let i = o.parts.length - 1; i >= 0; i--) {
+        const q = o.parts[i];
+        if (!inside(q) || q.kind === 'ridge' || q.kind === 'thicket' || q.kind === 'valley') continue;
+        if (Math.abs(n.sd - (q.p.shift ?? 0)) > (q.kind === 'ford' || q.kind === 'camber' || q.kind === 'notch' || q.kind === 'creek' || q.kind === 'bridge' ? 8 : 3.6)) continue;
+        // (In a creek's water: soft, and it takes the speed off you, so
+        // the far bank is climbed from a crawl, not carried.)
+        if (q.kind === 'creek') {
+          const sk = q.p.skew ?? TUNE.creekSkew;
+          const tt = (n.s - q.from - (q.to - q.from) / 2 - sk * clamp(n.sd, -16, 16)) / Math.hypot(1, sk);
+          if (Math.abs(tt) < (q.p.bed ?? 0.8) + 0.7) return CREEK_BED;
+        }
+        const base = q.kind === 'sand' && q.p.tidal ? TIDAL : (q.kind === 'climb' && q.p.wet) || (q.kind === 'falls' && q.p.clay) ? WET_LATERITE : KIND_SURFACE[q.kind];
+        // (A part may soften or firm its ground: p.sink, p.grip, p.drag.)
+        if (q.p.sink === undefined && q.p.grip === undefined && q.p.drag === undefined) return base;
+        return (q.surf ??= { ...base, name: q.p.firm ? 'Firm sand' : base.name, sink: q.p.sink ?? base.sink, grip: q.p.grip ?? base.grip, drag: q.p.drag ?? base.drag });
+      }
     }
     return null;
+  }
+
+  /**
+   * Rock spurs (a thicket with p.jink): the way through weaves between
+   * them, a tight left and right. Where the line is at route distance s,
+   * for a driver keeping `off` metres left of the route before it (the
+   * high line of a camber): it eases over to the middle, then weaves.
+   */
+  lineAt(s: number, off: number): number {
+    for (const o of this.obstacles)
+      for (const q of o.parts) {
+        const u = s - o.s0 - q.from;
+        const len = q.to - q.from;
+        // (Deep ruts: straddling them, `off` left of the wandering pair,
+        // easing over from the middle of the track before them and back
+        // after. A V-notch: along its bending middle.)
+        if (q.kind === 'rutted' && u > -30 && u < len + 30) return off * smoothstep(-12, -2, u) * (1 - smoothstep(len, len + 10, u)) + this.wander(q.p, u);
+        if (q.kind === 'notch' && u > -8 && u < len + 8) return off + this.weave(q.p, u, len);
+        // (A plank bridge: square on its straight planks.)
+        if (q.kind === 'bridge' && u > -8 && u < len + 8) return off + this.plankOff(o, q, u);
+      }
+    for (const o of this.obstacles)
+      for (const q of o.parts) {
+        if (q.kind !== 'thicket' || !q.p.jink) continue;
+        const u = s - o.s0 - q.from;
+        if (u < 0 || s > o.s1 + 40) continue;
+        return off * (1 - smoothstep(0, q.p.in ?? 12, u)) + this.jink(q, u);
+      }
+    return off;
+  }
+  /** How far left deep ruts have wandered, u metres into their part. */
+  wander(P: Record<string, number>, u: number): number {
+    return (P.wander ?? 0.3) * Math.sin((2 * Math.PI * u) / (P.period ?? 32)) * smoothstep(0, 10, u);
+  }
+  /** A V-notch's bend: its middle, u metres into its part (one S, eased in and out). */
+  weave(P: Record<string, number>, u: number, len = P.len ?? 0): number {
+    const A = P.bend ?? 0;
+    if (!A) return 0;
+    const L = len || 40;
+    return A * Math.sin((2 * Math.PI * u) / L) * smoothstep(0, 6, u) * (1 - smoothstep(L - 6, L, u));
+  }
+  /** The weave through rock spurs, u metres into the part: one full left and right. */
+  private jink(q: Part, u: number): number {
+    const a = u - (q.p.in ?? 12);
+    const P = q.p.period ?? 20;
+    // (Flat-topped: held wide past each spur, a sharp swing between them.)
+    return a < 0 || a > P ? 0 : (q.p.jink ?? 0) * clamp((q.p.square ?? 1) * Math.sin((2 * Math.PI * a) / P), -1, 1);
+  }
+
+  /** What the stretch needs s metres in: kit in, and (past a change) kit out. */
+  needsAt(o: Obstacle, s: number): { low: boolean; diff: boolean; noLow: boolean; noDiff: boolean } {
+    const past = !!o.then && s >= o.then.at;
+    const out = (k: 'low' | 'diff') => past && o.then!.off.includes(k);
+    return { low: !!o.needs.low && !out('low'), diff: !!o.needs.diff && !out('diff'), noLow: out('low'), noDiff: out('diff') };
+  }
+
+  /** The part of an obstacle's stretch at s metres into it. */
+  partAt(o: Obstacle, s: number): Part {
+    for (let i = o.parts.length - 1; i >= 0; i--) if (s >= o.parts[i].from && s <= o.parts[i].to && o.parts[i].kind !== 'thicket') return o.parts[i];
+    return o.parts[0];
+  }
+
+  /**
+   * On an obstacle, or stuck beside it (slid off the bank into the water, or
+   * bogged off the line): where to start it again, a little before it on
+   * the trail, facing along it.
+   */
+  retryAt(x: number, z: number): { x: number; z: number; yaw: number; label: string } | null {
+    let best: { o: Obstacle; d: number } | null = null;
+    for (const o of this.obstacles) {
+      const n = o.line.nearest(x, z, 60);
+      // (Not before it, and not once past its end.)
+      if (!n || n.d > 40 || n.s < 2 || n.s > o.s1 - o.s0 - 1) continue;
+      if (!best || n.d < best.d) best = { o, d: n.d };
+    }
+    if (!best) return null;
+    const p = this.route.at(Math.max(0, best.o.s0 - 12));
+    return { x: p.x, z: p.z, yaw: Math.atan2(-p.tz, p.tx), label: best.o.label };
   }
 
   /** Is (x, z) on an obstacle's way round? */
@@ -349,14 +1741,14 @@ export class UbinTrail {
 
   // ---------------- Coaching: tries, hints, the way round ----------------
 
-  private cleanSaid = false;
+  private endSaid = false;
   /**
    * Called a few times a second with the car's state. Returns a tip to show
    * now (after a stall), and a message to say once (the way round opening,
    * an obstacle passed).
    */
-  coach(c: { x: number; z: number; speed: number; low: boolean; diff: boolean; stuck: number }): { tip?: string; say?: string; zone?: string } | null {
-    let out: { tip?: string; say?: string; zone?: string } | null = null;
+  coach(c: { x: number; z: number; speed: number; low: boolean; diff: boolean; stuck: number }): Coaching | null {
+    let out: Coaching | null = null;
     for (const o of this.obstacles) {
       const n = o.line.nearest(c.x, c.z, 30);
       const len = o.s1 - o.s0;
@@ -364,14 +1756,14 @@ export class UbinTrail {
       if (n && n.d < 16 && n.s > -1 && n.s < len + 1) out = { ...(out ?? {}), zone: o.label };
       // Passed it: got to the far end on the hard line (or left it there,
       // a little wide, at speed).
-      if (n && o.inside && !o.done && (n.s > len - 3 || o.furthest > len - 3) && n.d < 10) {
+      if (n && o.inside && !o.done && (n.s > len - 3 || o.furthest > len - 3) && n.d < (o.parts.some((q) => q.kind === 'camber' && q.to > len - 5) ? 3.5 : 10)) {
         o.done = 'hard';
         o.inside = false;
-        const nice = o.kind === 'sand' ? 'Through the sand, and the view over the strait is yours.' : o.kind === 'climb' ? 'Up and over. Nicely done.' : 'Through the washout. Nicely done.';
+        const nice = o.nice ?? NICE[o.kind];
         out = { ...(out ?? {}), say: nice };
         continue;
       }
-      if (!o.done && this.onBypass(o, c.x, c.z) && o.open) {
+      if (!o.done && o.bypass !== o.line && this.onBypass(o, c.x, c.z) && o.open) {
         const b = o.bypass.nearest(c.x, c.z, 10)!;
         if (b.s > o.bypass.length - 12) {
           o.done = 'round';
@@ -384,6 +1776,26 @@ export class UbinTrail {
       // out after getting some way in. Backing up for another run after a
       // stall starts the next try.
       const tick = 0.1; // the HUD calls this ten times a second
+      // A commitment point ahead: at the look spot, a word about the kit
+      // (once an approach).
+      if (o.drop) {
+        const rs = (this.route.nearest(c.x, c.z, 12)?.s ?? -1e9) - o.s0;
+        const [l0, l1] = UbinTrail.LOOK;
+        const at = o.drop.at;
+        if (!o.dropSaid && rs > at + l0 && rs < at + l1 + 2) {
+          o.dropSaid = true;
+          const nd = this.needsAt(o, at + 1);
+          const want = [nd.low && !c.low && 'LOW', nd.diff && !c.diff && 'DIFF'].filter(Boolean);
+          out = { ...(out ?? {}), say: `A drop ahead: past it there is no backing up. ${want.length ? `Tap ${want.join(' and ')} before you go over.` : 'Kit in: ease over it.'}` };
+        }
+        if (rs < at + l0 - 25 || rs > at + 15) o.dropSaid = false;
+      }
+      // A change of kit ahead: said once a try, as the car gets near.
+      if (o.then && onLine && !o.thenSaid && n!.s > o.then.at - 18 && n!.s < o.then.at + 5) {
+        o.thenSaid = true;
+        out = { ...(out ?? {}), say: o.then.say };
+      }
+      if (o.then && n && n.s < o.then.at - 40) o.thenSaid = false;
       if (onLine && n!.s > 1 && n!.s < len) {
         if (!o.inside) {
           o.inside = true;
@@ -419,17 +1831,26 @@ export class UbinTrail {
       }
     }
     // At camp, after the loop.
-    if (!this.cleanSaid && this.obstacles.every((o) => o.done) && Math.hypot(c.x - this.camp.x, c.z - this.camp.z) < 40) {
-      this.cleanSaid = true;
-      const clean = this.obstacles.every((o) => o.done === 'hard');
-      out = { ...(out ?? {}), say: clean ? 'Clean run: every obstacle on the hard line. Make camp when you are ready.' : 'Endut Senin camp. Make camp when you are ready.' };
+    if (!this.endSaid && this.obstacles.every((o) => o.done) && Math.hypot(c.x - this.camp.x, c.z - this.camp.z) < 40) {
+      this.endSaid = true;
+      const hard = this.obstacles.every((o) => o.done === 'hard');
+      out = { ...(out ?? {}), say: hard ? this.def.hardWay : this.def.finish };
     }
     return out;
   }
 
-  private tried(o: Obstacle, out: { tip?: string; say?: string; zone?: string } | null) {
+  private hinted = false;
+  private tried(o: Obstacle, out: Coaching | null) {
     o.tries++;
     o.tipFor = 9;
+    if (this.def.wayRound === 'hidden') {
+      // No sign on the harder trails: after a good few tries, a word only.
+      if (o.tries >= 5 && this.detour && !this.hinted && this.def.detour?.skips.includes(this.obstacles.indexOf(o))) {
+        this.hinted = true;
+        return { ...(out ?? {}), say: 'The old kampong folk used to go round by an inland track. It is longer, and not marked.' };
+      }
+      return out;
+    }
     if (o.tries >= 3 && !o.open) {
       o.open = true;
       return { ...(out ?? {}), say: `An easier way round the ${o.label.toLowerCase()} is open: follow the marker posts on the ${o.side > 0 ? 'left' : 'right'}.` };
@@ -438,12 +1859,25 @@ export class UbinTrail {
   }
 
   private tip(o: Obstacle, c: { low: boolean; diff: boolean }) {
-    const round = o.open ? ` Or take the way round (marker posts, ${o.side > 0 ? 'left' : 'right'}).` : '';
-    if (o.kind === 'climb') return (c.low ? 'Back down a little and take it slow and steady.' : 'Steep and loose: tap LOW for low range, then ease up it.') + round;
-    if (o.kind === 'washout') {
+    const round = o.gate && o.open ? ` Or take the way round (marker posts, ${o.side > 0 ? 'left' : 'right'}).` : '';
+    const single = o.parts.length === 1;
+    if (single && o.kind === 'climb') return (c.low ? 'Back down a little and take it slow and steady.' : 'Steep and loose: tap LOW for low range, then ease up it.') + round;
+    if (single && o.kind === 'washout') {
       if (!c.diff) return 'A wheel is in the air and spinning: tap DIFF to lock the diff' + (c.low ? '.' : ', and LOW for the climb out.') + round;
       return (c.low ? 'Keep the wheels turning slowly; let the car rock across.' : 'Tap LOW too, and crawl up out of the gully.') + round;
     }
-    return 'Soft sand: back up and take a run at it, and keep your speed up over the dune.' + round;
+    if (single && o.kind === 'sand') return 'Soft sand: back up and take a run at it, and keep your speed up over the dune.' + round;
+    // The harder trails: what is missing first, then how to drive it.
+    const want: string[] = [];
+    const nd = this.needsAt(o, o.furthest);
+    if (nd.low && !c.low) want.push('LOW for low range');
+    if (nd.diff && !c.diff) want.push('DIFF to lock the diff');
+    // (On a mixed stretch, about the ground where the car got stuck.)
+    const k = this.partAt(o, o.furthest).kind;
+    if (want.length) return `${TIP_WHY[k]}: tap ${want.join(' and ')}.` + round;
+    // (Past a change of kit, with what had to come out still in.)
+    if ((nd.noLow && c.low) || (nd.noDiff && c.diff)) return o.then!.say + round;
+    return TIP_HOW[k] + round;
   }
+
 }

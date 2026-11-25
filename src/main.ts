@@ -4,6 +4,7 @@ import { buildUbinCourse } from './courses/ubin';
 import { buildEastCoastCourse } from './courses/eastcoast';
 import { buildPasirRisCourse } from './courses/osmcity';
 import { buildUbinTrailCourse } from './courses/ubintrail';
+import { CHEK_JAWA, PUAKA } from './courses/ubintrail/trails';
 import { skyTexture, type ArtStyle } from './courses/detail';
 import { Minimap } from './minimap';
 import { FullMap } from './fullmap';
@@ -33,6 +34,8 @@ const COURSES = {
   eastcoast: buildEastCoastCourse,
   // The first off-road trail: Pulau Ubin, round Ketam Quarry.
   ubintrail: buildUbinTrailCourse,
+  ubinpuaka: (...a: Parameters<typeof buildUbinTrailCourse>) => buildUbinTrailCourse(a[0], a[1], a[2], a[3], PUAKA),
+  ubinchekjawa: (...a: Parameters<typeof buildUbinTrailCourse>) => buildUbinTrailCourse(a[0], a[1], a[2], a[3], CHEK_JAWA),
   ubin: buildUbinCourse,
 } as const;
 type CourseId = keyof typeof COURSES;
@@ -333,6 +336,20 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
   window.addEventListener('pagehide', saveIfMoved);
 
   // Backups: offered once you stop after a long drive, never mid-drive.
+  // Try an obstacle again: back to a little before its start, facing along
+  // the trail, low range and the diff lock as they were. Offered when
+  // stopped on or beside one (stuck in the mud, slid off into the water).
+  const btnRetry = $('btn-retry');
+  let retrySpot: { x: number; z: number; yaw: number; label: string } | null = null;
+  tap(btnRetry, () => {
+    if (!retrySpot) return;
+    const r = retrySpot;
+    course.resetRuts?.();
+    course.prepareAt?.(r.x, r.z);
+    car.placeAt(new THREE.Vector3(r.x, course.heightAt(r.x, r.z) + 0.1, r.z), r.yaw);
+    btnRetry.hidden = true;
+    say(`Back to the start of the ${r.label.toLowerCase()}.`, 3);
+  });
   const btnBackup = $('btn-backup');
   let paused = false;
   const pause = (on: boolean) => {
@@ -369,9 +386,12 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
 
   // Before the drive: say plainly if this tab may not keep it.
   const warning = storageWarning(health);
-  // (A risk notice goes after 12 s of driving, or a tap.)
-  let noticeLeft = 0;
+  // (The notice fades by itself after a while, so nobody has to take a
+  // hand off the wheel for it, or goes at once with a tap. The same words
+  // stay in the menu.)
   const notice = $('notice');
+  // Called once, the first time the player touches the controls.
+  let noticeOnDrive: (() => void) | null = null;
   if (warning) {
     notice.innerHTML = '';
     const t = document.createElement('span');
@@ -382,16 +402,28 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
     notice.append(t, b);
     notice.classList.toggle('strong', warning.level === 'none');
     notice.hidden = false;
-    if (warning.level === 'none') pause(true);
+    // (Only the stronger warning holds the game, and only it lets go.)
+    let held = warning.level === 'none';
+    if (held) pause(true);
     const hide = () => {
       notice.hidden = true;
-      if (paused) pause(false);
+      notice.classList.remove('fading');
+      if (held && paused) pause(false);
+      held = false;
     };
     b.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
       hide();
     });
-    if (warning.level === 'risk') noticeLeft = 12;
+    // (It stays up until the player first touches the controls, then fades
+    // two seconds later. The stronger warning holds the game, so nobody can
+    // drive: it goes after 15 s on the clock.)
+    const fadeIn = (secs: number) => {
+      setTimeout(() => !notice.hidden && notice.classList.add('fading'), (secs - 1) * 1000);
+      setTimeout(() => !notice.hidden && hide(), secs * 1000);
+    };
+    if (warning.level === 'none') fadeIn(15);
+    else noticeOnDrive = () => fadeIn(2);
   }
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
@@ -652,7 +684,10 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
       // Saving: every 10 s while driving; a backup offer once stopped after a long drive.
       if (Math.abs(car.speed) > 1) {
         driveSecs += 0.1;
-        if (noticeLeft > 0 && (noticeLeft -= 0.1) <= 0) notice.hidden = true;
+      }
+      if (noticeOnDrive && (Math.abs(controls.input.throttle) > 0.05 || Math.abs(controls.input.steer) > 0.05)) {
+        noticeOnDrive();
+        noticeOnDrive = null;
       }
       saveTimer -= 0.1;
       if (saveTimer <= 0) {
@@ -660,7 +695,10 @@ async function start(courseId: CourseId, style: ArtStyle, at: { x: number; z: nu
         saveIfMoved();
       }
       stoppedFor = Math.abs(car.speed) < 1 ? stoppedFor + 0.1 : 0;
-      if (btnBackup.hidden && stoppedFor > 2 && btnCamp.hidden && btnFuel.hidden && btnGarage.hidden && backupDue()) btnBackup.hidden = false;
+      retrySpot = Math.abs(car.speed) < 1.5 && !paused ? (course.retryAt?.(p.x, p.z) ?? null) : null;
+      btnRetry.hidden = !retrySpot || !btnCamp.hidden;
+      if (retrySpot) btnRetry.textContent = `Try the ${retrySpot.label.toLowerCase()} again`;
+      if (btnBackup.hidden && btnRetry.hidden && stoppedFor > 2 && btnCamp.hidden && btnFuel.hidden && btnGarage.hidden && backupDue()) btnBackup.hidden = false;
       else if (!btnBackup.hidden && stoppedFor === 0) {
         btnBackup.hidden = true;
         snooze();
