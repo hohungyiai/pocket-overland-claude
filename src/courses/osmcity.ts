@@ -3322,6 +3322,11 @@ export async function buildPasirRisCourse(
   // them again (see groundY). In 64 x 64 blocks of the lattice, the 256
   // newest kept. (Each was worked out twice, once for the mesh and once
   // for what stands on it: about a second of the trial map's start.)
+  // (With each, the shore and water distances heightAt leaves in probe,
+  // set again when it is read: the ground's colour there is taken from
+  // them. Read from the cache without, the colour was the last point
+  // worked out's, anywhere, and the ground and lawn took the shore's pale
+  // colour or not by the order tiles were built in, -3410,2612.)
   const LAT_B = 64;
   const latB = new Map<number, Float64Array>();
   const latAt = (i: number, j: number) => {
@@ -3329,13 +3334,20 @@ export async function buildPasirRisCourse(
     const k = bi * 100003 + bj;
     let b = latB.get(k);
     if (!b) {
-      b = new Float64Array(LAT_B * LAT_B).fill(NaN);
+      b = new Float64Array(LAT_B * LAT_B * 3).fill(NaN);
       latB.set(k, b);
       if (latB.size > 256) latB.delete(latB.keys().next().value!);
     }
-    const q = (j - bj * LAT_B) * LAT_B + (i - bi * LAT_B);
+    const q = 3 * ((j - bj * LAT_B) * LAT_B + (i - bi * LAT_B));
     let v = b[q];
-    if (v !== v) b[q] = v = heightAt(WB.minX + i * STEP, WB.minZ + j * STEP);
+    if (v !== v) {
+      b[q] = v = heightAt(WB.minX + i * STEP, WB.minZ + j * STEP);
+      b[q + 1] = probe.s;
+      b[q + 2] = probe.w;
+    } else {
+      probe.s = b[q + 1];
+      probe.w = b[q + 2];
+    }
     return v;
   };
   type Patch = { w: number; h: number; pos: Float32Array; clr: Float32Array; uvs: Float32Array; idx: Uint32Array } | null;
@@ -8497,7 +8509,6 @@ export async function buildPasirRisCourse(
       // always among the kerbs this tile knows (SHEET_M), so two tiles
       // judge it alike.
       const oP: number[] = [];
-      const oGrid = new Map<number, number[]>();
       // (And its pieces, each two points of one run: [a, b] by their places
       // in oP, by 4 m square.)
       const oSeg: number[] = [];
@@ -8511,8 +8522,7 @@ export async function buildPasirRisCourse(
             prev = -1;
             continue;
           }
-          const [x, z] = r.E[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1, c = Math.floor(x / 4) * 100003 + Math.floor(z / 4);
-          (oGrid.get(c) ?? oGrid.set(c, []).get(c)!).push(oP.length);
+          const [x, z] = r.E[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1;
           if (prev >= 0) {
             const [px, pz] = [oP[prev], oP[prev + 1]], si = oSeg.length;
             oSeg.push(prev, oP.length);
@@ -8523,25 +8533,6 @@ export async function buildPasirRisCourse(
           oP.push(x, z, t, r.N[j][0] / nl, r.N[j][1] / nl, r.lvl);
         }
       }
-      /** Across from a kerb point (x, z) facing (nx, nz), its top t: another level's kerb point within 6 m, as above (its place in oP), or -1. */
-      const across = (x: number, z: number, nx: number, nz: number, t: number) => {
-        let best = 6.0001, got = -1;
-        const ex0 = x + nx * 6, ez0 = z + nz * 6;
-        for (let ci = Math.floor((Math.min(x, ex0) - 2) / 4); ci <= Math.floor((Math.max(x, ex0) + 2) / 4); ci++)
-          for (let cj = Math.floor((Math.min(z, ez0) - 2) / 4); cj <= Math.floor((Math.max(z, ez0) + 2) / 4); cj++) {
-            // (Not a square whose middle lies further from the line out than half its diagonal and the width.)
-            const mx = (ci + 0.5) * 4 - x, mz = (cj + 0.5) * 4 - z, al = mx * nx + mz * nz;
-            if (Math.max(-al, al - 6, Math.abs(mx * nz - mz * nx) - 1.66) > 4 * 0.7072) continue;
-            for (const m of oGrid.get(ci * 100003 + cj) ?? []) {
-              if (Math.abs(oP[m + 2] - t) >= 1 || oP[m + 3] * nx + oP[m + 4] * nz > -0.3) continue;
-              const ex = oP[m] - x, ez = oP[m + 1] - z, al = ex * nx + ez * nz;
-              if (al < 0.02 || al >= best || Math.abs(ex * nz - ez * nx) > 0.75 + 0.15 * al) continue;
-              best = al;
-              got = m;
-            }
-          }
-        return got;
-      };
       // (A gap shared with another level over ground a little under the
       // kerbs, a median between two roads of different structures at one
       // height: the lower level's lawn, laid level to the other's kerb, its
@@ -8651,10 +8642,18 @@ export async function buildPasirRisCourse(
         bands.push(toPath([...r.I, ...r.E.slice().reverse()]));
         const T = tk.get(ri)!;
         const far = T.map((v, j) => v && takenLen(ri, j) >= 3);
+        // (The other kerb across a gap, where it meets the line straight
+        // across, not its nearest point: a kerb's points are metres apart on
+        // a straight, and asked of the nearest, a point between two of them
+        // found none, its gap took no wall and the lawn there climbed both
+        // roads' walls to their tops, -3404,2605.)
+        const gx: number[] = [], gz: number[] = [];
         const share = r.E.map(([x, z], j) => {
           const t = r.T[j], nl = Math.hypot(r.N[j][0], r.N[j][1]) || 1;
-          if (!(t === t) || far[j]) return -1;
-          return across(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t);
+          if (!(t === t) || far[j] || !acrossLine(x, z, r.N[j][0] / nl, r.N[j][1] / nl, t)) return -1;
+          gx[j] = hit[0];
+          gz[j] = hit[1];
+          return j;
         });
         // (Its top along the kerb every half metre, between two points both
         // taken: only at its points, a few metres apart on a straight, the
@@ -8663,6 +8662,23 @@ export async function buildPasirRisCourse(
         // the lawn's edge stood at the kerb's top there with nothing under
         // it, 3080.2,3159.)
         for (let j = 0; j + 1 < n; j++) {
+          // (Where it ends, the walls' gap begins: the other kerb's wall foot
+          // there, from the last point taken to the next, as this kerb's own
+          // below. With nothing there, the lawn ran on at the other kerb's
+          // top and stood up its wall in a point, -3404,2605.)
+          if (far[j] !== far[j + 1] && (share[j] >= 0 || share[j + 1] >= 0)) {
+            const [ax, az] = r.E[j], [bx, bz] = r.E[j + 1];
+            const L = Math.hypot(bx - ax, bz - az);
+            if (L < 1e-4 || L > 12) continue;
+            const k = Math.max(1, Math.ceil(L / 0.5));
+            for (let q = 1; q < k; q++) {
+              const u = q / k, nx0 = lerp(r.N[j][0], r.N[j + 1][0], u), nz0 = lerp(r.N[j][1], r.N[j + 1][1], u), nl = Math.hypot(nx0, nz0) || 1;
+              const t = lerp(r.T[j], r.T[j + 1], u);
+              if (!(t === t) || !acrossLine(lerp(ax, bx, u), lerp(az, bz, u), nx0 / nl, nz0 / nl, t) || hit[5] < lvl || Math.abs(hit[2] - t) > 0.15) continue;
+              addS(hit[0] + hit[3] * 0.05, hit[1] + hit[4] * 0.05, gnd(hit[0] + hit[3] * 0.1, hit[1] + hit[4] * 0.1) + 0.02, hit[3], hit[4], L / k, 0);
+            }
+            continue;
+          }
           if (!far[j] || !far[j + 1]) continue;
           const ta = r.T[j], tb = r.T[j + 1];
           const [ax, az] = r.E[j], [bx, bz] = r.E[j + 1];
@@ -8690,7 +8706,7 @@ export async function buildPasirRisCourse(
         // (And the gap itself off this level's lawn.)
         for (let j = 0; j + 1 < n; j++) {
           const a = share[j], b = share[j + 1];
-          if (a >= 0 && b >= 0) bands.push(toPath([r.E[j], r.E[j + 1], [oP[b], oP[b + 1]], [oP[a], oP[a + 1]]]));
+          if (a >= 0 && b >= 0) bands.push(toPath([r.E[j], r.E[j + 1], [gx[b], gz[b]], [gx[a], gz[a]]]));
         }
         // (Steadied along the kerb: a stretch of either kind under 2 m
         // between two of the other takes theirs, gaps first. Asked point by
@@ -8741,7 +8757,15 @@ export async function buildPasirRisCourse(
             // raised roads' kerbs, the ground under it far down, lies level
             // with them, as main's did. Taken there as the ground's, it fell
             // and rose between them, 1.5 m in a metre, at 1147,1926.)
-            addS(x, z, lerp(r.T[j], r.T[j + 1], t), nx / nl, nz / nl, L / m, both ? 2 : 1);
+            // (But a kerb whose gap with another level's is the walls', each
+            // road its own wall down to the ground (rule B3), its wall's foot:
+            // the lawn meets the wall there. At its top, where a median two
+            // levels share ends, the lawn stood up the wall in a point,
+            // -3404,2605.)
+            if (!both && (share[j] >= 0 || share[j + 1] >= 0)) {
+              const ux = nx / nl, uz = nz / nl;
+              addS(x + ux * 0.05, z + uz * 0.05, gnd(x + ux * 0.1, z + uz * 0.1) + 0.02, ux, uz, L / m, 0);
+            } else addS(x, z, lerp(r.T[j], r.T[j + 1], t), nx / nl, nz / nl, L / m, both ? 2 : 1);
           }
         }
         flush();
@@ -9383,7 +9407,12 @@ export async function buildPasirRisCourse(
               }
           if (sw > 0) return Math.max(capAt(x, z, sv / sw), Math.min(sv / sw, gnd(x, z) + 0.02));
         }
-        return gv === gv ? gv : gnd(x, z) + 0.02;
+        // (A drop's kerb's top too, no more than 1 in 2 over a lower edge
+        // within 6 m, as a lawn kerb's: where a lawn's reach ended between
+        // two kerbs over a drop, at the ground, the lawn's edge along each
+        // kerb stood at its top a metre off, and the lawn stood up the
+        // kerbs' walls in points, -3408.4,2608.)
+        return gv === gv ? Math.max(capAt(x, z, gv), Math.min(gv, gnd(x, z) + 0.02)) : gnd(x, z) + 0.02;
       };
       /**
        * The edges near (x, z) that are not a lawn kerb's (the ground's, a
