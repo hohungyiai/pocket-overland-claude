@@ -477,6 +477,13 @@ export async function buildPasirRisCourse(
     return d;
   };
 
+  /**
+   * The drawn water's surface at (x, z), its waves' tops: the sea's plane
+   * lies everywhere at 0, its waves 22 cm up; a canal's or pond's at WL
+   * over it. (Asked of inland water only where the ground lies under WL.)
+   */
+  const waterTop = (x: number, z: number, ground: number) => (ground < WL + 0.05 && wetSD(x, z) < 0.5 ? WL + 0.05 : 0.25);
+
   // ---------- Land-use raster ----------
   const code = new Uint8Array(RW * RH);
   const fillPoly = (pts: XZ[], f: (k: number) => void) => {
@@ -8461,6 +8468,18 @@ export async function buildPasirRisCourse(
     const X0 = ix * TILE, Z0 = iz * TILE, X1 = X0 + TILE, Z1 = Z0 + TILE;
     const near = (x: number, z: number, m: number) => x > X0 - m && x < X1 + m && z > Z0 - m && z < Z1 + m;
     const gnd = (x: number, z: number) => Math.max(groundY(x, z), islandFill(x, z, true));
+    /**
+     * Is the ground at (x, z) over the drawn water there? A lawn meets its
+     * walls' foot only there; elsewhere at its kerb's top, as before. Met
+     * over a canal's bed, the lawn lay under the canal's surface and the
+     * water showed through an island's tip, -1270,-424.7. (Lifted to the
+     * water's surface instead, the lawn beside a road's outer kerb stood
+     * out over the water there.)
+     */
+    const dry = (x: number, z: number) => {
+      const g = gnd(x, z);
+      return g >= waterTop(x, z, g);
+    };
     const segs = outSegs(w);
     const REACH = ISLE_W / 2 + ISLE_BANK;
     const S_ = OUT_S;
@@ -8720,6 +8739,7 @@ export async function buildPasirRisCourse(
               const u = q / k, nx0 = lerp(r.N[j][0], r.N[j + 1][0], u), nz0 = lerp(r.N[j][1], r.N[j + 1][1], u), nl = Math.hypot(nx0, nz0) || 1;
               const t = lerp(r.T[j], r.T[j + 1], u);
               if (!(t === t) || !acrossLine(lerp(ax, bx, u), lerp(az, bz, u), nx0 / nl, nz0 / nl, t) || hit[5] < lvl || Math.abs(hit[2] - t) > 0.15) continue;
+              if (!dry(hit[0] + hit[3] * 0.1, hit[1] + hit[4] * 0.1)) continue;
               addS(hit[0] + hit[3] * 0.05, hit[1] + hit[4] * 0.05, gnd(hit[0] + hit[3] * 0.1, hit[1] + hit[4] * 0.1) + 0.02, hit[3], hit[4], L / k, 0);
             }
             continue;
@@ -8825,10 +8845,10 @@ export async function buildPasirRisCourse(
             // the lawn meets the wall there. At its top, where a median two
             // levels share ends, the lawn stood up the wall in a point,
             // -3404,2605.)
-            if (!both && (share[j] >= 0 || share[j + 1] >= 0 || deepAt[j] || deepAt[j + 1])) {
-              const ux = nx / nl, uz = nz / nl;
+            const ux = nx / nl, uz = nz / nl;
+            if (!both && (share[j] >= 0 || share[j + 1] >= 0 || deepAt[j] || deepAt[j + 1]) && dry(x + ux * 0.1, z + uz * 0.1)) {
               addS(x + ux * 0.05, z + uz * 0.05, gnd(x + ux * 0.1, z + uz * 0.1) + 0.02, ux, uz, L / m, 0);
-            } else addS(x, z, lerp(r.T[j], r.T[j + 1], t), nx / nl, nz / nl, L / m, both ? 2 : 1);
+            } else addS(x, z, lerp(r.T[j], r.T[j + 1], t), ux, uz, L / m, both ? 2 : 1);
           }
         }
         flush();
