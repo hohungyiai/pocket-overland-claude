@@ -27,6 +27,44 @@ window.__eachMesh = (kinds, f) => {
 };
 
 /**
+ * Triangles of drawn meshes, kept as where they lie in their mesh (which
+ * mesh, which corners) and not copied out: copied, each an array of its own,
+ * the whole map's one-sheet lawn ran the page out of memory. get(q) gives its
+ * corners and which way it faces, [ax, ay, az, bx, by, bz, cx, cy, cz, +-1],
+ * in one array used again by the next call.
+ */
+window.__triRefs = () => {
+  const meshes = [];
+  let ref = new Int32Array(1 << 16), n = 0, last = null;
+  const t = new Float64Array(10);
+  return {
+    add(pos, idx, q) {
+      if (last !== pos) meshes.push(pos, idx), (last = pos);
+      if (2 * n + 2 > ref.length) {
+        const r = new Int32Array(ref.length * 2);
+        r.set(ref);
+        ref = r;
+      }
+      ref[2 * n] = meshes.length - 2;
+      ref[2 * n + 1] = q;
+      return n++;
+    },
+    get length() {
+      return n;
+    },
+    get(q) {
+      const m = ref[2 * q], pos = meshes[m], idx = meshes[m + 1], o = ref[2 * q + 1];
+      for (let c = 0; c < 3; c++) {
+        const v = idx[o + c] * 3;
+        t[3 * c] = pos[v], t[3 * c + 1] = pos[v + 1], t[3 * c + 2] = pos[v + 2];
+      }
+      t[9] = (t[5] - t[2]) * (t[6] - t[0]) - (t[3] - t[0]) * (t[8] - t[2]) > 0 ? 1 : -1;
+      return t;
+    },
+  };
+};
+
+/**
  * The edges of a mesh that only one of its triangles has (its outline), as
  * [ax, ay, az, bx, by, bz, cx, cz] with (cx, cz) the triangle's third corner.
  * Corners count as one where they lie within a millimetre of each other.
@@ -382,7 +420,7 @@ window.__checkIslandTops = (all = false) => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
   const C = 2;
-  const S = { road: [], lawn: [], kerb: [], path: [], deck: [] };
+  const S = { road: __triRefs(), lawn: __triRefs(), kerb: __triRefs(), path: __triRefs(), deck: __triRefs() };
   const grid = { road: new Map(), lawn: new Map(), kerb: new Map(), path: new Map(), deck: new Map() };
   const kerbs = [];
   window.__eachMesh(['road', 'deck', 'lawn', 'kerb', 'foot', 'cycle'], (k, kind, pos, idx) => {
@@ -394,16 +432,14 @@ window.__checkIslandTops = (all = false) => {
       if (kind === 'kerb') kerbs.push(t);
       // (A deck's own faces too, apart: a kerb with a deck's underside under it is on a deck.)
       if (kind === 'deck') {
-        const n = S.deck.length;
-        S.deck.push(t);
+        const n = S.deck.add(pos, idx, q);
         const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
         const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
         if ((x1 - x0 + 1) * (z1 - z0 + 1) <= 400)
           for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) (grid.deck.get(i * 100003 + j) ?? grid.deck.set(i * 100003 + j, []).get(i * 100003 + j)).push(n);
       }
       const into = kind === 'lawn' || kind === 'kerb' ? kind : kind === 'foot' || kind === 'cycle' ? 'path' : 'road';
-      const n = S[into].length;
-      S[into].push(t);
+      const n = S[into].add(pos, idx, q);
       const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
       const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
       if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
@@ -415,7 +451,7 @@ window.__checkIslandTops = (all = false) => {
   const top = (kind, x, z, y, within = 0.5) => {
     let best = -Infinity;
     for (const q of grid[kind].get(Math.floor(x / C) * 100003 + Math.floor(z / C)) ?? []) {
-      const t = S[kind][q];
+      const t = S[kind].get(q);
       const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
       const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
       const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
@@ -481,6 +517,347 @@ window.__checkIslandTops = (all = false) => {
   }
   const pl = window.__finishIndex().places(bad, 4);
   return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
+};
+
+// The reviewer's and feedback thread's rule, 20 Nov: an island whose two
+// kerbs stand at one level (within 5 cm) is one flat lawn from kerb to
+// kerb, as it was before the slip-road rules: no fold, no crease, no
+// trench, no hole. Read off the finished meshes: from every kerb, straight
+// across its island to the kerb on the far side (up to 6 m), every 0.2 m
+// there is lawn facing up within 3 cm of the two kerbs' tops (or a kerb).
+// Folded, the lawn faced down or dipped to the ground at -417.1,-101.7; a
+// hole by an island's point showed the ground and a kerb's side through it
+// at -2118.7,3152.7.
+const levelIslands = (all, holes) => {
+  const d = globalThis.__osm;
+  if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
+  const C = 2;
+  const S = { road: __triRefs(), lawn: __triRefs(), kerb: __triRefs(), path: __triRefs(), deck: __triRefs() };
+  const grid = { road: new Map(), lawn: new Map(), kerb: new Map(), path: new Map(), deck: new Map() };
+  const kerbs = [];
+  window.__eachMesh(['road', 'deck', 'lawn', 'kerb', 'foot', 'cycle'], (k, kind, pos, idx) => {
+    for (let q = 0; q < idx.length; q += 3) {
+      const t = [];
+      for (let c = 0; c < 3; c++) t.push(pos[idx[q + c] * 3], pos[idx[q + c] * 3 + 1], pos[idx[q + c] * 3 + 2]);
+      const det = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      if (Math.abs(det) < 1e-6) continue;
+      // (Which way it faces: up, or folded over and facing down.)
+      const ny = (t[5] - t[2]) * (t[6] - t[0]) - (t[3] - t[0]) * (t[8] - t[2]);
+      t.push(ny > 0 ? 1 : -1);
+      if (kind === 'kerb') kerbs.push(t);
+      const into = kind === 'lawn' || kind === 'kerb' || kind === 'deck' ? kind : kind === 'foot' || kind === 'cycle' ? 'path' : 'road';
+      const n = S[into].add(pos, idx, q);
+      const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
+      const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
+      if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
+      for (let i = x0; i <= x1; i++)
+        for (let j = z0; j <= z1; j++) (grid[into].get(i * 100003 + j) ?? grid[into].set(i * 100003 + j, []).get(i * 100003 + j)).push(n);
+    }
+  });
+  /** The surfaces of a kind at (x, z) within `within` of y: [height, facing]. */
+  const tops = (kind, x, z, y, within = 0.5) => {
+    const r = [];
+    for (const q of grid[kind].get(Math.floor(x / C) * 100003 + Math.floor(z / C)) ?? []) {
+      const t = S[kind].get(q);
+      const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
+      const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
+      const l3 = 1 - l1 - l2;
+      if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
+      const h = l1 * t[1] + l2 * t[4] + l3 * t[7];
+      if (Math.abs(h - y) < within) r.push([h, t[9]]);
+    }
+    return r;
+  };
+  const top = (kind, x, z, y, within) => tops(kind, x, z, y, within).reduce((b, [h]) => Math.max(b, h), -Infinity);
+  const bad = [];
+  let n = 0;
+  for (const t of kerbs) {
+    // (Its along and across, and the road's side, as __checkIslandTops reads them.)
+    const sides = [[0, 3], [3, 6], [6, 0]].map(([a, b]) => ({ a, b, l: Math.hypot(t[b] - t[a], t[b + 2] - t[a + 2]) })).sort((p, q) => p.l - q.l);
+    const across = (e) => e.l > 0.37 && e.l < 0.6;
+    if (across(sides[0]) === across(sides[1])) continue;
+    const al = across(sides[0]) ? sides[1] : sides[0];
+    const ux = (t[al.b] - t[al.a]) / al.l, uz = (t[al.b + 2] - t[al.a + 2]) / al.l;
+    const cx = (t[0] + t[3] + t[6]) / 3, cy = (t[1] + t[4] + t[7]) / 3, cz = (t[2] + t[5] + t[8]) / 3;
+    const side = [1, -1].find((s) => top('road', cx - uz * s * 0.3, cz + ux * s * 0.3, cy) > -Infinity);
+    if (side === undefined) continue;
+    const nx = -uz * side, nz = ux * side;
+    const pv = [0, 3, 6].map((a) => (t[a] - cx) * nx + (t[a + 2] - cz) * nz);
+    const pout = Math.min(...pv);
+    if (Math.max(...pv) - pout < 0.3) continue;
+    // (Not on a deck, nor beside a raised road's own wall.)
+    if (top('deck', cx, cz, cy - 1.25, 1.2) > -Infinity) continue;
+    // (Across to the far kerb: past its own kerb's outer edge, the first
+    // kerb at its level within 6 m, no road or path between.)
+    const at = (s) => [cx + nx * (pout - s), cz + nz * (pout - s)];
+    let far = NaN, fs = 0, cross = false;
+    for (let s = 0.1; s <= 6 && !(far === far) && !cross; s += 0.1) {
+      const [x, z] = at(s);
+      if (top('road', x, z, cy, 1) > -Infinity || top('path', x, z, cy, 3) > -Infinity) cross = true;
+      else {
+        const k = top('kerb', x, z, cy, 0.5);
+        if (k > -Infinity && s > 0.2) (far = k), (fs = s);
+      }
+    }
+    if (cross || !(far === far) || Math.abs(far - cy) > 0.05) continue;
+    n++;
+    const lo = Math.min(cy, far) - 0.03, hi = Math.max(cy, far) + 0.03;
+    let worst = 0, what = '', wx = cx, wz = cz;
+    for (let s = 0.1; s < fs; s += 0.2) {
+      const [x, z] = at(s);
+      if (top('kerb', x, z, cy, 0.1) > -Infinity) continue;
+      const ls = tops('lawn', x, z, cy, 1.5);
+      const up = ls.filter(([, f]) => f > 0).map(([h]) => h);
+      let v = 0, w = '';
+      if (!up.length) (v = 1), (w = ls.length ? 'lawn folded over, facing down' : 'a hole in the lawn');
+      else {
+        const h = Math.max(...up);
+        if (h < lo) (v = lo - h), (w = `lawn ${(cy - h).toFixed(3)} under the kerbs' tops`);
+        else if (h > hi) (v = h - hi), (w = `lawn ${(h - cy).toFixed(3)} over the kerbs' tops`);
+      }
+      if (!w.startsWith('a hole') === holes) continue;
+      if (v > worst) (worst = v), (what = w), (wx = x), (wz = z);
+    }
+    if (worst > 0) bad.push({ x: +wx.toFixed(1), z: +wz.toFixed(1), value: +worst.toFixed(3), what });
+  }
+  const pl = window.__finishIndex().places(bad, 4);
+  return { samples: n, bad: pl.length, worst: all ? pl : pl.slice(0, 40), unit: 'm' };
+};
+
+window.__checkLevelIslands = (all = false) => levelIslands(all, false);
+// (Its holes apart: hundreds on main, round islands' points where the
+// sections across cut each other short, mostly hidden by the ground's own
+// grass a hand's width under. A count that may only go down.)
+window.__checkLevelIslandHoles = (all = false) => levelIslands(all, true);
+
+// (The reviewer's rule, 21 Nov: an island's grass stays inside its kerbs.
+// Two blades of lawn 2 m long fanned out over the road from an island's
+// point at -438.6,-1826.1, the sections round the point left uncut.)
+// Every lawn triangle facing up, each corner taken 5 cm in towards its
+// middle and the middle itself: no road's paving there at the lawn's own
+// height or up to 0.6 m under it.
+window.__checkLawnInIsland = (all = false) => {
+  const C = 2;
+  const R = [];
+  const grid = new Map();
+  window.__eachMesh(['road', 'deck'], (_k, _kind, pos, idx) => {
+    for (let q = 0; q < idx.length; q += 3) {
+      const t = [];
+      for (let c = 0; c < 3; c++) t.push(pos[idx[q + c] * 3], pos[idx[q + c] * 3 + 1], pos[idx[q + c] * 3 + 2]);
+      const det = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      if (Math.abs(det) < 1e-6) continue;
+      const x0 = Math.floor(Math.min(t[0], t[3], t[6]) / C), x1 = Math.floor(Math.max(t[0], t[3], t[6]) / C);
+      const z0 = Math.floor(Math.min(t[2], t[5], t[8]) / C), z1 = Math.floor(Math.max(t[2], t[5], t[8]) / C);
+      if ((x1 - x0 + 1) * (z1 - z0 + 1) > 400) continue;
+      const n = R.length;
+      R.push(t);
+      for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) (grid.get(i * 100003 + j) ?? grid.set(i * 100003 + j, []).get(i * 100003 + j)).push(n);
+    }
+  });
+  const paved = (x, z, y) => {
+    for (const q of grid.get(Math.floor(x / C) * 100003 + Math.floor(z / C)) ?? []) {
+      const t = R[q];
+      const d0 = (t[5] - t[8]) * (t[0] - t[6]) + (t[6] - t[3]) * (t[2] - t[8]);
+      const l1 = ((t[5] - t[8]) * (x - t[6]) + (t[6] - t[3]) * (z - t[8])) / d0;
+      const l2 = ((t[8] - t[2]) * (x - t[6]) + (t[0] - t[6]) * (z - t[8])) / d0;
+      if (l1 < -1e-6 || l2 < -1e-6 || 1 - l1 - l2 < -1e-6) continue;
+      const h = l1 * t[1] + l2 * t[4] + (1 - l1 - l2) * t[7];
+      if (h <= y + 0.05 && h >= y - 0.6) return true;
+    }
+    return false;
+  };
+  const pts = [];
+  let n = 0;
+  window.__eachMesh(['lawn'], (_k, _kind, pos, idx) => {
+    for (let q = 0; q < idx.length; q += 3) {
+      const t = [];
+      for (let c = 0; c < 3; c++) t.push(pos[idx[q + c] * 3], pos[idx[q + c] * 3 + 1], pos[idx[q + c] * 3 + 2]);
+      const ny = (t[5] - t[2]) * (t[6] - t[0]) - (t[3] - t[0]) * (t[8] - t[2]);
+      const area = Math.abs((t[3] - t[0]) * (t[8] - t[2]) - (t[5] - t[2]) * (t[6] - t[0])) / 2;
+      if (ny <= 0 || area < 1e-4) continue;
+      n++;
+      const cx = (t[0] + t[3] + t[6]) / 3, cy = (t[1] + t[4] + t[7]) / 3, cz = (t[2] + t[5] + t[8]) / 3;
+      const S = [[cx, cy, cz]];
+      for (let c = 0; c < 9; c += 3) {
+        const l = Math.hypot(cx - t[c], cz - t[c + 2]);
+        if (l < 0.1) continue;
+        const f = 0.05 / l;
+        const x = t[c] + (cx - t[c]) * f, z = t[c + 2] + (cz - t[c + 2]) * f;
+        // (Not where that is still within 2 cm of the piece's own side, a
+        // sliver's: 5 cm along to its middle, it was a centimetre off the
+        // lawn's edge, where the lawn meets a deck level with it and the two
+        // edges lie a centimetre apart, 1827,1926.9.)
+        let edge = Infinity;
+        for (let e = 0; e < 9; e += 3) {
+          const ax = t[e], az = t[e + 2], bx = t[(e + 3) % 9], bz = t[(e + 5) % 9], L = Math.hypot(bx - ax, bz - az);
+          if (L > 1e-9) edge = Math.min(edge, Math.abs((bx - ax) * (z - az) - (bz - az) * (x - ax)) / L);
+        }
+        if (edge < 0.02) continue;
+        S.push([x, t[c + 1] + (cy - t[c + 1]) * f, z]);
+      }
+      for (const [x, y, z] of S)
+        if (paved(x, z, y)) {
+          pts.push({ x: +x.toFixed(1), z: +z.toFixed(1), y: +y.toFixed(2), value: 1 });
+          break;
+        }
+    }
+  });
+  const bad = window.__finishIndex().places(pts, 2);
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: '' };
+};
+
+// The island lawn, one sheet (the user's pick, 22 Nov: "One-sheet lawn in
+// PR 74", in place of stretches laid by two builders, which met in seams
+// and creases: K3 at -114.8,-31.9, c1, L2, F4, k1, k4 in round 4, all
+// flat on main). Its seams now can only be where one tile's part meets the
+// next's: every open edge of a tile's lawn on the tile's own border must
+// meet the next tile's lawn there, at the same height (a tile reading the
+// kerbs differently would leave a step or a slot).
+const lawnTris = (k, key = 'lawn') => {
+  const r = globalThis.__osm.tileAccs(k)[key];
+  if (!r) return [];
+  const { pos, idx } = r, T = [];
+  for (let q = 0; q < idx.length; q += 3) T.push([idx[q], idx[q + 1], idx[q + 2]].map((v) => [pos[3 * v], pos[3 * v + 1], pos[3 * v + 2]]));
+  return T;
+};
+const mmKey = (p) => `${Math.round(p[0] * 1000)},${Math.round(p[2] * 1000)}`;
+window.__checkLawnSeams = (all = false) => {
+  const d = globalThis.__osm;
+  const pts = [];
+  const TILE = 200;
+  const tiles = new Set(d.farTiles());
+  // Each tile's lawn triangles, by 1 m square, to find the one over a point.
+  const idx = new Map();
+  // (Only those by the tile's border: the whole map's at once ran the
+  // browser out of memory.)
+  const index = (k, key = 'lawn') => {
+    const ik = k + '|' + key;
+    if (idx.has(ik)) return idx.get(ik);
+    const [ti, tj] = k.split(',').map(Number);
+    const by = (v) => Math.min(v[0] - ti * TILE, (ti + 1) * TILE - v[0], v[2] - tj * TILE, (tj + 1) * TILE - v[2]) < 1.5;
+    const T = lawnTris(k, key).filter((t) => t.some(by)), g = new Map();
+    T.forEach((t, i) => {
+      const xs = t.map((v) => v[0]), zs = t.map((v) => v[2]);
+      for (let a = Math.floor(Math.min(...xs)); a <= Math.floor(Math.max(...xs)); a++)
+        for (let b = Math.floor(Math.min(...zs)); b <= Math.floor(Math.max(...zs)); b++) (g.get(a * 100003 + b) ?? g.set(a * 100003 + b, []).get(a * 100003 + b)).push(i);
+    });
+    const r = { T, g };
+    idx.set(ik, r);
+    return r;
+  };
+  // (The nearest to height y of those over the point: two levels' lawns
+  // may lie one over the other, 20 cm apart at 1800,1460.4, each whole
+  // across the border.)
+  const yAt = (k, x, z, y, key = 'lawn') => {
+    const { T, g } = index(k, key);
+    let best = NaN;
+    for (const i of g.get(Math.floor(x) * 100003 + Math.floor(z)) ?? []) {
+      const [[x1, y1, z1], [x2, y2, z2], [x3, y3, z3]] = T[i];
+      const det = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3);
+      if (Math.abs(det) < 1e-12) continue;
+      const l1 = ((z2 - z3) * (x - x3) + (x3 - x2) * (z - z3)) / det, l2 = ((z3 - z1) * (x - x3) + (x1 - x3) * (z - z3)) / det, l3 = 1 - l1 - l2;
+      if (l1 >= -1e-4 && l2 >= -1e-4 && l3 >= -1e-4) {
+        const v = l1 * y1 + l2 * y2 + l3 * y3;
+        if (!(Math.abs(v - y) >= Math.abs(best - y))) best = v;
+      }
+    }
+    return best;
+  };
+  let n = 0;
+  for (const k of tiles) {
+    const [ti, tj] = k.split(',').map(Number);
+    const { T } = index(k);
+    const use = new Map();
+    for (const t of T)
+      for (let e = 0; e < 3; e++) {
+        const a = t[e], b = t[(e + 1) % 3];
+        const key = [mmKey(a), mmKey(b)].sort().join('|');
+        const u = use.get(key);
+        if (u) u.n++;
+        else use.set(key, { n: 1, a, b });
+      }
+    for (const { n: c, a, b } of use.values()) {
+      if (c !== 1) continue;
+      // (On the tile's own border: its middle, 2 mm over into the next
+      // tile, must have that tile's lawn under it at the same height. At 2
+      // cm, where the lawn's edge crossed the border at a slant, 7 to 19
+      // degrees, the point 2 cm over was off the lawn in both tiles alike,
+      // 1660.1,2200. On the border to half a millimetre, the clipper's
+      // own fineness: a kerb's edge a millimetre inside it is the lawn's
+      // own end, no border, 140.2,1200.)
+      let ox = 0, oz = 0;
+      if (Math.abs(a[0] - ti * TILE) < 0.0005 && Math.abs(b[0] - ti * TILE) < 0.0005) ox = -0.002;
+      else if (Math.abs(a[0] - (ti + 1) * TILE) < 0.0005 && Math.abs(b[0] - (ti + 1) * TILE) < 0.0005) ox = 0.002;
+      else if (Math.abs(a[2] - tj * TILE) < 0.0005 && Math.abs(b[2] - tj * TILE) < 0.0005) oz = -0.002;
+      else if (Math.abs(a[2] - (tj + 1) * TILE) < 0.0005 && Math.abs(b[2] - (tj + 1) * TILE) < 0.0005) oz = 0.002;
+      else continue;
+      if (Math.hypot(b[0] - a[0], b[2] - a[2]) < 0.05) continue;
+      const nk = `${ti + Math.sign(ox)},${tj + Math.sign(oz)}`;
+      if (!tiles.has(nk)) continue;
+      n++;
+      const mx = (a[0] + b[0]) / 2, mz = (a[2] + b[2]) / 2, my = (a[1] + b[1]) / 2;
+      const y = yAt(nk, mx + ox, mz + oz, my);
+      // (None beyond, but a kerb's top there at about the lawn's height:
+      // the lawn meets the kerb at the border, its edge and the border one
+      // to the millimetre, 140.7,1200.)
+      if (y !== y && Math.abs(yAt(nk, mx + ox, mz + oz, my, 'kerb') - my) < 0.3) continue;
+      if (y !== y) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: 1, what: 'lawn ends at the tile border, none beyond' });
+      else if (Math.abs(y - my) > 0.02) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: +Math.abs(y - my).toFixed(3), what: 'lawn steps at the tile border' });
+    }
+  }
+  const bad = window.__finishIndex().places(pts, 2);
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'm' };
+};
+
+// Its folds: no two lawn triangles side by side meet at a crease sharper
+// than 30 degrees (a 1 in 2 bank meets level lawn at 27), and none stands
+// steeper than 40 degrees (a lawn is never steeper than 1 in 2; its walls
+// are kerb sides, not lawn). (The round 3b feedback: folds, slits and
+// panels in one-level islands, E1 -2123.9,3149.9 and F3, F4, T2, k4; a
+// shard of grass 2 m tall at 1416,653 in the sheet's first try.) Slivers
+// under 50 cm square are left out: too small to see, and their slope is
+// any three nearby heights'.
+window.__checkLawnFolds = (all = false) => {
+  const d = globalThis.__osm;
+  const pts = [];
+  let n = 0;
+  const nrm = (t) => {
+    const [a, b, c] = t;
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    let x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx;
+    const l = Math.hypot(x, y, z);
+    if (y < 0) (x = -x), (y = -y), (z = -z);
+    return { n: [x / l, y / l, z / l], area: l / 2 };
+  };
+  for (const k of d.farTiles()) {
+    const T = lawnTris(k);
+    const N = T.map(nrm);
+    const use = new Map();
+    T.forEach((t, i) => {
+      if (N[i].area < 0.005) return;
+      n++;
+      const steep = (Math.acos(Math.min(1, N[i].n[1])) * 180) / Math.PI;
+      const mx = (t[0][0] + t[1][0] + t[2][0]) / 3, mz = (t[0][2] + t[1][2] + t[2][2]) / 3;
+      if (steep > 40) pts.push({ x: +mx.toFixed(1), z: +mz.toFixed(1), value: +steep.toFixed(0), what: `lawn ${steep.toFixed(0)} deg steep` });
+      for (let e = 0; e < 3; e++) {
+        const key = [mmKey(t[e]), mmKey(t[(e + 1) % 3])].sort().join('|');
+        const j = use.get(key);
+        if (j === undefined) {
+          use.set(key, i);
+          continue;
+        }
+        const a = N[i].n, b = N[j].n;
+        const ang = (Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 180) / Math.PI;
+        if (ang > 30) {
+          const p = t[e], q = t[(e + 1) % 3];
+          pts.push({ x: +((p[0] + q[0]) / 2).toFixed(1), z: +((p[2] + q[2]) / 2).toFixed(1), value: +ang.toFixed(0), what: `lawn creased ${ang.toFixed(0)} deg` });
+        }
+      }
+    });
+  }
+  const bad = window.__finishIndex().places(pts, 2);
+  return { samples: n, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'deg' };
 };
 
 // The user's rule (18 Nov): a bridge's parapets and walls begin where the

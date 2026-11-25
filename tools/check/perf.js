@@ -18,7 +18,12 @@ const PERF_BUDGET = {
   // limit leaves room for that, and still catches a slice gone wrong).
   sliceMs: 100,
   // Was 33 s before junction heights were settled in order; about 8 s now.
-  startMs: 20000,
+  // (23 s, the user's choice of 23 Nov (04:25 UTC), held while the
+  // one-sheet island lawn costs about 2 s more than the two builders
+  // before it; 25 s, the user's choice of 23 Nov (23:56 UTC), the same
+  // build's start swinging 21-25 s from run to run on the test machine.
+  // May only go down, back to 20 s, in a follow-up.)
+  startMs: 25000,
 };
 
 window.__perfSurvey = async ({ seed = 1, spots = 16, frames = 20 } = {}) => {
