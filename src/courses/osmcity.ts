@@ -8499,6 +8499,7 @@ export async function buildPasirRisCourse(
     };
     const col = new THREE.Color();
     for (const lvl of [...new Set(KR.map((r) => r.lvl))]) {
+      if (pause()) yield* rest();
       // The kerbs' tops and the ground's edges, as samples: x, z, value, out x, out z, length, lawn (1) or ground (0).
       const S: number[] = [];
       const SG = 4;
@@ -8538,6 +8539,7 @@ export async function buildPasirRisCourse(
       const oSeg: number[] = [];
       const sGrid = new Map<number, number[]>();
       for (const r of KR) {
+        if (pause()) yield* rest();
         if (r.lvl === lvl) continue;
         let prev = -1;
         for (let j = 0; j < r.E.length; j++) {
@@ -8637,6 +8639,7 @@ export async function buildPasirRisCourse(
       const ends = new Map<string, [number, number][]>();
       const endKey = (p: XZ) => `${Math.round(p[0] * 100)},${Math.round(p[1] * 100)}`;
       for (const [ri, r] of KR.entries()) {
+        if (pause()) yield* rest();
         if (r.lvl !== lvl || r.E.length < 2) continue;
         tk.set(
           ri,
@@ -8681,6 +8684,7 @@ export async function buildPasirRisCourse(
       const mSeg: number[] = [];
       const mGrid = new Map<number, number[]>();
       for (const r of KR) {
+        if (pause()) yield* rest();
         if (r.lvl !== lvl) continue;
         for (let j = 0; j + 1 < r.E.length; j++) {
           if (!(r.T[j] === r.T[j]) || !(r.T[j + 1] === r.T[j + 1])) continue;
@@ -8712,6 +8716,7 @@ export async function buildPasirRisCourse(
       const farGrid = new Map<number, number[]>();
       const farPts: number[] = [];
       for (const [ri, r] of KR.entries()) {
+        if (pause()) yield* rest();
         if (r.lvl !== lvl) continue;
         const n = r.E.length;
         if (n < 2) continue;
@@ -8730,6 +8735,7 @@ export async function buildPasirRisCourse(
         // the lawn's edge stood at the kerb's top there with nothing under
         // it, 3080.2,3159.)
         for (let j = 0; j + 1 < n; j++) {
+          if ((j & 63) === 63 && pause()) yield* rest();
           // (Where it ends, the walls' gap begins: the other kerb's wall foot
           // there, from the last point taken to the next, as this kerb's own
           // below. With nothing there, the lawn ran on at the other kerb's
@@ -8792,6 +8798,7 @@ export async function buildPasirRisCourse(
         });
         // (And the gap itself off this level's lawn.)
         for (let j = 0; j + 1 < n; j++) {
+          if ((j & 63) === 63 && pause()) yield* rest();
           const a = share[j], b = share[j + 1];
           if (a >= 0 && b >= 0) bands.push(toPath([r.E[j], r.E[j + 1], [oP[b], oP[b + 1]], [oP[a], oP[a + 1]]]));
         }
@@ -8822,6 +8829,7 @@ export async function buildPasirRisCourse(
           line = [];
         };
         for (let j = 0; j + 1 < n; j++) {
+          if ((j & 63) === 63 && pause()) yield* rest();
           const [ax, az] = r.E[j], [bx, bz] = r.E[j + 1];
           const L = Math.hypot(bx - ax, bz - az);
           const both = lawnAt[j] && lawnAt[j + 1];
@@ -8875,6 +8883,7 @@ export async function buildPasirRisCourse(
         if (R.lvl !== lvl || !R.kq) continue;
         for (let q = 0; q < R.n; q++) {
           if (R.kq[q]) continue;
+          if (pause()) yield* rest();
           const [ax, az] = R.P[q + 1], [bx, bz] = R.P[q + 2];
           const L = Math.hypot(bx - ax, bz - az);
           if (L < 1e-4 || !near((ax + bx) / 2, (az + bz) / 2, SHEET_M)) continue;
@@ -8946,10 +8955,14 @@ export async function buildPasirRisCourse(
             }
             if (!piece.length) piece.push(pts[k]);
             piece.push(pts[k + 1]);
+            // (Paused along a path too: one long footpath's samples held a
+            // frame up for 284 ms on the main course, tile 2,13.)
+            if (pause()) yield* rest();
             if (L < 1e-4 || !nearLawn(ax, az, bx, bz, REACH + h + 1)) continue;
             const ux = (bx - ax) / L, uz = (bz - az) / L;
             const m = Math.max(1, Math.ceil(L));
             for (let c = 0; c < m; c++) {
+              if ((c & 15) === 15 && pause()) yield* rest();
               const t = (c + 0.5) / m, x = lerp(ax, bx, t), z = lerp(az, bz, t);
               for (const sd of [1, -1]) {
                 const nx = -uz * sd, nz = ux * sd, px = x + nx * h, pz = z + nz * h;
@@ -9136,10 +9149,9 @@ export async function buildPasirRisCourse(
             if (Math.min(ya, yb) - ref >= SHEET_CLEAR) continue;
             const ux = (bx - ax) / L, uz = (bz - az) / L;
             lowRings.push(toPath([[ax - ux - uz * h, az - uz + ux * h], [bx + ux - uz * h, bz + uz + ux * h], [bx + ux + uz * h, bz + uz - ux * h], [ax - ux + uz * h, az - uz - ux * h]]));
-            if ((q & 63) === 0 && pause()) {
-              yield;
-              slice = performance.now();
-            }
+            // (Asked each piece: each asks the roads within 28 m of three
+            // points, and 64 at a time held a frame up for 142 ms.)
+            if (pause()) yield* rest();
           }
           for (let ci = Math.floor((X0 - SOLVE_M - 64) / JCELL); ci <= Math.floor((X1 + SOLVE_M + 64) / JCELL); ci++)
             for (let cj = Math.floor((Z0 - SOLVE_M - 64) / JCELL); cj <= Math.floor((Z1 + SOLVE_M + 64) / JCELL); cj++)
@@ -9198,7 +9210,20 @@ export async function buildPasirRisCourse(
       const NSTRIP = Math.ceil((QX1 - QX0) / 25 - 1e-9), SW = (QX1 - QX0) / NSTRIP;
       const inSq = (P: Paths64) => split(split(P, false, QZ0 * S_, false, -FAR, QZ0, FAR, FAR), false, QZ1 * S_, true, -FAR, QZ0, FAR, QZ1);
       const band = (P: Paths64, xa: number, xb: number) => split(split(P, true, xa * S_, false, xa, -FAR, FAR, FAR), true, xb * S_, true, -FAR, -FAR, xb, FAR);
-      const reachQ = inSq(reach), paveQ = inSq(pave), holesQ = inSq(holes), bandsQ = inSq(bands), psQ = inSq(pathStrips), otherQ = lowRings.length ? inSq(otherRings) : new Paths64(), lowQ = lowRings.length ? inSq(Clipper.Union(lowRings, undefined, FillRule.NonZero)) : new Paths64();
+      // (Each cut to the square in a slice of its own: all in one, with the
+      // widening before them, they held a frame up for 144 ms on the main
+      // course, tile -14,-12.)
+      const reachQ = inSq(reach);
+      if (pause()) yield* rest();
+      const paveQ = inSq(pave);
+      if (pause()) yield* rest();
+      const holesQ = inSq(holes), bandsQ = inSq(bands);
+      if (pause()) yield* rest();
+      const psQ = inSq(pathStrips);
+      if (pause()) yield* rest();
+      const otherQ = lowRings.length ? inSq(otherRings) : new Paths64();
+      if (pause()) yield* rest();
+      const lowQ = lowRings.length ? inSq(Clipper.Union(lowRings, undefined, FillRule.NonZero)) : new Paths64();
       if (pause()) yield* rest();
       const crumbless = (P: Paths64) => P.filter((p) => Math.abs(Clipper.area(p)) >= 1e-4 * S_ * S_);
       const parts = new Paths64();
@@ -9209,6 +9234,9 @@ export async function buildPasirRisCourse(
         const ea = k === 0 ? xa : xa - 0.05, eb = k === NSTRIP - 1 ? xb : xb + 0.05;
         const reachK = band(reachQ, ea, eb);
         if (!reachK.length) continue;
+        // (Paused between each of its steps too: a strip's all at once held
+        // a frame up for 116 ms on the main course, tile 6,14.)
+        if (pause()) yield* rest();
         // (Each part of it wound the one way: a kerb's band wound against the
         // paving under it cancelled it out, and the lawn was laid over a
         // path there, 1871,1855.)
@@ -9217,7 +9245,9 @@ export async function buildPasirRisCourse(
         // takes the way the lowest ring winds for the way they all do, and
         // a crumb of three points in a line wound the other way, lowest of
         // all; narrowed, the tile's lawn came back as none, 633.6,200.)
+        if (pause()) yield* rest();
         const rawK = crumbless(Clipper.Difference(reachK, offK, FillRule.NonZero));
+        if (pause()) yield* rest();
         // (Opened by a centimetre: a kerb's outer edge and the paving's beside
         // it a millimetre apart left a strip of lawn that thin between them,
         // its two sides 30 cm apart in height, standing upright, at 353,1960.)
@@ -9231,7 +9261,9 @@ export async function buildPasirRisCourse(
           const U = Clipper.Union(P, undefined, FillRule.Positive);
           return many(U.filter((p) => Clipper.area(p) > 0), U.filter((p) => Clipper.area(p) <= 0));
         };
-        const openK = Clipper.InflatePaths(sure(crumbless(Clipper.InflatePaths(sure(rawK), -0.01 * S_, JoinType.Miter, EndType.Polygon))), 0.01 * S_, JoinType.Miter, EndType.Polygon);
+        const shutK = crumbless(Clipper.InflatePaths(sure(rawK), -0.01 * S_, JoinType.Miter, EndType.Polygon));
+        if (pause()) yield* rest();
+        const openK = Clipper.InflatePaths(sure(shutK), 0.01 * S_, JoinType.Miter, EndType.Polygon);
         for (const q of band(openK, xa, xb)) parts.push(q);
         if (pause()) yield* rest();
       }
@@ -9253,7 +9285,11 @@ export async function buildPasirRisCourse(
       // (The outline's sides of this level by 4 m square, flat: looked up
       // for every pair of points the rule weighs.)
       const lsegs = new Map<number, Float64Array>();
+      // (Paused through these too: with the cut to the tile, 185 ms on the
+      // main course, tile 14,1.)
+      let nseg = 0;
       for (const [key, L] of segs) {
+        if ((++nseg & 63) === 0 && pause()) yield* rest();
         const o = L.filter((sg) => sg[4] === lvl);
         if (!o.length) continue;
         const f = new Float64Array(o.length * 4);
@@ -9730,6 +9766,7 @@ export async function buildPasirRisCourse(
         if (fix)
           for (let id = 0; id < N; id++)
             if (!fixed[id]) {
+              if ((id & 255) === 255 && pause()) yield* rest();
               const v = fix(nX[id], nZ[id]);
               if (v === v) (fixed[id] = 1), (U[id] = v);
             }
@@ -9743,7 +9780,11 @@ export async function buildPasirRisCourse(
         // sheet's time.)
         const cOff = new Int32Array(N + 1), cNb: number[] = [], cW: number[] = [];
         const cK = new Float64Array(N), cS = new Float64Array(N);
+        // (Paused in here and in each sweep too: a tile's whole square, a
+        // sweep and the weights held a frame up for 197 ms on the main
+        // course, tile 13,-4.)
         for (let id = 0; id < N; id++) {
+          if ((id & 1023) === 1023 && pause()) yield* rest();
           cOff[id] = cNb.length;
           if (fixed[id]) continue;
           let sa = 0, sv = 0;
@@ -9770,6 +9811,7 @@ export async function buildPasirRisCourse(
         for (let it = 0; it < 4000; it++) {
           let worst = 0;
           for (let id = 0; id < N; id++) {
+            if ((id & 4095) === 4095 && pause()) yield* rest();
             const is = cS[id];
             if (!is) continue;
             let sv = cK[id];
@@ -9984,7 +10026,10 @@ export async function buildPasirRisCourse(
         }
       };
       /** A block of 1 m squares, its piece of the sheet cut to it: each square cut, or whole, or empty. */
-      const block = (blk: Paths64, bx0: number, bz0: number, bx1: number, bz1: number) => {
+      // (A generator, paused a column at a time: a block of few points can
+      // still be wide, and cut in one go one held a frame up for 149 ms on
+      // the main course, tile -8,-3.)
+      const block = function* (blk: Paths64, bx0: number, bz0: number, bx1: number, bz1: number): Generator<void, void, void> {
         // (The 1 m squares an edge of it passes through.)
         const hit = new Set<number>();
         const SX0 = bx0 * S_, SX1 = bx1 * S_, SZ0 = bz0 * S_, SZ1 = bz1 * S_;
@@ -10039,6 +10084,7 @@ export async function buildPasirRisCourse(
         });
         const boxes = boxOf(blk);
         for (let cx = bx0; cx < bx1; cx++) {
+          if (pause()) yield* rest();
           // (Its column cut out once, and each square from the column: cut
           // from the block's whole piece four times a square, the lawn's
           // edges cost a sixth of the sheet's time.)
@@ -10080,7 +10126,7 @@ export async function buildPasirRisCourse(
         // (Or with few points left, cut a square at a time from there: each
         // call to the clipper costs a tenth of a millisecond, however small.)
         if ((x1 - x0 <= 8 && z1 - z0 <= 8) || pts <= 48) {
-          block(P, x0, z0, x1, z1);
+          yield* block(P, x0, z0, x1, z1);
           if (pause()) {
             yield;
             slice = performance.now();
@@ -10131,7 +10177,7 @@ export async function buildPasirRisCourse(
           // (Its own top for the face under it: see below.)
           edgeTop.set(i, eT);
         } else vy[i] = Math.max(f, gnd(x, z) + 0.02);
-        if ((i & 255) === 0 && pause()) {
+        if ((i & 63) === 0 && pause()) {
           yield;
           slice = performance.now();
         }
@@ -10160,7 +10206,10 @@ export async function buildPasirRisCourse(
       };
       const nrm: number[] = new Array(vx.length * 3);
       const faceN = new Float64Array(vx.length * 3);
+      // (Paused through the faces' and points' slopes too: 288 ms on the
+      // main course, tile -7,6.)
       for (let t = 0; t < tris.length; t += 3) {
+        if (t % 3072 === 3069 && pause()) yield* rest();
         const a = tris[t], b = tris[t + 1], c = tris[t + 2];
         if (!(vy[a] === vy[a] && vy[b] === vy[b] && vy[c] === vy[c])) continue;
         const ux = vx[b] - vx[a], uy = vy[b] - vy[a], uz = vz[b] - vz[a], wx = vx[c] - vx[a], wy = vy[c] - vy[a], wz = vz[c] - vz[a];
@@ -10195,7 +10244,7 @@ export async function buildPasirRisCourse(
           if (l > 0) (nrm[3 * i] = f0 / l), (nrm[3 * i + 1] = f1 / l), (nrm[3 * i + 2] = f2 / l);
           else (nrm[3 * i] = 0), (nrm[3 * i + 1] = 1), (nrm[3 * i + 2] = 0);
         }
-        if ((i & 255) === 0 && pause()) {
+        if ((i & 63) === 0 && pause()) {
           yield;
           slice = performance.now();
         }
@@ -10203,6 +10252,7 @@ export async function buildPasirRisCourse(
       // Into the tile's lawn.
       const base = lawn.pos.length / 3;
       for (let i = 0; i < vx.length; i++) {
+        if ((i & 1023) === 1023 && pause()) yield* rest();
         const x = vx[i], z = vz[i], y = vy[i];
         lawnColour(x, z, col);
         const s = 0.9 + 0.2 * valueNoise(x / 3.3, z / 3.3, SEED + 11);
@@ -10212,6 +10262,7 @@ export async function buildPasirRisCourse(
         lawn.nrm.push(nrm[3 * i], nrm[3 * i + 1], nrm[3 * i + 2]);
       }
       for (let t = 0; t < tris.length; t += 3) {
+        if (t % 3072 === 3069 && pause()) yield* rest();
         const a = tris[t], b = tris[t + 1], c = tris[t + 2];
         if (!(vy[a] === vy[a] && vy[b] === vy[b] && vy[c] === vy[c])) continue;
         faceUp(lawn, base + a, base + b, base + c);
@@ -10236,6 +10287,7 @@ export async function buildPasirRisCourse(
       const byRun = new Map<number, [number, number, number][]>();
       for (const [e, u, i] of onEdge) (byRun.get(edges[e][8]) ?? byRun.set(edges[e][8], []).get(edges[e][8])!).push([edges[e][9] + u, i, e]);
       for (const L of byRun.values()) {
+        if (pause()) yield* rest();
         if (L.length < 2) continue;
         L.sort((p, q) => p[0] - q[0]);
         for (let q = 0; q + 1 < L.length; q++) {
