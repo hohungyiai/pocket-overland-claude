@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import BAYS from './garage-bays.json';
+import { MAIN_COURSE } from './courses/main-course';
 
 // Garages: the game's own garages at real landmarks. Drive into the bay,
 // tap "Enter garage", and refuel, wash, plan the trip, back up the journey,
@@ -24,8 +25,9 @@ export interface GarageSpot {
 
 export const GARAGES: GarageSpot[] = [
   // Our Tampines Hub: the bay on the service road along the Hub's north
-  // side (today's map), facing east along it.
-  { id: 'tampines-hub', name: 'Our Tampines Hub', courses: ['pasirris', 'whole'], ...BAYS['tampines-hub'], lat: 1.3527, lon: 103.9403 },
+  // side, facing east along it. (A garage's first course is the drive a new
+  // journey from it opens: the main drive, MAIN_COURSE.)
+  { id: 'tampines-hub', name: 'Our Tampines Hub', courses: [MAIN_COURSE], ...BAYS['tampines-hub'], lat: 1.3527, lon: 103.9403 },
   { id: 'jewel', name: 'Jewel Changi Airport', courses: [], x: 0, z: 0, yaw: 0, lat: 1.3602, lon: 103.9894, later: true },
   { id: 'gardens', name: 'Gardens by the Bay', courses: [], x: 0, z: 0, yaw: 0, lat: 1.2816, lon: 103.8636, later: true },
   { id: 'jurong-lake', name: 'Jurong Lake Gardens', courses: [], x: 0, z: 0, yaw: 0, lat: 1.3383, lon: 103.7292, later: true },

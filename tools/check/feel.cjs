@@ -17,7 +17,7 @@ const BASE = path.join(__dirname, 'feel-baseline.json');
 const record = process.argv.includes('--record');
 // [course, start (x, z, yaw) or null for the course's own start]
 const RUNS = [
-  ['pasirris', null],
+  ['whole', null],
   ['trial', null],
   // (Ubin: only the first 4 s, while the car is still on the lane; after
   // that it is on grass, which is off the road and drives differently.)

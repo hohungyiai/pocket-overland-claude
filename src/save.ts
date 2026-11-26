@@ -55,13 +55,21 @@ const KEY = 'pocket-overland-save';
 
 const num = (v: unknown, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 
+/**
+ * Drives retired for another on the same ground, by course id: their saves,
+ * spots and restore links open on the new one at the same x, z (the old
+ * Pasir Ris & Tampines layout gave way to its redrawn roads, 26 Nov).
+ */
+const RETIRED: Record<string, string> = { pasirris: 'whole' };
+export const retiredCourse = <T extends string | null>(c: T): T => ((c !== null && RETIRED[c]) || c) as T;
+
 /** Cleans a stored or decoded save; also reads the older camp-only save. */
 export function normalise(s: unknown): Journey | null {
   if (!s || typeof s !== 'object') return null;
   const o = s as Record<string, unknown>;
   if (typeof o.course !== 'string' || typeof o.x !== 'number' || typeof o.z !== 'number') return null;
   const j: Journey = {
-    course: o.course,
+    course: retiredCourse(o.course),
     x: num(o.x),
     z: num(o.z),
     yaw: num(o.yaw),
@@ -86,7 +94,9 @@ export function normalise(s: unknown): Journey | null {
       if (typeof v.y === 'number') sp.y = v.y;
       if (typeof v.camp === 'string') sp.camp = v.camp;
       if (typeof v.style === 'string') sp.style = v.style;
-      j.spots[k] = sp;
+      // (A retired drive's spot moves to its successor; with both, the newer.)
+      const id = retiredCourse(k);
+      if (!(id in j.spots) || j.spots[id].savedAt < sp.savedAt) j.spots[id] = sp;
     }
   // (The latest drive's spot is always among them, from older saves too.)
   j.spots[j.course] ??= spotOf(j);

@@ -6,7 +6,7 @@ window.__checkSaveCodes = () => {
   const s = window.game.save;
   const bad = [];
   const cases = [
-    { course: 'pasirris', x: -789.4, z: 1589.2, y: 12.3, yaw: 1.234, label: 'Our Tampines Hub', style: 'detailed', odo: 42345, fuel: 0.733, home: 'tampines-hub', garages: ['tampines-hub'], savedAt: 1795000000000, backupOdo: 0, backupAt: 0 },
+    { course: 'whole', x: -789.4, z: 1589.2, y: 12.3, yaw: 1.234, label: 'Our Tampines Hub', style: 'detailed', odo: 42345, fuel: 0.733, home: 'tampines-hub', garages: ['tampines-hub'], savedAt: 1795000000000, backupOdo: 0, backupAt: 0 },
     { course: 'eastcoast', x: 10, z: -20, yaw: -3.1, label: 'Camp Area G · 東海岸', style: 'stylized', camp: 'g', odo: 0, savedAt: 1795000001000, backupOdo: 0, backupAt: 0 },
     { course: 'ubintrail', x: 0, z: 0, yaw: 0, label: '', odo: 1e7, savedAt: 1795000002000, backupOdo: 0, backupAt: 0 },
   ];
@@ -34,6 +34,16 @@ window.__checkSaveCodes = () => {
       if (s.decodeCode(code.slice(0, -n))) bad.push({ case: j.course, field: `cut ${n} short, still accepted`, over: 1 });
     }
   }
+  // A save on the retired old layout (pasirris) opens on the redrawn map,
+  // whole, at the same spot; its spot there moves too, the newer one kept.
+  samples++;
+  const moved = s.normalise({ course: 'pasirris', x: -789.4, z: 1589.2, y: 12.3, yaw: 1, label: 'Our Tampines Hub', savedAt: 5,
+    spots: { pasirris: { x: -789.4, z: 1589.2, yaw: 1, label: 'Our Tampines Hub', savedAt: 5 }, whole: { x: 1, z: 2, yaw: 0, label: 'old preview', savedAt: 3 }, eastcoast: { x: 7, z: 8, yaw: 0, label: '', savedAt: 4 } } });
+  if (!moved || moved.course !== 'whole' || moved.x !== -789.4 || moved.z !== 1589.2 || moved.y !== 12.3) bad.push({ field: 'old-layout save opens on whole at the same spot', got: moved && [moved.course, moved.x, moved.z], over: 1 });
+  if (moved?.spots?.whole?.label !== 'Our Tampines Hub' || moved?.spots?.pasirris || moved?.spots?.eastcoast?.x !== 7) bad.push({ field: 'old-layout spot moves to whole, newer kept, others kept', got: moved?.spots, over: 1 });
+  samples++;
+  const linked = s.decodeCode(s.encodeCode({ course: 'pasirris', x: 3, z: 4, yaw: 0, label: '', odo: 0, savedAt: 1795000000000, backupOdo: 0, backupAt: 0 }));
+  if (linked?.course !== 'whole' || linked.x !== 3 || linked.z !== 4) bad.push({ field: 'old-layout save code opens on whole', got: linked?.course, over: 1 });
   // The save from before this change (camp only).
   samples++;
   const old = s.normalise({ course: 'eastcoast', camp: 'g', label: 'Camp Area G', x: 5, z: 6, yaw: 1, style: 'detailed', savedAt: 1 });

@@ -1,12 +1,49 @@
 // Map-wide checks on the built game (run `npm run build` first, then `npm run check`).
-// Starts a preview server, loads Pasir Ris & Tampines with ?debug in headless
-// Chromium, and runs each check script against the live road plan.
+// Starts a preview server, loads the main drive (MAIN_COURSE, the one Start
+// your journey opens) with ?debug in headless Chromium, and runs each check
+// script against the live road plan. COURSE=trial runs the small trial map.
 // Exits non-zero if any check fails, so it can gate a build.
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { chromium } = require('playwright');
 
 const PORT = 4179;
+const fs = require('node:fs');
+const ROOT = path.join(__dirname, '..', '..');
+// The course players drive (src/courses/main-course.ts). Checks run on it
+// unless COURSE names another; a retired course id is refused.
+const MAIN_COURSE = fs.readFileSync(path.join(ROOT, 'src/courses/main-course.ts'), 'utf8').match(/MAIN_COURSE = '(\w+)'/)[1];
+const RETIRED = ['pasirris'];
+const course = process.env.COURSE || MAIN_COURSE;
+if (RETIRED.includes(course)) {
+  console.log(`FAIL  COURSE=${course} is retired: its saves open on ${MAIN_COURSE}, the course players drive. Run without COURSE, or COURSE=${MAIN_COURSE}.`);
+  process.exit(1);
+}
+/**
+ * One course (the user's rule, 26 Nov): what Start your journey and the
+ * home garage open, the menu's Singapore drive and the course these checks
+ * run on by default are one and the same. Read from the sources and the
+ * built page, so a change to one alone fails here.
+ */
+function oneCourse() {
+  const bad = [];
+  const menu = (html) => [...html.matchAll(/data-course="(\w+)"><b>([^<]*)</g)].map((m) => [m[1], m[2]]);
+  for (const [where, file] of [['menu (index.html)', 'index.html'], ['menu as built (dist/index.html)', 'dist/index.html']]) {
+    const f = path.join(ROOT, file);
+    if (!fs.existsSync(f)) { bad.push(`${where}: missing`); continue; }
+    const sg = menu(fs.readFileSync(f, 'utf8')).find(([, name]) => /Pasir Ris/.test(name));
+    if (!sg || sg[0] !== MAIN_COURSE) bad.push(`${where}: Pasir Ris & Tampines opens ${sg?.[0]}, not ${MAIN_COURSE}`);
+    for (const [id] of menu(fs.readFileSync(f, 'utf8'))) if (RETIRED.includes(id)) bad.push(`${where}: offers retired ${id}`);
+  }
+  const garage = fs.readFileSync(path.join(ROOT, 'src/garage.ts'), 'utf8');
+  for (const m of garage.matchAll(/id: '([\w-]+)', name: '[^']*', courses: \[([^\]]*)\]/g)) {
+    const first = m[2].split(',')[0].trim();
+    if (first && first !== 'MAIN_COURSE' && first !== `'${MAIN_COURSE}'`) bad.push(`garage ${m[1]}: a journey from it opens ${first}, not ${MAIN_COURSE}`);
+  }
+  const save = fs.readFileSync(path.join(ROOT, 'src/save.ts'), 'utf8');
+  for (const id of RETIRED) if (!new RegExp(`${id}: '${MAIN_COURSE}'`).test(save)) bad.push(`save.ts: saves on retired ${id} do not move to ${MAIN_COURSE}`);
+  return bad;
+}
 const DEPS = { 'fuel.js': ['bot.js'], 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js', 'edges.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'], 'outline.js': ['finish.js'], 'watertight.js': ['finish.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
@@ -37,16 +74,16 @@ const CHECKS = [
   ['Ground never shows through a junction', 'junctions.js', '__checkJunctionGround', 0],
   // (Known: seven real junctions where five or six roads meet at one point
   // in the map data; the ratchet is there to catch new ones.)
-  ['No junction offers more than four ways to go', 'arms.js', '__checkArms', 0, { pasirris: 7, whole: 4 }],
+  ['No junction offers more than four ways to go', 'arms.js', '__checkArms', 0, { whole: 4 }],
   ['No two junctions overlap', 'junctions.js', '__checkJunctionOverlap', 0],
   ['No kerb across a road', 'junctions.js', '__checkKerbAcross', 0],
   ['Junctions stay on their roads', 'junctions.js', '__checkJunctionSpill', 0],
-  ['No junction is paved more than 5.5 m from its roads, anywhere inside it', 'junctions.js', '__checkJunctionReach', 0, { pasirris: 35, whole: 16 }],
+  ['No junction is paved more than 5.5 m from its roads, anywhere inside it', 'junctions.js', '__checkJunctionReach', 0, { whole: 16 }],
   ['Crossings lie on their own road', 'crossings.js', '__checkCrossings', 0],
   ['No traffic light on a road or in a junction', 'crossings.js', '__checkLightPoles', 0],
   ['A junction\'s yellow box lies on its paving', 'crossings.js', '__checkYellowBoxes', 0],
   ['A footpath lies on the grass, never under it or folded over itself', 'paths.js', '__checkPaths', 0],
-  ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, { pasirris: 22, whole: 6 }],
+  ['No gap in any road (seams, wedges)', 'seams.js', '__checkSeams', 0, { whole: 6 }],
   ['No step where road pieces meet', 'seams.js', '__checkSteps', 0],
   ['No stray kerb or road marking inside a junction', 'stray.js', '__checkStray', 0],
   ['A through road\'s lines carry on across its junctions', 'through.js', '__checkThroughLines', 0],
@@ -55,8 +92,8 @@ const CHECKS = [
   ['Every road joining a through road has its give-way line', 'through.js', '__checkGiveWays', 0],
   ['The car rides on the road you see', 'ride.js', '__checkRide', 0],
   // Drivable from a standstill: 60% of what the car can do (src/limits.ts).
-  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, { pasirris: 13, whole: 5 }],
-  ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, { pasirris: 4 }],
+  ['No lip the car can\'t climb', 'drive.js', '__checkLips', 0, { whole: 5 }],
+  ['No slope the car can\'t climb', 'drive.js', '__checkGrades', 0, {}],
   ['No side tilt that could tip the car', 'drive.js', '__checkTilt', 0],
   ['The drive bot gets through the hard spots', 'routes.js', '__checkRoutes', 0],
   ['The drive bot gets round the map on random trips, never stuck or tipped over', 'walk.js', '__checkWalk', 0],
@@ -67,26 +104,26 @@ const CHECKS = [
   ['No bite out of a road\'s edge', 'lanes.js', '__checkEdges', 0],
   ['Widths change no faster than 1 m per 20 m (50 m on expressways), through junctions too', 'lanes.js', '__checkWidths', 0],
   // (79: corners OSM itself draws as a jog, nearly all on service lanes.)
-  ['No road jogs sideways (sharp turn and straight back)', 'kinks.js', '__checkKinks', 0, { pasirris: 78, whole: 11, trial: 1 }],
+  ['No road jogs sideways (sharp turn and straight back)', 'kinks.js', '__checkKinks', 0, { whole: 11, trial: 1 }],
   ['No gap where two roads split or join', 'gores.js', '__checkGores', 0],
   // (120: 69 sides of ground splits still drawn from one point, 51 paved junctions whose outline kinks.)
-  ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, { pasirris: 8, whole: 4 }],
+  ['Where a road splits or two join, its outside edges carry on', 'splits.js', '__checkSplitEdges', 0, { whole: 4 }],
   // The finished road (finish.js): what is drawn, followed along the whole of
   // every road, whatever rule drew it. (Known: counted on the map as it
   // stood when these checks were written.)
-  ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, { pasirris: 147, whole: 13 }],
+  ['A road\'s outside edge never jumps sideways, along its whole length', 'finish.js', '__checkEdgeRuns', 0, { whole: 13 }],
   // (201 to 213, the user's call on 16 Nov: thin medians on today's map
   // now end in a rounded point and are counted in more pieces, their total
   // length down from 444 m to 400 m.)
-  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, { pasirris: 191, whole: 16, trial: 1 }],
-  ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, { pasirris: 197, whole: 29, trial: 7 }],
-  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, { pasirris: 21 }],
-  ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, { pasirris: 54, whole: 9, trial: 1 }],
+  ['No thin sliver of ground between roads side by side', 'finish.js', '__checkSlivers', 0, { whole: 16, trial: 1 }],
+  ['The road is one sheet: no piece lying over another at a different height', 'finish.js', '__checkOneSheet', 0, { whole: 29, trial: 7 }],
+  ['Nothing upright stands on a surface you can drive on', 'finish.js', '__checkUprights', 0, {}],
+  ['Splits beside a flyover where the builder\'s rules are switched off', 'finish.js', '__checkSwitchedOff', 0, { whole: 9, trial: 1 }],
   // The sides of raised roads (edges.js): a parapet wherever the road's edge
   // drops away, and walls that end by coming down to the ground, not as a
   // square stub. (Known: counted on today's map when these were written.)
-  ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, { pasirris: 14, whole: 5, trial: 1 }],
-  ['A wall beside a road never ends as a square stub on the verge', 'edges.js', '__checkWallEnds', 0, { pasirris: 33, whole: 37, trial: 4 }],
+  ['A raised road\'s edge never drops away with no parapet', 'edges.js', '__checkOpenEdges', 0, { whole: 5, trial: 1 }],
+  ['A wall beside a road never ends as a square stub on the verge', 'edges.js', '__checkWallEnds', 0, { whole: 37, trial: 4 }],
   ['The ground beside a raised road keeps its bank: the road never cuts it away', 'edges.js', '__checkBanks', 0],
   // (Roads as one line: where the map marks a road as carrying straight on
   // past a side road, nothing of the joint may show. No marks, nothing to test.)
@@ -125,8 +162,8 @@ const CHECKS = [
   // the next change, one sheet of lawn kerb to kerb, to fix. Held again at
   // 263 and 29, more islands on main's lawn, the user's call on 22 Nov
   // (09:22 UTC).)
-  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { pasirris: 881, whole: 44, trial: 13 }],
-  ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0, { pasirris: 4, whole: 1 }],
+  ['Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn', 'watertight.js', '__checkWatertight', 0, { whole: 44, trial: 13 }],
+  ['The ground never stands over a kerb, a road\'s edge or a wall\'s top beside it', 'watertight.js', '__checkGroundOverTops', 0, { whole: 1 }],
   // (The whole map's held at 31, the user's call on 24 Nov (00:27 UTC):
   // ten more with the one-sheet lawn, 0.1 to 2.4 cm low; may only go down.)
   ['An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top', 'outline.js', '__checkIslandTops', 0, { whole: 31, trial: 6 }],
@@ -166,8 +203,14 @@ const CHECKS = [
 ];
 
 (async () => {
-  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' });
   let failed = false;
+  // (Before anything loads: the one-course rule, from the files themselves.)
+  const off = oneCourse();
+  if (off.length) failed = true;
+  console.log(`${off.length ? 'FAIL' : 'PASS'}  One course: Start your journey, the home garage, the menu's Singapore drive and these checks all use ${MAIN_COURSE}: ${off.length} off`);
+  for (const o of off) console.log('      ', o);
+  if (course !== MAIN_COURSE) console.log(`NOTE  Running on ${course}, not ${MAIN_COURSE} (the course players drive).`);
+  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' });
   try {
     await new Promise((r) => setTimeout(r, 2500));
     // (Room for the whole map's lawn: each check reads every tile's meshes, and at the default heap the page ran out at the island checks.)
@@ -185,15 +228,14 @@ const CHECKS = [
     };
     let p = await open();
     const t0 = Date.now();
-    await p.goto(`http://localhost:${PORT}/?course=${process.env.COURSE || 'pasirris'}&debug`);
+    await p.goto(`http://localhost:${PORT}/?course=${course}&debug`);
     await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
     // (How long the game took to start, for the performance budget.)
     await p.evaluate((ms) => (window.__startMs = ms), Date.now() - t0);
     const loaded = new Set();
     // (ONLY=regex runs just the matching checks.)
     const only = process.env.ONLY ? new RegExp(process.env.ONLY, 'i') : null;
-    const course = process.env.COURSE || 'pasirris';
-    const FRESH = new Set(['__checkWatertight', '__checkIslandTops', '__checkLevelIslands', '__checkLevelIslandHoles', '__checkLawnSeams', '__checkLawnFolds', '__checkLawnInIsland']);
+        const FRESH = new Set(['__checkWatertight', '__checkIslandTops', '__checkLevelIslands', '__checkLevelIslandHoles', '__checkLawnSeams', '__checkLawnFolds', '__checkLawnInIsland']);
     for (const [name, file, fn, limit, knownAt = 0] of CHECKS) {
       const known = typeof knownAt === 'number' ? knownAt : knownAt[course] ?? 0;
       if (only && !only.test(name)) continue;
