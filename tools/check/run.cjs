@@ -179,6 +179,15 @@ const CHECKS = [
     process.exit(2);
   }
   const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', detached: true });
+  // (Stopped part way, by Ctrl-C or a kill, its server stops too: in a group
+  // of its own, it no longer went with the runner's.)
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'])
+    process.once(sig, () => {
+      try {
+        process.kill(-server.pid);
+      } catch {}
+      process.exit(130);
+    });
   let failed = false;
   try {
     await new Promise((r) => setTimeout(r, 2500));
