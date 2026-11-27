@@ -5,7 +5,8 @@
 //   begins between the two roads, has its rounded nose, or is handed to
 //   what carries on there (a road, the next wedge, paving, a paved island,
 //   a junction), or is too narrow for one (under 0.3 m: the kerb itself is
-//   the end). The builder says why for each end; any other reason fails.
+//   the end), or is where the two roads part in height (rule 1: the island's
+//   own outline rounds it). The builder says why for each end; any other reason fails.
 // __checkNoseKerbFaces: within 6 m of a nose, no face in the kerb's side
 //   stands taller than a kerb (0.25 m) over the road or ground at its foot:
 //   a bigger drop is a wall's.
@@ -27,7 +28,7 @@ window.__noseList = () => {
 window.__checkNoseEnds = () => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'ends' };
-  const HANDED = new Set(['narrow', 'road', 'wedge', 'paving', 'island', 'junction']);
+  const HANDED = new Set(['narrow', 'road', 'wedge', 'paving', 'island', 'junction', 'roads part in height', 'old map']);
   const ends = d.goreEnds();
   const counts = {};
   const bad = [];

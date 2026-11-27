@@ -5047,6 +5047,15 @@ export async function buildPasirRisCourse(
         why('old map');
         continue;
       }
+      // (Nor where the two roads part in height, rule 1, on either map: the
+      // island's own outline rounds that end. Capped as well, the nose's
+      // paving folded the two roads, 0.35 m apart, into one point, its
+      // kerb's line hooked round beside the higher road's wall, and the
+      // island's round end moved 2 m on, at the TPE's 1330.3,567.2.)
+      if (brk?.[e === 0 ? 0 : 1]) {
+        why('roads part in height');
+        continue;
+      }
       const d = unit(mx - (q.a[0] + q.b[0]) / 2, mz - (q.a[1] + q.b[1]) / 2);
       const y = (r.ya + r.yb) / 2;
       // (Only where the verge really begins: not where another road, a junction or the next wedge takes over.)
