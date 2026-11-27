@@ -4,7 +4,8 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { fbm, lerp, mulberry32, smoothstep, valueNoise } from '../noise';
 import { SURFACES, type Course, type MapData, type Surface, type XZ } from './types';
 import * as D from './detail';
-import { TILE, TileStreamer, type Layer, type TileKit } from '../world/stream';
+import { TILE, TileStreamer, type Layer } from '../world/stream';
+import { CD, Shared, collide, nullKit, type BodyRef, type TileRecorder as TileKit } from '../world/tilerecord';
 import { SegIndex, inRing, resample, ringArea } from '../world/segindex';
 import { convexHull, easeSide, inRingXZ, shapeJunctions } from '../world/junctions';
 import { LIMITS } from '../limits';
@@ -155,6 +156,9 @@ export async function buildPasirRisCourse(
   if (!res.ok) throw new Error(`map data missing (${res.status})`);
   const M = (await res.json()) as OsmMap;
   const detailed = opts.style === 'detailed';
+  // The materials and geometries tiles share, each named once: a tile's
+  // record carries only the name (see world/tilerecord.ts).
+  const shared = new Shared();
 
   // ---------- Roads and paths, resampled every 4 m ----------
   // Tunnels stay underground. One carriageway of a dual road is narrower
@@ -3290,7 +3294,7 @@ export async function buildPasirRisCourse(
     }
   };
   /** One fixed body for all of a tile layer's own colliders, however many jobs add to it. */
-  const tileBodies = new WeakMap<TileKit, ReturnType<TileKit['body']>>();
+  const tileBodies = new WeakMap<TileKit, BodyRef>();
   const tileBody = (kit: TileKit) => tileBodies.get(kit) ?? tileBodies.set(kit, kit.body()).get(kit)!;
   /** One job per `size` items, so each build step stays short. */
   /** A job's steps all at once, and what it comes to. */
@@ -3308,7 +3312,7 @@ export async function buildPasirRisCourse(
   };
 
   // ---------- Terrain patches (shared lattice, as on the East Coast) ----------
-  const groundMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
+  const groundMat = shared.share('ground', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }));
   const DETAIL_M = 2.5;
   if (detailed) {
     const tex = D.groundDetailTexture();
@@ -3467,8 +3471,8 @@ export async function buildPasirRisCourse(
     for (let i = 0; i < w; i++) for (let j = 0; j < h; j++) hts[i * h + j] = pos[(j * w + i) * 3 + 1];
     const sx = (w - 1) * STEP;
     const sz = (h - 1) * STEP;
-    world.createCollider(
-      RAPIER.ColliderDesc.heightfield(h - 1, w - 1, hts, { x: sx, y: 1, z: sz }).setTranslation(pos[0] + sx / 2, 0, pos[2] + sz / 2).setFriction(0.9),
+    collide(
+      CD.heightfield(h - 1, w - 1, hts, { x: sx, y: 1, z: sz }).setTranslation(pos[0] + sx / 2, 0, pos[2] + sz / 2).setFriction(0.9),
       kit.body(),
     );
   };
@@ -3802,6 +3806,7 @@ export async function buildPasirRisCourse(
     ballast: flatMat(0x7d7872, -1),
     deck: flatMat(0xc4c0b8, 0),
   };
+  for (const [k, m] of Object.entries(MAT)) shared.share(`flat:${k}`, m);
   type AccKey = keyof typeof MAT | 'wall' | 'roof' | 'lawn';
   /** Turn a tile's filled buffers into meshes. */
   function* flush(accs: Map<AccKey, Acc>, kit: TileKit): Generator<void, void, void> {
@@ -4725,8 +4730,8 @@ export async function buildPasirRisCourse(
     const sl = Math.hypot(x1 - x0, z1 - z0);
     if (sl < 0.3) return;
     const yaw = Math.atan2(-(z1 - z0) / sl, (x1 - x0) / sl);
-    world.createCollider(
-      RAPIER.ColliderDesc.cuboid(sl / 2 + 0.15, h / 2 + 0.125, 0.25)
+    collide(
+      CD.cuboid(sl / 2 + 0.15, h / 2 + 0.125, 0.25)
         .setTranslation((x0 + x1) / 2, y + h / 2 + 0.025, (z0 + z1) / 2)
         .setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }),
       body,
@@ -5867,7 +5872,7 @@ export async function buildPasirRisCourse(
     });
   // Flyover pillars, and colliders for every deck (the ground heightfield
   // can't hold a road in the air).
-  const concreteMat = new THREE.MeshStandardMaterial({ color: 0xc9c6bf, roughness: 0.9 });
+  const concreteMat = shared.share('concrete', new THREE.MeshStandardMaterial({ color: 0xc9c6bf, roughness: 0.9 }));
   const deckLines = EP.map((pts, i) => (hasProfile[i] ? pts : []));
   const deckRuns = runsOf(deckLines);
   /**
@@ -5953,8 +5958,8 @@ export async function buildPasirRisCourse(
             // (A deck's too, by the fall beside it: see the deck's parapet.)
             const ph = isDeck[line] && lvlOf(line, kk) >= 0 ? parapetTop(y - Math.min(heightAt(mx + dz * sgn * 0.6, mz - dx * sgn * 0.6), heightAt(mx + dz * sgn * 1.6, mz - dx * sgn * 1.6))) : parapetTop(y - heightAt(mx + dz * sgn * 0.6, mz - dx * sgn * 0.6));
             if (ph < 0.3) continue;
-            world.createCollider(
-              RAPIER.ColliderDesc.cuboid(sl / 2 + 0.15, ph / 2 + 0.125, 0.25)
+            collide(
+              CD.cuboid(sl / 2 + 0.15, ph / 2 + 0.125, 0.25)
                 .setTranslation(mx, y + ph / 2 + 0.025, mz)
                 .setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }),
               body,
@@ -5962,8 +5967,8 @@ export async function buildPasirRisCourse(
           }
         }
         if (from === k0) pillarsOf(line, k0, k1, (x, z, top, foot, yaw) => {
-          world.createCollider(
-            RAPIER.ColliderDesc.cuboid(0.75, (top - foot) / 2, 0.75)
+          collide(
+            CD.cuboid(0.75, (top - foot) / 2, 0.75)
               .setTranslation(x, (top + foot) / 2, z)
               .setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }),
             body,
@@ -11122,8 +11127,8 @@ export async function buildPasirRisCourse(
       const sl = Math.hypot(w.x1 - w.x0, w.z1 - w.z0), ph = Math.min(w.ph0, w.ph1);
       if (sl < 0.05 || ph < 0.3) continue;
       const yaw = Math.atan2(-(w.z1 - w.z0), w.x1 - w.x0), y = (w.y0 + w.y1) / 2;
-      world.createCollider(
-        RAPIER.ColliderDesc.cuboid(sl / 2, ph / 2, 0.15)
+      collide(
+        CD.cuboid(sl / 2, ph / 2, 0.15)
           .setTranslation((w.x0 + w.x1) / 2, y + ph / 2, (w.z0 + w.z1) / 2)
           .setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }),
         tileBody(kit),
@@ -11959,8 +11964,8 @@ export async function buildPasirRisCourse(
   // coming in. The lamps of each direction share three materials, switched
   // in update().
   const lamp = (hex: number) => new THREE.MeshStandardMaterial({ color: 0x1a1a1a, emissive: hex, emissiveIntensity: 0.05, roughness: 0.5 });
-  const LAMPS = [0, 1].map(() => [lamp(0xff2a1a), lamp(0xffa21a), lamp(0x2aff6a)]);
-  const poleMat = new THREE.MeshStandardMaterial({ color: 0x3b3f44, roughness: 0.7 });
+  const LAMPS = [0, 1].map((d) => [lamp(0xff2a1a), lamp(0xffa21a), lamp(0x2aff6a)].map((m, i) => shared.share(`lamp${d}:${i}`, m)));
+  const poleMat = shared.share('pole', new THREE.MeshStandardMaterial({ color: 0x3b3f44, roughness: 0.7 }));
   for (const [k, list] of crossByTile)
     onTile('near', k, 'traffic lights', (kit) => {
       const poles: THREE.BufferGeometry[] = [];
@@ -12494,7 +12499,7 @@ export async function buildPasirRisCourse(
        transformed.y += sin(position.x * 0.045 + uTime * 0.9) * 0.12 + sin(position.z * 0.07 - uTime * 1.3 + position.x * 0.01) * 0.1;`,
     );
   };
-  const pondMat = new THREE.MeshStandardMaterial({ color: 0x3f7f78, roughness: 0.15, metalness: 0.1, side: THREE.DoubleSide });
+  const pondMat = shared.share('pond', new THREE.MeshStandardMaterial({ color: 0x3f7f78, roughness: 0.15, metalness: 0.1, side: THREE.DoubleSide }));
   if (detailed) {
     const wn = D.waterNormalTexture();
     wn.repeat.set(SEA.w / 22, SEA.d / 22);
@@ -12683,6 +12688,11 @@ export async function buildPasirRisCourse(
     Object.assign(kinds.mangrove, { geo: D.shrubGeo(6).clone().scale(2.2, 1.6, 2.2), mat: foliage(0.01), hues: [0.26, 0.42, 0.45, 0.04] });
     Object.assign(kinds.grass, { geo: D.grassTuftGeo(), mat: swayMat(0.04, leafOpts) });
   }
+  for (const [name, k] of Object.entries(kinds)) {
+    shared.share(`plant:${name}`, k.geo);
+    if (k.far) shared.share(`plant far:${name}`, k.far);
+    shared.share(`plant mat:${name}`, k.mat as THREE.Material);
+  }
 
   // ---------- Trees, planted per tile ----------
   const tileRand = (i: number, j: number, salt: number) => mulberry32((SEED * 7919) ^ (i * 73856093) ^ (j * 19349663) ^ salt);
@@ -12817,14 +12827,12 @@ export async function buildPasirRisCourse(
         dummy.updateMatrix();
         im.setMatrixAt(i, dummy.matrix);
         im.setColorAt(i, vcol.setHSL(hh + (rand() - 0.5) * jit, ss + (rand() - 0.5) * 0.1, ll + (rand() - 0.5) * 0.1));
-        if (b) world.createCollider(RAPIER.ColliderDesc.cylinder(1.5, kind.collide! * p.s).setTranslation(p.x, y + 1.5, p.z), b);
+        if (b) collide(CD.cylinder(1.5, kind.collide! * p.s).setTranslation(p.x, y + 1.5, p.z), b);
       });
       im.castShadow = kind.shadow;
       im.receiveShadow = !kind.shadow;
       im.computeBoundingSphere();
-      kit.add(im);
-      if (name === 'grass') nearOnly.add({ mesh: im, x: (ti + 0.5) * TILE, z: (tj + 0.5) * TILE });
-      else if (kind.far) farTrees.add({ mesh: im, near: kind.geo, far: kind.far, x: (ti + 0.5) * TILE, z: (tj + 0.5) * TILE });
+      kit.add(im, false, { plant: name, x: (ti + 0.5) * TILE, z: (tj + 0.5) * TILE });
     }
   }
 
@@ -12848,8 +12856,8 @@ export async function buildPasirRisCourse(
     t.anisotropy = 4;
     return t;
   })();
-  const wallMat = new THREE.MeshStandardMaterial({ map: facade, vertexColors: true, roughness: 0.85, side: THREE.DoubleSide, ...(detailed ? { bumpMap: facade, bumpScale: 1.2 } : {}) });
-  const roofMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide });
+  const wallMat = shared.share('wall', new THREE.MeshStandardMaterial({ map: facade, vertexColors: true, roughness: 0.85, side: THREE.DoubleSide, ...(detailed ? { bumpMap: facade, bumpScale: 1.2 } : {}) }));
+  const roofMat = shared.share('roof', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide }));
   const HDB_COLORS = [0xf3e9d2, 0xf6d8c4, 0xd8e6ef, 0xdcebd7, 0xe9e2f2, 0xf1f1ee, 0xf2e0b8, 0xcfe0e8];
   const LANDED = new Set(['house', 'terrace', 'semidetached_house', 'detached', 'bungalow']);
   const SMALL = new Set(['hut', 'shed', 'toilets', 'kiosk', 'gatehouse', 'guardhouse', 'container', 'pavilion', 'utility', 'service', 'garage']);
@@ -13233,7 +13241,7 @@ export async function buildPasirRisCourse(
         if (!b.walls) continue;
         if (b.open) {
           // (An open ground floor: only its columns.)
-          for (const [x, z] of b.posts) world.createCollider(RAPIER.ColliderDesc.cuboid(0.3, b.open / 2 + 0.25, 0.3).setTranslation(x, b.ground + b.open / 2 - 0.25, z), body);
+          for (const [x, z] of b.posts) collide(CD.cuboid(0.3, b.open / 2 + 0.25, 0.3).setTranslation(x, b.ground + b.open / 2 - 0.25, z), body);
           continue;
         }
         const n = b.pts.length;
@@ -13249,8 +13257,8 @@ export async function buildPasirRisCourse(
           const mx = (ax + bx) / 2 - dz * t;
           const mz = (az + bz) / 2 + dx * t;
           const a = Math.atan2(-dz, dx);
-          world.createCollider(
-            RAPIER.ColliderDesc.cuboid(len / 2 + 0.2, Math.min(4, b.h / 2), t)
+          collide(
+            CD.cuboid(len / 2 + 0.2, Math.min(4, b.h / 2), t)
               .setTranslation(mx, b.ground + Math.min(4, b.h / 2) - 0.4, mz)
               .setRotation({ x: 0, y: Math.sin(a / 2), z: 0, w: Math.cos(a / 2) }),
             body,
@@ -13261,7 +13269,9 @@ export async function buildPasirRisCourse(
   }
 
   // ---------- MRT viaducts ----------
-  const concrete = new THREE.MeshStandardMaterial({ color: 0xc9c6bf, roughness: 0.9 });
+  const concrete = shared.share('rail concrete', new THREE.MeshStandardMaterial({ color: 0xc9c6bf, roughness: 0.9 }));
+  // (One for every tile's rail deck: each tile made its own, the same.)
+  const railDeckMat = shared.share('rail deck', new THREE.MeshStandardMaterial({ color: 0xc9c6bf, roughness: 0.9, side: THREE.DoubleSide }));
   const viaducts = M.rail.filter((r) => r.bridge && !r.tunnel).map((r) => resample(r.pts, 6));
   const VCUM = viaducts.map((pts) => {
     const c = [0];
@@ -13309,7 +13319,7 @@ export async function buildPasirRisCourse(
       g.setIndex(top.idx);
       g.computeVertexNormals();
       // A deck with some depth: draw the strip, then a thicker underside copy.
-      const deck = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xc9c6bf, roughness: 0.9, side: THREE.DoubleSide }));
+      const deck = new THREE.Mesh(g, railDeckMat);
       deck.castShadow = true;
       kit.add(deck);
       const under = deck.clone();
@@ -13327,7 +13337,7 @@ export async function buildPasirRisCourse(
         for (const q of railPiers(line)) {
           if (q < k0 || q > k1) continue;
           const [x, z] = viaducts[line][q];
-          world.createCollider(RAPIER.ColliderDesc.cuboid(0.7, 4, 0.7).setTranslation(x, heightAt(x, z) + 3.5, z), body);
+          collide(CD.cuboid(0.7, 4, 0.7).setTranslation(x, heightAt(x, z) + 3.5, z), body);
         }
     });
   }
@@ -13380,7 +13390,7 @@ export async function buildPasirRisCourse(
     roadSurf.set(k, { pos, idx });
     if (roadSurf.size > 300) roadSurf.delete(roadSurf.keys().next().value!);
   };
-  const offScene = { add: () => {}, own: <T>(g: T) => g, body: () => null } as unknown as TileKit;
+  const offScene = nullKit;
   function* surfaceOf(k: string): Generator<void, { pos: Float32Array; idx: Uint32Array }, void> {
     const got = roadSurf.get(k);
     if (got) return got;
@@ -13408,7 +13418,7 @@ export async function buildPasirRisCourse(
   }
   const roadCollider = (surf: { pos: Float32Array; idx: Uint32Array }, kit: TileKit) => {
     if (!surf.idx.length) return;
-    world.createCollider(RAPIER.ColliderDesc.trimesh(surf.pos, surf.idx).setFriction(0.9), kit.body());
+    collide(CD.trimesh(surf.pos, surf.idx).setFriction(0.9), kit.body());
   };
   const builder = (layer: Layer) =>
     function* (ti: number, tj: number, kit: TileKit) {
@@ -13458,7 +13468,15 @@ export async function buildPasirRisCourse(
       if (layer === 'far') keepSurf(`${ti},${tj}`, accs.get('road'), accs.get('lawn'));
       yield* flush(accs, kit);
     };
-  const streamer = new TileStreamer(scene, world, RAPIER, { near: builder('near'), far: builder('far'), horizon: builder('horizon') }, WB);
+  // (A tile's plants, once made real: grass is drawn near the camera only,
+  // trees with their far version beyond FAR_TREE m.)
+  const onTag = (o: THREE.Mesh, tag: Record<string, unknown>) => {
+    const name = tag.plant as string, kind = kinds[name];
+    const mesh = o as THREE.InstancedMesh, x = tag.x as number, z = tag.z as number;
+    if (name === 'grass') nearOnly.add({ mesh, x, z });
+    else if (kind.far) farTrees.add({ mesh, near: kind.geo, far: kind.far, x, z });
+  };
+  const streamer = new TileStreamer(scene, world, RAPIER, { near: builder('near'), far: builder('far'), horizon: builder('horizon') }, WB, undefined, { shared, onTag });
 
   // ---------- Names: parks and estates, then the road you're on ----------
   const named = M.areas
