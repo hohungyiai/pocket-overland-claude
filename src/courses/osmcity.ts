@@ -5760,7 +5760,10 @@ export async function buildPasirRisCourse(
               // lower road rather than stopping there: stopped where this
               // drop fell under PARAPET_FROM, it began again further on
               // square, 0.66 m tall, by the TPE's island at 1330.2,567.1.)
-              dp[kk - lo] = oneLine ? dy[kk] + 0.09 - Math.min(fl(off(kk) + sgn * 0.6), fl(off(kk) + sgn * 1.6)) : dr[kk - lo];
+              // (Asked only where a parapet may stand: under PARAPET_FROM it is
+              // no taller than a wall's 1 cm lip either way, and the search
+              // for roads beside it ran at every point of every road.)
+              dp[kk - lo] = oneLine && dr[kk - lo] > PARAPET_FROM ? dy[kk] + 0.09 - Math.min(fl(off(kk) + sgn * 0.6), fl(off(kk) + sgn * 1.6)) : dr[kk - lo];
               // (And to the ground as drawn, its 4 m lattice's, where that
               // lies lower: the plan's ground is held up beside a raised
               // road, and the wall stopped 2 m over the grass at
