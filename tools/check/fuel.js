@@ -6,12 +6,16 @@
 window.__checkFuelCrawl = async () => {
   const g = window.game;
   const d = globalThis.__osm;
-  if ((new URLSearchParams(location.search).get('course') ?? 'pasirris') !== 'pasirris') return { samples: 0, bad: 0, worst: [] };
+  // (Upper Changi Road North onto the TPE viaduct, by the road plan's own
+  // edge numbers: on the redrawn map 670 and 2743, the old map's 1413 and
+  // 9966, from 1832,1644 up the slip from 1820.1,1613.8.)
+  const ROUTE = { whole: [[670, 13, 'end'], [2743, 0, 80]] }[new URLSearchParams(location.search).get('course')];
+  if (!ROUTE) return { samples: 0, bad: 0, worst: [] };
   const was = [g.fuel.level, g.car.crawl];
   g.fuel.level = 0;
   // (The drive bot runs the car ahead of the clock, past the frame that sets this.)
   g.car.crawl = 5.5;
-  const r = await window.__driveRoute([[1413, 13, d.ELEN[1413]], [9966, 0, 80]], { timeout: 90 });
+  const r = await window.__driveRoute(ROUTE.map(([i, a, b]) => [i, a === 'end' ? d.ELEN[i] : a, b === 'end' ? d.ELEN[i] : b]), { timeout: 90 });
   [g.fuel.level, g.car.crawl] = was;
   const bad = [];
   if (!r.done) bad.push({ route: 'empty tank up the slip road to the TPE viaduct', stuck: r.stuck ?? 'timeout', at: `${r.at} of ${r.total} m`, over: 1 });

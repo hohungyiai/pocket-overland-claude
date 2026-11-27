@@ -3,6 +3,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { buildUbinCourse } from './courses/ubin';
 import { buildEastCoastCourse } from './courses/eastcoast';
 import { buildPasirRisCourse } from './courses/osmcity';
+import { MAIN_MAP } from './courses/main-course';
 import { buildUbinTrailCourse } from './courses/ubintrail';
 import { CHEK_JAWA, PUAKA } from './courses/ubintrail/trails';
 import { skyTexture, type ArtStyle } from './courses/detail';
@@ -13,7 +14,7 @@ import { Controls } from './controls';
 import { PerfOverlay } from './perf';
 import { Weather } from './weather';
 import { Camps } from './camp';
-import { loadJourney, saveJourney, spotOf, checkStorage, storageWarning, backupPanel, restorePanel, describe, encodeCode, decodeCode, normalise, type Journey, type StorageHealth } from './save';
+import { retiredCourse, loadJourney, saveJourney, spotOf, checkStorage, storageWarning, backupPanel, restorePanel, describe, encodeCode, decodeCode, normalise, type Journey, type StorageHealth } from './save';
 import { Fuel, CRAWL_SPEED, distText, onForecourt } from './fuel';
 import { SURFACES } from './courses/types';
 import { Stations } from './station';
@@ -23,14 +24,17 @@ import './style.css';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const COURSES = {
-  pasirris: buildPasirRisCourse,
   // Road redraw trial: the streets round the TPE / PIE / Upper Changi Road
   // East interchange, built by the same builder from a redrawn network.
   trial: ((scene, world, RAPIER, opts) =>
     buildPasirRisCourse(scene, world, RAPIER, { ...opts, map: 'maps/trial-ucre.json', name: 'Road trial: Upper Changi interchange', startAt: [1870, 1759] })) as typeof buildPasirRisCourse,
-  // The same redraw over the whole map: a preview beside today's map.
+  // Pasir Ris & Tampines: the whole map with every road redrawn as one
+  // continuous line. The drive Start your journey and the home garage open
+  // (MAIN_COURSE), and the one every check and review runs on. (The old
+  // layout, course id 'pasirris', is retired: its saves and links open here
+  // at the same spot, see RETIRED in save.ts.)
   whole: ((scene, world, RAPIER, opts) =>
-    buildPasirRisCourse(scene, world, RAPIER, { ...opts, map: 'maps/east-redrawn.json', name: 'Redrawn roads: the whole map (preview)' })) as typeof buildPasirRisCourse,
+    buildPasirRisCourse(scene, world, RAPIER, { ...opts, map: MAIN_MAP, name: 'Pasir Ris & Tampines' })) as typeof buildPasirRisCourse,
   eastcoast: buildEastCoastCourse,
   // The first off-road trail: Pulau Ubin, round Ketam Quarry.
   ubintrail: buildUbinTrailCourse,
@@ -741,7 +745,7 @@ const go = (id: CourseId) => {
     ),
   );
 };
-const chosen = params.get('course');
+const chosen = retiredCourse(params.get('course'));
 const style: ArtStyle = params.get('style') === 'stylized' ? 'stylized' : 'detailed';
 const atParts = (params.get('at') ?? '').split(',').map(Number);
 const at =
@@ -751,8 +755,9 @@ const at =
 // Checked once, before the menu shows and before a drive starts.
 const health$: Promise<StorageHealth> = checkStorage();
 const continueFrom = (j: Pick<Journey, 'course' | 'x' | 'z' | 'yaw' | 'y' | 'style'>) => {
-  if (!(j.course in COURSES)) return;
-  const q = new URLSearchParams({ course: j.course, style: j.style ?? 'detailed', at: [j.x, j.z, j.yaw, 0, ...(j.y !== undefined ? [j.y] : [])].map((v) => +v.toFixed(2)).join(',') });
+  const course = retiredCourse(j.course);
+  if (!(course in COURSES)) return;
+  const q = new URLSearchParams({ course, style: j.style ?? 'detailed', at: [j.x, j.z, j.yaw, 0, ...(j.y !== undefined ? [j.y] : [])].map((v) => +v.toFixed(2)).join(',') });
   location.replace(`${location.pathname}?${q}`);
 };
 if (chosen && chosen in COURSES) go(chosen as CourseId);

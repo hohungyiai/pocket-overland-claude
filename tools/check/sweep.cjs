@@ -36,7 +36,7 @@ const COLS = 4, ROWS = 3, W = 480, H = 300;
     const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const p = await (await b.newContext({ viewport: { width: W, height: H } })).newPage();
     p.on('pageerror', (e) => console.log('page error:', e.message));
-    await p.goto(`http://localhost:${PORT}/?course=pasirris&debug`);
+    await p.goto(`http://localhost:${PORT}/?course=whole&debug`);
     await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 400000 });
     if (WHAT === 'flags') await p.addScriptTag({ path: path.join(__dirname, 'finish.js') });
     // The places: where to stand, which way to look, and what it is.
