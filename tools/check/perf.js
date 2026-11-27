@@ -130,3 +130,69 @@ window.__checkStart = async () => {
   const bad = ms > PERF_BUDGET.startMs ? [{ what: 'slow to start', over: +(ms / 1000).toFixed(1) }] : [];
   return { samples: 1, bad: bad.length, worst: bad, unit: 's', note: `${(ms / 1000).toFixed(1)} s (limit ${PERF_BUDGET.startMs / 1000})` };
 };
+
+// The solid ground keeps up with the car (the user's rule: never fail the
+// player). Drives at top speed, one frame at a time, the map builder given
+// just what the game gives it each frame: at no frame may the near tile
+// under the car be unbuilt (with nothing solid under it the car falls
+// through the road, as on the redrawn map at 1877.7,1609.3 on 27 Nov, at
+// 20 frames a second). At 60, 30 and 20 frames a second (a slow phone):
+// the TPE route the user drives at 20, and three long straight runs across
+// the map from a fixed seed, one at each rate. (Each run's tiles are new to
+// it, so no run is helped by the one before.)
+window.__checkOutrun = async () => {
+  const g = window.game, c = g.course;
+  const speed = 24; // m/s, the car's top speed (vehicle.ts)
+  let a = 7;
+  const rnd = () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const runs = [{ fps: 20, W: [[1328.1, 569.2], [1772, 1431.4], [1877.7, 1609.3], [2300, 2200]] }];
+  for (const fps of [60, 30, 20]) {
+    const x = -2400 + rnd() * 4800, z = -2400 + rnd() * 4800, ang = rnd() * Math.PI * 2;
+    runs.push({ fps, W: [[x, z], [Math.max(-3300, Math.min(3300, x + Math.cos(ang) * 2500)), Math.max(-3300, Math.min(3300, z + Math.sin(ang) * 2500))]] });
+  }
+  const was = g.sim.fast;
+  g.sim.fast = 0;
+  const bad = [], notes = [];
+  let frames = 0, worst = 0;
+  try {
+    for (const { fps, W } of runs) {
+      const at = (s) => {
+        for (let k = 0; k + 1 < W.length; k++) {
+          const L = Math.hypot(W[k + 1][0] - W[k][0], W[k + 1][1] - W[k][1]);
+          if (s <= L) return [W[k][0] + ((W[k + 1][0] - W[k][0]) * s) / L, W[k][1] + ((W[k + 1][1] - W[k][1]) * s) / L];
+          s -= L;
+        }
+        return null;
+      };
+      g.car.placeAt({ x: W[0][0], y: c.heightAt(W[0][0], W[0][1]) + 0.5, z: W[0][1] }, 0);
+      c.prepareAt(W[0][0], W[0][1]);
+      const dt = 1 / fps;
+      let t = 0, fell = 0, ahead = 0, first = null;
+      for (let s = 0; ; s += speed * dt) {
+        const P = at(s);
+        if (!P) break;
+        const t0 = performance.now();
+        c.update(t, dt, { x: P[0], y: 0, z: P[1] }, { x: P[0], y: 0, z: P[1] });
+        worst = Math.max(worst, performance.now() - t0);
+        t += dt;
+        frames++;
+        if (!c.solidAt(P[0], P[1])) {
+          fell++;
+          first ??= P;
+        }
+        const A = at(s + speed * 1.5);
+        if (A && !c.solidAt(A[0], A[1])) ahead++;
+      }
+      notes.push(`${fps} fps ${ahead}`);
+      if (fell) bad.push({ fps, from: W[0].map((v) => Math.round(v)), x: +first[0].toFixed(1), z: +first[1].toFixed(1), over: fell });
+    }
+  } finally {
+    g.sim.fast = was;
+  }
+  return { samples: frames, bad: bad.length, worst: bad, unit: 'frames', note: `${frames} frames at ${speed} m/s; frames with the ground 1.5 s ahead still building: ${notes.join(', ')}; longest frame of building ${worst.toFixed(1)} ms` };
+};

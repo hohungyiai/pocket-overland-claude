@@ -1651,11 +1651,11 @@ export async function buildUbinTrailCourse(scene: THREE.Scene, world: RAPIER_NS.
     solidAt: (x, z) => streamer.solidAt(x, z),
     streamStats: () => ({ ...streamer.stats, horizon: streamer.stats.horizon }),
     camps: def.end.camp ? [camp] : [],
-    update(time, _dt, cam, player) {
+    update(time, dt, cam, player) {
       wind.value = time;
       const at = player ?? cam;
       if (at) {
-        streamer.update(at.x, at.z);
+        streamer.update(at.x, at.z, dt);
         updateLods(at.x, at.z);
         // (A strip shows only while all the tiles' ground around it is near
         // enough to be drawn in full: out on the horizon's coarser ground its

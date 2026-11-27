@@ -13753,12 +13753,12 @@ export async function buildPasirRisCourse(
     },
     streamStats: () => streamer.stats,
     solidAt: (x, z) => streamer.solidAt(x, z),
-    update(time, _dt, cam, player) {
+    update(time, dt, cam, player) {
       wind.value = time;
       setLights(time);
       const focus = player ?? cam;
       if (focus) {
-        streamer.update(focus.x, focus.z);
+        streamer.update(focus.x, focus.z, dt);
       }
       if (cam)
         for (const g of nearOnly) {
