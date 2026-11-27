@@ -5039,6 +5039,14 @@ export async function buildPasirRisCourse(
         why('narrow');
         continue;
       }
+      // (On today's map as before: no nose where the roads part in height or
+      // under 0.9 m across. There, the narrow noses' walls stood 0.7 m on the
+      // road beside at 1794.5,1378.9 and 1871.9,1783.2; the redrawn map
+      // replaces it.)
+      if (!oneLine && (brk?.[e === 0 ? 0 : 1] || w < 0.9)) {
+        why('old map');
+        continue;
+      }
       const d = unit(mx - (q.a[0] + q.b[0]) / 2, mz - (q.a[1] + q.b[1]) / 2);
       const y = (r.ya + r.yb) / 2;
       // (Only where the verge really begins: not where another road, a junction or the next wedge takes over.)
@@ -5713,7 +5721,9 @@ export async function buildPasirRisCourse(
                 });
                 return f;
               };
-              dp[kk - lo] = dy[kk] + 0.09 - Math.min(fl(off(kk) + sgn * 0.6), fl(off(kk) + sgn * 1.6));
+              // (On a redrawn map: on today's, parapets so lowered stood 0.7 m
+              // on the road below at 1794.5,1378.9 and 1871.9,1783.2.)
+              dp[kk - lo] = oneLine ? dy[kk] + 0.09 - Math.min(fl(off(kk) + sgn * 0.6), fl(off(kk) + sgn * 1.6)) : dr[kk - lo];
               // (And to the ground as drawn, its 4 m lattice's, where that
               // lies lower: the plan's ground is held up beside a raised
               // road, and the wall stopped 2 m over the grass at

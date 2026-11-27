@@ -170,7 +170,19 @@ const CHECKS = [
 ];
 
 (async () => {
-  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' });
+  // (Only on a free port: with a server left over on it from an earlier run,
+  // this one's could not start, and the checks ran on that server's build,
+  // not this one, and passed or failed for it (27 Nov: hours of results on
+  // a stale build). And its own server stopped with it, all of it: npx's
+  // child, vite, outlived a kill of npx alone.)
+  const busy = await new Promise((r) => {
+    const t = require('node:net').createServer().once('error', () => r(true)).once('listening', () => t.close(() => r(false))).listen(PORT);
+  });
+  if (busy) {
+    console.log(`Port ${PORT} is in use (a server left over from an earlier run?): stop it, or run on another with PORT=.`);
+    process.exit(2);
+  }
+  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', detached: true });
   let failed = false;
   try {
     await new Promise((r) => setTimeout(r, 2500));
@@ -241,7 +253,11 @@ const CHECKS = [
     }
     await b.close();
   } finally {
-    server.kill();
+    try {
+      process.kill(-server.pid);
+    } catch {
+      server.kill();
+    }
   }
   process.exit(failed ? 1 : 0);
 })();
