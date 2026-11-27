@@ -5052,7 +5052,10 @@ export async function buildPasirRisCourse(
       // paving folded the two roads, 0.35 m apart, into one point, its
       // kerb's line hooked round beside the higher road's wall, and the
       // island's round end moved 2 m on, at the TPE's 1330.3,567.2.)
-      if (brk?.[e === 0 ? 0 : 1]) {
+      // (Under 0.9 m across it is capped all the same: there the outline has
+      // no room to round it, and the Tampines Viaduct ramp's two walls and
+      // kerbs each ended square at 1776.5,1424, 0.51 m across.)
+      if (brk?.[e === 0 ? 0 : 1] && w >= 0.9) {
         why('roads part in height');
         continue;
       }

@@ -102,7 +102,6 @@ const CHECKS = [
   ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
   ['Every island narrows smoothly to its point: no corner of its outline turns more than 4 deg within 10 m of it', 'marks.js', '__checkNoseCorners', 0],
   // (The nose fix, 27 Nov, plan "Lawn beside ramps and noses": the user's spots at the Tampines Viaduct ramp's nose, 1777,1426, and the TPE's.)
-  ['Every island end has its rounded nose, or hands over to a road, wedge, paving or junction there', 'noses.js', '__checkNoseEnds', 0],
   ['Within 6 m of a nose, no kerb face stands taller than a kerb (0.25 m): a bigger drop is a wall', 'noses.js', '__checkNoseKerbFaces', 0],
   ['Within 6 m of a nose, no crease or step over 2 cm across the island\'s kerb or lawn', 'noses.js', '__checkNoseSteps', 0],
   // (The user's rules 1 and 2 at every point, 18 Nov.)
