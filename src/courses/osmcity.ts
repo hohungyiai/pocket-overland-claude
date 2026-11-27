@@ -5119,11 +5119,19 @@ export async function buildPasirRisCourse(
     // end, then in again along the side, a zig standing 13 cm out past the
     // kerb, the two walls doubled, by the Tampines Viaduct ramp's narrow
     // nose at 1777.8,1427.6.)
+    // (Only at a narrow end, under 0.9 m across, its circle filling the
+    // gap, and where the road's own wall stands there, its drop over
+    // WALL_FROM. At a wider end the side's end lies back on the road's edge
+    // where its wall meets it; so cut short there, the road's wall was left
+    // ending square, 0.34-0.54 m tall, at -415.4,-99.9, -2685.5,-2300.5
+    // and -3505,-1419.4.)
     const dC = (p: XZ) => Math.hypot(p[0] - c.C[0], p[1] - c.C[1]);
+    const narrow = Math.hypot(c.a[0] - c.b[0], c.a[1] - c.b[1]) < 0.9;
+    const walled = (e: XZ) => narrow && c.yAt(e) + ROAD_LIFT - heightAt(e[0], e[1]) > WALL_FROM;
     const half = Math.floor(c.nose.length / 2);
     let n0 = 0, n1 = c.nose.length;
-    if (eA) while (n0 < half - 1 && dC(c.nose[n0]) > dC(eA) + 0.05) n0++;
-    if (eB) while (n1 > c.nose.length - half + 1 && dC(c.nose[n1 - 1]) > dC(eB) + 0.05) n1--;
+    if (eA && walled(eA)) while (n0 < half - 1 && dC(c.nose[n0]) > dC(eA) + 0.05) n0++;
+    if (eB && walled(eB)) while (n1 > c.nose.length - half + 1 && dC(c.nose[n1 - 1]) > dC(eB) + 0.05) n1--;
     const nose = c.nose.slice(n0, n1);
     const NP: XZ[] = [...(eA ? [eA] : []), ...nose, ...(eB ? [eB] : [])];
     // (The ends of the nose's sides, on the roads' edges, out to
@@ -5747,6 +5755,11 @@ export async function buildPasirRisCourse(
               };
               // (On a redrawn map: on today's, parapets so lowered stood 0.7 m
               // on the road below at 1794.5,1378.9 and 1871.9,1783.2.)
+              // (Its height only: where it stands is still the ground's
+              // drop, dr, below. So it comes down to nothing beside the
+              // lower road rather than stopping there: stopped where this
+              // drop fell under PARAPET_FROM, it began again further on
+              // square, 0.66 m tall, by the TPE's island at 1330.2,567.1.)
               dp[kk - lo] = oneLine ? dy[kk] + 0.09 - Math.min(fl(off(kk) + sgn * 0.6), fl(off(kk) + sgn * 1.6)) : dr[kk - lo];
               // (And to the ground as drawn, its 4 m lattice's, where that
               // lies lower: the plan's ground is held up beside a raised
@@ -5799,7 +5812,7 @@ export async function buildPasirRisCourse(
             };
             const openBeside = openBesideOf(P, off, y, sgn);
             band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo], dg[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk), true) && !inJoint(...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)) && !wallOnPaving(kk), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), oneLine ? openBeside : undefined, sec);
-            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dp[kk - lo]), (kk) => raised(kk) && Math.max(dp[kk - lo], dp[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)) && !wallOnPaving(kk), ext(sgn), undefined, oneLine ? openBeside : undefined, sec);
+            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dp[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)) && !wallOnPaving(kk), ext(sgn), undefined, oneLine ? openBeside : undefined, sec);
           }
         }
         if (dy && isDeck[line]) {
