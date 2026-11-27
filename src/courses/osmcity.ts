@@ -5643,7 +5643,15 @@ export async function buildPasirRisCourse(
           const o = off(kk) + (off(kk + 1) - off(kk)) * t + sgn * (R + 0.02 - WALL_OUT);
           const cx = a[0] + (b[0] - a[0]) * t + tz * o, cz = a[1] + (b[1] - a[1]) * t - tx * o;
           const yy = y(kk) + (y(kk + 1) - y(kk)) * t;
-          const clear = (x: number, z: number) => !coveredBy(line, x, z, yy) && !inJoint(x, z, yy) && !inGore(x, z) && !inNose(x, z) && !(oneLine && onPaved(x, z, yy));
+          // (Another road there counts only at this one's level, as for the
+          // wall itself: a road below is the drop the wall stands over, rule
+          // B3. Asked of any road within 3 m in height, beside the
+          // Tampines Viaduct ramp, its island 0.6-0.9 m wide with the road
+          // below 0.4-1.6 m under it, the circle reached that road all
+          // along: each stretch's wall and parapet were cut back at its
+          // ends, and stood in square-ended panels with gaps between them,
+          // 1777.2,1425.9 to 1781,1437 (the user's spot, 26 Nov).)
+          const clear = (x: number, z: number) => !coveredBy(line, x, z, yy, true) && !inJoint(x, z, yy) && !inGore(x, z) && !inNose(x, z) && !(oneLine && onPaved(x, z, yy));
           if (!clear(cx, cz)) return false;
           for (let q = 0; q < 8; q++) {
             const c = Math.cos((q * Math.PI) / 4) * R, s = Math.sin((q * Math.PI) / 4) * R;
@@ -5669,7 +5677,7 @@ export async function buildPasirRisCourse(
           const sec = { lo: cut.lo, hi: cut.hi, join: opt.join };
           for (const sgn of [-1, 1]) {
             const off = (kk: number) => sgn * (halfAt(kk) + WALL_OUT);
-            const dr = new Float32Array(hi - lo + 1), dg = new Float32Array(hi - lo + 1);
+            const dr = new Float32Array(hi - lo + 1), dg = new Float32Array(hi - lo + 1), dp = new Float32Array(hi - lo + 1);
             // (The way the road runs at each point looks along the whole
             // run in this tile, not just the part drawn in this slice.)
             const rlo = Math.max(r0, cut.lo);
@@ -5681,6 +5689,25 @@ export async function buildPasirRisCourse(
               // (The ground just past the wall, or a metre further out if lower there: the fall a car would go over.)
               const g = (o: number) => heightAt(P[kk][0] + ((b[1] - a[1]) / tl) * o, P[kk][1] - ((b[0] - a[0]) / tl) * o);
               dr[kk - lo] = dy[kk] + 0.09 - Math.min(g(off(kk) + sgn * 0.6), g(off(kk) + sgn * 1.6));
+              // (The parapet's drop: to another road's drawn surface where
+              // one lies there, under this one, not to the ground under it.
+              // Across a narrow island from a lower road, the ramp's parapet
+              // was sized by the ground under the island, and stood up 0.7 m
+              // square where the island began, beside a step of 0.4 m to the
+              // other road, at 1777.15,1425.87 (the Tampines Viaduct ramp's
+              // nose, the user's spot, 26 Nov). The fall a car would go over
+              // is to that road. The wall still reaches the ground: dr, dg.)
+              const fl = (o: number) => {
+                const px = P[kk][0] + ((b[1] - a[1]) / tl) * o, pz = P[kk][1] - ((b[0] - a[0]) / tl) * o;
+                let f = heightAt(px, pz);
+                roads.each(px, pz, 16, (i, seg, u, d) => {
+                  if (i === line || d > halfAtE(i, seg) + 0.05) return;
+                  const t = (hasProfile[i] ? deckAtHit(i, seg, u) : heightAt(px, pz)) + ROAD_LIFT;
+                  if (t < dy[kk] + 0.09 - 0.05 && t > f) f = t;
+                });
+                return f;
+              };
+              dp[kk - lo] = dy[kk] + 0.09 - Math.min(fl(off(kk) + sgn * 0.6), fl(off(kk) + sgn * 1.6));
               // (And to the ground as drawn, its 4 m lattice's, where that
               // lies lower: the plan's ground is held up beside a raised
               // road, and the wall stopped 2 m over the grass at
@@ -5732,7 +5759,7 @@ export async function buildPasirRisCourse(
             };
             const openBeside = openBesideOf(P, off, y, sgn);
             band(deck, P, cum, lo, hi, off, y, (kk) => Math.max(0, dr[kk - lo], dg[kk - lo]) + 0.3, (kk) => wallTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > WALL_FROM && !coveredBy(line, ...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk), true) && !inJoint(...besideMid(line, kk, off(kk) + sgn * 0.3), y(kk)) && !(oneLine && (endOff(kk) || endOff(kk + 1))) && !inGore(...besideMid(line, kk, off(kk))) && !inGore(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !inNose(...besideMid(line, kk, off(kk))) && !inNose(...besideMid(line, kk, off(kk) - sgn * 0.3)) && !onTeeOf(line, ...besideMid(line, kk, off(kk) + sgn * 0.45)) && !wallOnPaving(kk), ext(sgn), (kk, q) => (Math.max(dr[q - lo], dr[q + 1 - lo]) > WALL_FROM ? Infinity : -dr[kk - lo]), oneLine ? openBeside : undefined, sec);
-            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dr[kk - lo]), (kk) => raised(kk) && Math.max(dr[kk - lo], dr[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)) && !wallOnPaving(kk), ext(sgn), undefined, oneLine ? openBeside : undefined, sec);
+            band(deck, P, cum, lo, hi, off, y, 0, (kk) => parapetTop(dp[kk - lo]), (kk) => raised(kk) && Math.max(dp[kk - lo], dp[kk + 1 - lo]) > PARAPET_FROM && !(oneLine && (endOff(kk) || endOff(kk + 1))) && parapetClear(line, kk, off(kk)) && !wallOnPaving(kk), ext(sgn), undefined, oneLine ? openBeside : undefined, sec);
           }
         }
         if (dy && isDeck[line]) {
@@ -9444,22 +9471,30 @@ export async function buildPasirRisCourse(
       const edgeRaw = (x: number, z: number) => {
         // (Within 2 cm of one: the lawn's edge along a kerb, or where the
         // grid's lines cross it, a hair off it.)
-        let eb = 0.02 * 0.02, ta = NaN, tb = NaN, u = 0;
+        let eb = 0.02 * 0.02, ta = NaN, tb = NaN, u = 0, enx = 0, enz = 0;
         for (const e of egrid.get(Math.floor(x / EG) * 100003 + Math.floor(z / EG)) ?? NONE) {
-          const [ax, az, a0, bx, bz, b0] = edges[e];
+          const [ax, az, a0, bx, bz, b0, nx0, nz0] = edges[e];
           const qx = bx - ax, qz = bz - az, L2 = qx * qx + qz * qz;
           const ue = L2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * qx + (z - az) * qz) / L2)) : 0;
           const ox = ax + qx * ue - x, oz = az + qz * ue - z;
           if (ox * ox + oz * oz >= eb) continue;
-          (eb = ox * ox + oz * oz), (ta = a0), (tb = b0), (u = ue);
+          (eb = ox * ox + oz * oz), (ta = a0), (tb = b0), (u = ue), (enx = nx0), (enz = nz0);
         }
         if (ta === ta) {
           // (Lifted as its samples are, by rule B3, eased along it as below.)
+          // (Its own kerb's samples only, those facing the way it does: on an
+          // island under 1.5 m across, the other kerb's came within reach,
+          // each lifted by rule B3 to within 1 in 2 of this kerb's top. The
+          // higher kerb's edge took their lift as its own and stood up to
+          // 34 cm over its top, then, so lifted, was held down to the lower
+          // kerb's and lay 62 cm under its top: a hump and a hole in turn
+          // along the Tampines Viaduct ramp's island, 1777.5,1427.6 to
+          // 1779.9,1432.8, the user's spot, 26 Nov.)
           let sw = 0, sv = 0;
           for (let ci = Math.floor((x - 0.75) / SG); ci <= Math.floor((x + 0.75) / SG); ci++)
             for (let cj = Math.floor((z - 0.75) / SG); cj <= Math.floor((z + 0.75) / SG); cj++)
               for (const n of sgrid.get(ci * 100003 + cj) ?? NONE) {
-                if (S[n + 6] !== 2) continue;
+                if (S[n + 6] !== 2 || S[n + 3] * enx + S[n + 4] * enz <= 0) continue;
                 const dd = Math.sqrt((x - S[n]) ** 2 + (z - S[n + 1]) ** 2);
                 if (dd >= 0.75) continue;
                 const wt = S[n + 5] * (1 - dd / 0.75) ** 2;
@@ -10235,7 +10270,7 @@ export async function buildPasirRisCourse(
         if (!(vy[a] === vy[a] && vy[b] === vy[b] && vy[c] === vy[c])) continue;
         faceUp(lawn, base + a, base + b, base + c);
       }
-      // (Rule B3: where the lawn stands over a lawn kerb's top, a face of its own from the kerb's top up to the lawn's edge, the kerb's side's colour.)
+      // (Rule B3: where the lawn stands over a lawn kerb's top, a face of its own from the kerb's top up to the lawn's edge: the lower road's wall, in the wall's colour, see the caller.)
       // (Each lawn point's foot and top once, shared by the pieces either
       // side of it: lit as one face round a curve, where pieces each with
       // points of their own stood out in bands, at 1336,573.)
@@ -11938,7 +11973,13 @@ export async function buildPasirRisCourse(
               yield;
             }
           }
-          yield* islandSheet(ix, iz, w, lawn, side);
+          // (Its faces up from a kerb's top to the lawn stood over it are
+          // the lower road's own wall up to the island, rule B3: the wall's.
+          // In the kerb's side's, 0.4 to 1.1 m tall, they stood beside the
+          // Tampines Viaduct ramp's island as kerbs a metre high, 1778-1779,
+          // 1428-1430 (the user's spot, 26 Nov). A kerb's side stays a
+          // kerb's height.)
+          yield* islandSheet(ix, iz, w, lawn, acc('deck'));
           outWork.delete(k), fillTrisOf.delete(k);
         })(),
       );

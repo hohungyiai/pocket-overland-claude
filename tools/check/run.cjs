@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { chromium } = require('playwright');
 
-const PORT = 4179;
+const PORT = +(process.env.PORT || 4179);
 const DEPS = { 'fuel.js': ['bot.js'], 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js', 'edges.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'], 'outline.js': ['finish.js'], 'watertight.js': ['finish.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
@@ -101,6 +101,10 @@ const CHECKS = [
   ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0, { whole: 231, trial: 31 }],
   ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
   ['Every island narrows smoothly to its point: no corner of its outline turns more than 4 deg within 10 m of it', 'marks.js', '__checkNoseCorners', 0],
+  // (The nose fix, 27 Nov, plan "Lawn beside ramps and noses": the user's spots at the Tampines Viaduct ramp's nose, 1777,1426, and the TPE's.)
+  ['Every island end has its rounded nose, or hands over to a road, wedge, paving or junction there', 'noses.js', '__checkNoseEnds', 0],
+  ['Within 6 m of a nose, no kerb face stands taller than a kerb (0.25 m): a bigger drop is a wall', 'noses.js', '__checkNoseKerbFaces', 0],
+  ['Within 6 m of a nose, no crease or step over 2 cm across the island\'s kerb or lawn', 'noses.js', '__checkNoseSteps', 0],
   // (The user's rules 1 and 2 at every point, 18 Nov.)
   ['Two roads at different heights never fold into one point: at every point, the paving either side within 0.3 m of one height', 'marks.js', '__checkTipSteps', 0],
   ['A kerb runs wherever an edge line has ground beyond it', 'marks.js', '__checkKerbBeside', 0],
