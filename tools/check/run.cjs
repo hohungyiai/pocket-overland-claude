@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { chromium } = require('playwright');
 
-const PORT = 4179;
+const PORT = +(process.env.PORT || 4179);
 const DEPS = { 'fuel.js': ['bot.js'], 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js', 'edges.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'], 'outline.js': ['finish.js'], 'watertight.js': ['finish.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
@@ -166,7 +166,28 @@ const CHECKS = [
 ];
 
 (async () => {
-  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' });
+  // (Only on a free port: with a server left over on it from an earlier run,
+  // this one's could not start, and the checks ran on that server's build,
+  // not this one, and passed or failed for it (27 Nov: hours of results on
+  // a stale build). And its own server stopped with it, all of it: npx's
+  // child, vite, outlived a kill of npx alone.)
+  const busy = await new Promise((r) => {
+    const t = require('node:net').createServer().once('error', () => r(true)).once('listening', () => t.close(() => r(false))).listen(PORT);
+  });
+  if (busy) {
+    console.log(`Port ${PORT} is in use (a server left over from an earlier run?): stop it, or run on another with PORT=.`);
+    process.exit(2);
+  }
+  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', detached: true });
+  // (Stopped part way, by Ctrl-C or a kill, its server stops too: in a group
+  // of its own, it no longer went with the runner's.)
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'])
+    process.once(sig, () => {
+      try {
+        process.kill(-server.pid);
+      } catch {}
+      process.exit(130);
+    });
   let failed = false;
   try {
     await new Promise((r) => setTimeout(r, 2500));
@@ -237,7 +258,11 @@ const CHECKS = [
     }
     await b.close();
   } finally {
-    server.kill();
+    try {
+      process.kill(-server.pid);
+    } catch {
+      server.kill();
+    }
   }
   process.exit(failed ? 1 : 0);
 })();
