@@ -59,9 +59,11 @@ export class TileStreamer<K extends TileKit | TileRecorder = TileKit> {
   private queue: { key: string; layer: LayerName; i: number; j: number; d: number }[] = [];
   /**
    * Built tile counts, and the longest single build slice (with which tile
-   * and slice it was), for the debug overlay and tests.
+   * and slice it was), for the debug overlay and tests. replayMs: the
+   * longest a finished tile's record took to be made real (one slice of
+   * its own), so the checks can show what handing tiles over costs.
    */
-  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0, slowest: '' };
+  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0, slowest: '', replayMs: 0 };
 
   constructor(
     private scene: THREE.Scene,
@@ -128,8 +130,10 @@ export class TileStreamer<K extends TileKit | TileRecorder = TileKit> {
     yield;
     // (?clonerec: the record copied the way a message from a worker would
     // be, to show it holds nothing but plain data.)
+    const s0 = performance.now();
     const ops = CLONE_RECORDS ? structuredClone(rec.ops) : rec.ops;
     replay(ops, r.shared, this.scene, this.world, this.RAPIER, !!layer.hidden, r.onTag, layer);
+    this.stats.replayMs = Math.max(this.stats.replayMs, performance.now() - s0);
   }
 
   /** Work out what should be loaded around (x, z); queue builds, drop far tiles. */

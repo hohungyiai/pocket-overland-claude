@@ -42,6 +42,7 @@ window.__perfSurvey = async ({ seed = 1, spots = 16, frames = 20 } = {}) => {
     if (!d.JX.internal[i] && d.ELEN[i] >= 40 && d.rankOf(e.cls) >= 1 && d.EP[i].every((p) => Math.abs(p[0]) < 3400 && Math.abs(p[1]) < 3400)) starts.push(i);
   });
   const stats = g.course.streamStats();
+  stats.replayMs = 0;
   const out = [];
   const was = g.sim.fast;
   g.sim.fast = 0;
@@ -96,7 +97,7 @@ window.__perfSurvey = async ({ seed = 1, spots = 16, frames = 20 } = {}) => {
   }
   // (What each kind of slice has cost: see sliceCost in osmcity.ts.)
   const cost = [...(d.sliceCost ?? [])].map(([what, c]) => ({ what, n: c.n, ms: Math.round(c.ms), maxMs: +c.max.toFixed(1), at: c.at })).sort((p, q) => q.maxMs - p.maxMs);
-  return { spots: out, cost };
+  return { spots: out, cost, replayMs: stats.replayMs ?? 0 };
 };
 
 // (One survey serves all three checks.)
@@ -121,7 +122,7 @@ window.__checkSlices = async (all = false) => {
     .map((s) => ({ road: s.road, x: s.x, z: s.z, slice: s.slowest, over: s.worstSliceMs }))
     .sort((p, q) => q.over - p.over);
   const slices = r.spots.reduce((n, s) => n + s.slices, 0);
-  const note = `longest ${Math.max(...r.spots.map((s) => s.worstSliceMs))} ms (limit ${B.sliceMs}), ${r.spots.reduce((n, s) => n + s.over16, 0)} of ${slices} slices over 16 ms, ${(r.spots.reduce((n, s) => n + s.buildMs, 0) / 1000).toFixed(1)} s of building; slowest kinds: ${r.cost.slice(0, 3).map((c) => `${c.what} ${c.maxMs} ms`).join(', ')}`;
+  const note = `longest ${Math.max(...r.spots.map((s) => s.worstSliceMs))} ms (limit ${B.sliceMs}), ${r.spots.reduce((n, s) => n + s.over16, 0)} of ${slices} slices over 16 ms, ${(r.spots.reduce((n, s) => n + s.buildMs, 0) / 1000).toFixed(1)} s of building; slowest kinds: ${r.cost.slice(0, 3).map((c) => `${c.what} ${c.maxMs} ms`).join(', ')}; making a finished tile real: longest ${r.replayMs.toFixed(1)} ms`;
   return { samples: slices, bad: bad.length, worst: all ? bad : bad.slice(0, 40), unit: 'ms', note };
 };
 
