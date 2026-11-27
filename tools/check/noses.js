@@ -13,7 +13,8 @@
 // __checkNoseSteps: within 6 m of a nose, across the island's top, no step
 //   over 2 cm (past the lawn's own 1 in 2 fall) between neighbouring points
 //   5 cm apart on the same surface, kerb or lawn: no crease where two kerb
-//   tops meet, no fold or tear in the grass.
+//   tops meet, no fold or tear in the grass. A step with a wall standing
+//   across it, foot to top, is that wall's (rule B3), not a crease.
 
 window.__noseList = () => {
   if (window.__noseL) return window.__noseL;
@@ -148,11 +149,62 @@ window.__checkNoseKerbFaces = () => {
   return { samples, bad: bad.length, worst: bad, unit: 'm' };
 };
 
+// The upright faces (walls, kerbs' sides) about the noses, on a 1 m grid:
+// wallBetween(p, q, lo, hi) is whether one stands across the step from p to
+// q, from no higher than lo up to no lower than hi.
+const UPRIGHT_KINDS = ['deck', 'lawnWall', 'kerbSide'];
+window.__noseWalls = () => {
+  if (window.__noseW) return window.__noseW;
+  const segs = [];
+  const grid = new Map();
+  for (const accs of window.__noseAccs().values())
+    for (const kind of UPRIGHT_KINDS) {
+      const r = accs[kind];
+      if (!r) continue;
+      const { pos, idx } = r;
+      for (let q = 0; q < idx.length; q += 3) {
+        const v = [idx[q] * 3, idx[q + 1] * 3, idx[q + 2] * 3];
+        // (Its foot line on the ground plan: its two corners furthest apart.)
+        let a = v[0], b = v[1], best = -1;
+        for (const [i, j] of [[0, 1], [1, 2], [2, 0]]) {
+          const l = Math.hypot(pos[v[j]] - pos[v[i]], pos[v[j] + 2] - pos[v[i] + 2]);
+          if (l > best) (best = l), (a = v[i]), (b = v[j]);
+        }
+        if (best < 0.005) continue;
+        const t = segs.length;
+        segs.push([pos[a], pos[a + 2], pos[b], pos[b + 2], Math.min(pos[v[0] + 1], pos[v[1] + 1], pos[v[2] + 1]), Math.max(pos[v[0] + 1], pos[v[1] + 1], pos[v[2] + 1])]);
+        for (let i = Math.floor(Math.min(pos[a], pos[b])); i <= Math.floor(Math.max(pos[a], pos[b])); i++)
+          for (let j = Math.floor(Math.min(pos[a + 2], pos[b + 2])); j <= Math.floor(Math.max(pos[a + 2], pos[b + 2])); j++) (grid.get(i * 100003 + j) ?? grid.set(i * 100003 + j, []).get(i * 100003 + j)).push(t);
+      }
+    }
+  const cross = (ax, az, bx, bz, cx, cz, dx, dz) => {
+    const o = (px, pz, qx, qz, rx, rz) => Math.sign((qx - px) * (rz - pz) - (qz - pz) * (rx - px));
+    return o(ax, az, bx, bz, cx, cz) * o(ax, az, bx, bz, dx, dz) <= 0 && o(cx, cz, dx, dz, ax, az) * o(cx, cz, dx, dz, bx, bz) <= 0;
+  };
+  // (Read a sample step either way past the two points: the higher kerb
+  // laps 4 cm past the wall's face over the lower one there, the step
+  // seen just off the wall, on main as well.)
+  const wallBetween = (p, q, lo, hi) => {
+    const l = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1, ux = (q[0] - p[0]) / l, uz = (q[1] - p[1]) / l;
+    const seen = new Set();
+    for (const [x, z] of [p, q])
+      for (const t of grid.get(Math.floor(x) * 100003 + Math.floor(z)) ?? []) {
+        if (seen.has(t)) continue;
+        seen.add(t);
+        const [ax, az, bx, bz, y0, y1] = segs[t];
+        if (y0 <= lo + 0.02 && y1 >= hi - 0.02 && cross(p[0] - ux * 0.06, p[1] - uz * 0.06, q[0] + ux * 0.06, q[1] + uz * 0.06, ax, az, bx, bz)) return true;
+      }
+    return false;
+  };
+  return (window.__noseW = wallBetween);
+};
+
 window.__checkNoseSteps = () => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
   const KINDS = NOSE_KINDS;
   const topAt = window.__noseTops();
+  const wallBetween = window.__noseWalls();
   const STEP = 0.05;
   let samples = 0;
   const bad = [];
@@ -171,7 +223,11 @@ window.__checkNoseSteps = () => {
         const cur = k >= 0 && KINDS[k] !== 'road' ? { k, h, x, z } : null;
         if (cur && prev && prev.k === cur.k) {
           const step = Math.abs(cur.h - prev.h) - 0.5 * STEP;
-          if (step > 0.02 && (!worst || step > worst.over)) worst = { x: +x.toFixed(2), z: +z.toFixed(2), nose: [+n.C[0].toFixed(1), +n.C[1].toFixed(1)], on: KINDS[k], over: +step.toFixed(3) };
+          // (Not where a wall stands between, foot to top: two kerbs at
+          // different heights side by side, each road's own, with the higher
+          // road's wall between them, rule B3, as beside the Tampines
+          // Viaduct ramp's nose at 1777.1,1425.6. That step is the wall's.)
+          if (step > 0.02 && (!worst || step > worst.over) && !wallBetween([prev.x, prev.z], [x, z], Math.min(prev.h, cur.h), Math.max(prev.h, cur.h))) worst = { x: +x.toFixed(2), z: +z.toFixed(2), nose: [+n.C[0].toFixed(1), +n.C[1].toFixed(1)], on: KINDS[k], over: +step.toFixed(3) };
         }
         prev = cur;
       }

@@ -5113,7 +5113,19 @@ export async function buildPasirRisCourse(
       return null;
     };
     const eA = bandOut(gores[id].A, c.nose[0]), eB = bandOut(gores[id].B, c.nose[c.nose.length - 1]);
-    const NP: XZ[] = [...(eA ? [eA] : []), ...c.nose, ...(eB ? [eB] : [])];
+    // (Where the road's own wall begins nearer the point than the nose's
+    // side ends, the nose's wall takes over there, not back at the side's
+    // end: from the road wall's first point it ran back out to the side's
+    // end, then in again along the side, a zig standing 13 cm out past the
+    // kerb, the two walls doubled, by the Tampines Viaduct ramp's narrow
+    // nose at 1777.8,1427.6.)
+    const dC = (p: XZ) => Math.hypot(p[0] - c.C[0], p[1] - c.C[1]);
+    const half = Math.floor(c.nose.length / 2);
+    let n0 = 0, n1 = c.nose.length;
+    if (eA) while (n0 < half - 1 && dC(c.nose[n0]) > dC(eA) + 0.05) n0++;
+    if (eB) while (n1 > c.nose.length - half + 1 && dC(c.nose[n1 - 1]) > dC(eB) + 0.05) n1--;
+    const nose = c.nose.slice(n0, n1);
+    const NP: XZ[] = [...(eA ? [eA] : []), ...nose, ...(eB ? [eB] : [])];
     // (The ends of the nose's sides, on the roads' edges, out to
     // that same line square to their road; round the point, 0.3 m
     // in from it.)
@@ -5122,11 +5134,11 @@ export async function buildPasirRisCourse(
       const sg = -t[1] * (c.C[0] - p[0]) + t[0] * (c.C[1] - p[1]) > 0 ? 1 : -1;
       return [p[0] - t[1] * sg * WALL_OUT, p[1] + t[0] * sg * WALL_OUT];
     };
-    const nA = c.nose[0], nB = c.nose[c.nose.length - 1];
+    const nA = nose[0], nB = nose[nose.length - 1];
     const NW = NP.map((p, q): XZ => {
       if ((eA && q === 0) || (eB && q === NP.length - 1)) return p;
-      if (p === nA && eA) return sq(nA, c.sideA.length ? c.sideA[c.sideA.length - 1] : c.a);
-      if (p === nB && eB) return sq(nB, c.sideB.length ? c.sideB[c.sideB.length - 1] : c.b);
+      if (p === nA && eA && !n0) return sq(nA, c.sideA.length ? c.sideA[c.sideA.length - 1] : c.a);
+      if (p === nB && eB && n1 === c.nose.length) return sq(nB, c.sideB.length ? c.sideB[c.sideB.length - 1] : c.b);
       // (0.3 m in, square to the nose's line there: toward the circle's
       // middle, the points along an eased side moved along it more than
       // in from it, and on a long thin point the wall stood 11 cm out past
