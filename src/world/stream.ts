@@ -17,6 +17,8 @@ import { TileRecorder, replay, type Shared, type TileTag } from './tilerecord';
 
 export const TILE = 200;
 
+const CLONE_RECORDS = /[?&]clonerec\b/.test(globalThis.location?.search ?? '');
+
 export interface TileKit {
   /**
    * Add a mesh (or other object) that belongs to this tile layer. Horizon
@@ -124,7 +126,10 @@ export class TileStreamer<K extends TileKit | TileRecorder = TileKit> {
     const rec = new TileRecorder(r.shared);
     yield* this.builders[q.layer](q.i, q.j, rec as K);
     yield;
-    replay(rec.ops, r.shared, this.scene, this.world, this.RAPIER, !!layer.hidden, r.onTag, layer);
+    // (?clonerec: the record copied the way a message from a worker would
+    // be, to show it holds nothing but plain data.)
+    const ops = CLONE_RECORDS ? structuredClone(rec.ops) : rec.ops;
+    replay(ops, r.shared, this.scene, this.world, this.RAPIER, !!layer.hidden, r.onTag, layer);
   }
 
   /** Work out what should be loaded around (x, z); queue builds, drop far tiles. */
