@@ -7,7 +7,8 @@
 //   a junction), or is too narrow for one (under 0.3 m: the kerb itself is
 //   the end). The builder says why for each end; any other reason fails.
 // __checkNoseKerbFaces: within 6 m of a nose, no face in the kerb's side
-//   stands taller than a kerb (0.25 m): a bigger drop is a wall's.
+//   stands taller than a kerb (0.25 m) over the road or ground at its foot:
+//   a bigger drop is a wall's.
 // __checkNoseSteps: within 6 m of a nose, across the island's top, no step
 //   over 2 cm (past the lawn's own 1 in 2 fall) between neighbouring points
 //   5 cm apart on the same surface, kerb or lawn: no crease where two kerb
@@ -52,6 +53,42 @@ window.__noseAccs = () => {
   return (window.__noseA = out);
 };
 
+// The top surfaces (kerb, lawn, road) about the noses, indexed on a 1 m
+// grid: topAt(x, z, below) is the highest under `below`, [kind, height].
+const NOSE_KINDS = ['kerb', 'lawn', 'road'];
+window.__noseTops = () => {
+  if (window.__noseT) return window.__noseT;
+  const tris = [];
+  const grid = new Map();
+  for (const accs of window.__noseAccs().values())
+    NOSE_KINDS.forEach((kind, ki) => {
+      const r = accs[kind];
+      if (!r) return;
+      const { pos, idx } = r;
+      for (let q = 0; q < idx.length; q += 3) {
+        const a = idx[q] * 3, b = idx[q + 1] * 3, c = idx[q + 2] * 3;
+        const det = (pos[b + 2] - pos[c + 2]) * (pos[a] - pos[c]) + (pos[c] - pos[b]) * (pos[a + 2] - pos[c + 2]);
+        if (Math.abs(det) < 1e-6) continue;
+        const t = tris.length;
+        tris.push([pos[a], pos[a + 1], pos[a + 2], pos[b], pos[b + 1], pos[b + 2], pos[c], pos[c + 1], pos[c + 2], ki, det]);
+        for (let i = Math.floor(Math.min(pos[a], pos[b], pos[c])); i <= Math.floor(Math.max(pos[a], pos[b], pos[c])); i++)
+          for (let j = Math.floor(Math.min(pos[a + 2], pos[b + 2], pos[c + 2])); j <= Math.floor(Math.max(pos[a + 2], pos[b + 2], pos[c + 2])); j++) (grid.get(i * 100003 + j) ?? grid.set(i * 100003 + j, []).get(i * 100003 + j)).push(t);
+      }
+    });
+  const topAt = (x, z, below) => {
+    let best = -Infinity, kind = -1;
+    for (const t of grid.get(Math.floor(x) * 100003 + Math.floor(z)) ?? []) {
+      const [ax, ay, az, bx, by, bz, cx, cy, cz, ki, det] = tris[t];
+      const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det, l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det, l3 = 1 - l1 - l2;
+      if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
+      const h = l1 * ay + l2 * by + l3 * cy;
+      if (h < below && h > best) (best = h), (kind = ki);
+    }
+    return [kind, best];
+  };
+  return (window.__noseT = topAt);
+};
+
 window.__checkNoseKerbFaces = () => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
@@ -67,6 +104,7 @@ window.__checkNoseKerbFaces = () => {
         for (const i of grid.get((Math.floor(x / 8) + a) * 100003 + Math.floor(z / 8) + b) ?? []) if (Math.hypot(noses[i].C[0] - x, noses[i].C[1] - z) < 6) return noses[i];
     return null;
   };
+  const topAt = window.__noseTops();
   let samples = 0;
   const bad = [];
   const seen = new Set();
@@ -82,7 +120,22 @@ window.__checkNoseKerbFaces = () => {
       const n = nearNose(x, z);
       if (!n) continue;
       samples++;
-      const h = Math.max(pos[a + 1], pos[b + 1], pos[c + 1]) - Math.min(pos[a + 1], pos[b + 1], pos[c + 1]);
+      // (Its height as seen: from its top down to the road or ground at its
+      // foot, either side, a hand's width out; a kerb's side runs on down
+      // under the road, 0.12 m, where nobody sees it.)
+      const top = Math.max(pos[a + 1], pos[b + 1], pos[c + 1]);
+      let foot = Math.min(pos[a + 1], pos[b + 1], pos[c + 1]);
+      let ex = 0, ez = 0, el = 0;
+      for (const [p, n] of [[a, b], [b, c], [c, a]]) {
+        const l = Math.hypot(pos[n] - pos[p], pos[n + 2] - pos[p + 2]);
+        if (l > el) (el = l), (ex = (pos[n] - pos[p]) / l), (ez = (pos[n + 2] - pos[p + 2]) / l);
+      }
+      if (el < 0.005) continue;
+      for (const sg of [-1, 1]) {
+        const [k, h] = topAt(x - ez * sg * 0.15, z + ex * sg * 0.15, top - 0.01);
+        if (k >= 0 && h > foot) foot = h;
+      }
+      const h = top - foot;
       if (h <= 0.25) continue;
       const key = `${x.toFixed(1)},${z.toFixed(1)}`;
       if (seen.has(key)) continue;
@@ -97,37 +150,8 @@ window.__checkNoseKerbFaces = () => {
 window.__checkNoseSteps = () => {
   const d = globalThis.__osm;
   if (!d.oneLine) return { samples: 0, bad: 0, worst: [], unit: 'm' };
-  // Top surfaces (kerb, lawn, road) about the noses, on a 1 m grid.
-  const KINDS = ['kerb', 'lawn', 'road'];
-  const tris = [];
-  const grid = new Map();
-  for (const accs of window.__noseAccs().values())
-    KINDS.forEach((kind, ki) => {
-      const r = accs[kind];
-      if (!r) return;
-      const { pos, idx } = r;
-      for (let q = 0; q < idx.length; q += 3) {
-        const a = idx[q] * 3, b = idx[q + 1] * 3, c = idx[q + 2] * 3;
-        const det = (pos[b + 2] - pos[c + 2]) * (pos[a] - pos[c]) + (pos[c] - pos[b]) * (pos[a + 2] - pos[c + 2]);
-        if (Math.abs(det) < 1e-6) continue;
-        const t = tris.length;
-        tris.push([pos[a], pos[a + 1], pos[a + 2], pos[b], pos[b + 1], pos[b + 2], pos[c], pos[c + 1], pos[c + 2], ki, det]);
-        for (let i = Math.floor(Math.min(pos[a], pos[b], pos[c])); i <= Math.floor(Math.max(pos[a], pos[b], pos[c])); i++)
-          for (let j = Math.floor(Math.min(pos[a + 2], pos[b + 2], pos[c + 2])); j <= Math.floor(Math.max(pos[a + 2], pos[b + 2], pos[c + 2])); j++) (grid.get(i * 100003 + j) ?? grid.set(i * 100003 + j, []).get(i * 100003 + j)).push(t);
-      }
-    });
-  // (The top surface at (x, z) under `below`: its kind and height.)
-  const topAt = (x, z, below) => {
-    let best = -Infinity, kind = -1;
-    for (const t of grid.get(Math.floor(x) * 100003 + Math.floor(z)) ?? []) {
-      const [ax, ay, az, bx, by, bz, cx, cy, cz, ki, det] = tris[t];
-      const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det, l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det, l3 = 1 - l1 - l2;
-      if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
-      const h = l1 * ay + l2 * by + l3 * cy;
-      if (h < below && h > best) (best = h), (kind = ki);
-    }
-    return [kind, best];
-  };
+  const KINDS = NOSE_KINDS;
+  const topAt = window.__noseTops();
   const STEP = 0.05;
   let samples = 0;
   const bad = [];

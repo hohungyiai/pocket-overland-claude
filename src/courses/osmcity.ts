@@ -3787,6 +3787,10 @@ export async function buildPasirRisCourse(
   };
   const asphaltTex = detailed ? D.asphaltTexture() : null;
   const tartanTex = detailed ? D.tartanTexture() : null;
+  // (A raised road's walls; and, in the same colour, the lower road's wall up
+  // to an island's lawn stood over its kerb, rule B3, kept apart so the
+  // checks of a road's own walls and parapets do not take it for one.)
+  const DECK_MAT = flatMat(0xc4c0b8, 0);
   const MAT = {
     road: flatMat(0x4a4c50, -3, asphaltTex),
     kerb: flatMat(0xb9b5aa, -2),
@@ -3800,7 +3804,8 @@ export async function buildPasirRisCourse(
     cycle: flatMat(0xa45b49, -2, tartanTex),
     rail: flatMat(0xd9d6cf, -1),
     ballast: flatMat(0x7d7872, -1),
-    deck: flatMat(0xc4c0b8, 0),
+    deck: DECK_MAT,
+    lawnWall: DECK_MAT,
   };
   type AccKey = keyof typeof MAT | 'wall' | 'roof' | 'lawn';
   /** Turn a tile's filled buffers into meshes. */
@@ -3825,7 +3830,7 @@ export async function buildPasirRisCourse(
         continue;
       }
       if (key !== 'wall' && key !== 'roof') {
-        accMesh(acc, MAT[key], kit, key === 'deck' || key === 'rail' || key === 'kerbSide');
+        accMesh(acc, MAT[key], kit, key === 'deck' || key === 'lawnWall' || key === 'rail' || key === 'kerbSide');
         cost(`mesh: ${key}`, '', t0);
         continue;
       }
@@ -4838,14 +4843,14 @@ export async function buildPasirRisCourse(
   const NOSE_R = 0.5;
   const NOSE_L = 4;
   /** The nose's outline from A's edge round to B's, past the row r (q the row before it; d out of the wedge), and the paving's height there. */
-  const noseOf = (r: GoreRow, q: GoreRow, d: XZ, g: { A?: number; B?: number }, r0 = NOSE_R): { nose: XZ[]; sideA: XZ[]; sideB: XZ[]; pave: XZ[]; tris: [number, number, number][]; C: XZ; yAt: (p: XZ) => number } => {
+  const noseOf = (r: GoreRow, q: GoreRow, d: XZ, g: { A?: number; B?: number }, r0 = NOSE_R, L = NOSE_L): { nose: XZ[]; sideA: XZ[]; sideB: XZ[]; pave: XZ[]; tris: [number, number, number][]; C: XZ; yAt: (p: XZ) => number } => {
     const mx = (r.a[0] + r.b[0]) / 2, mz = (r.a[1] + r.b[1]) / 2;
     const w = Math.hypot(r.a[0] - r.b[0], r.a[1] - r.b[1]);
     const ua = unit(r.a[0] - mx, r.a[1] - mz);
     // (Each road's edge carries on the way it was going.)
     const la = Math.hypot(r.a[0] - q.a[0], r.a[1] - q.a[1]), lb = Math.hypot(r.b[0] - q.b[0], r.b[1] - q.b[1]);
     const da = la > 0.05 ? unit(r.a[0] - q.a[0], r.a[1] - q.a[1]) : d, db = lb > 0.05 ? unit(r.b[0] - q.b[0], r.b[1] - q.b[1]) : d;
-    let aL: XZ = [r.a[0] + da[0] * NOSE_L, r.a[1] + da[1] * NOSE_L], bL: XZ = [r.b[0] + db[0] * NOSE_L, r.b[1] + db[1] * NOSE_L];
+    let aL: XZ = [r.a[0] + da[0] * L, r.a[1] + da[1] * L], bL: XZ = [r.b[0] + db[0] * L, r.b[1] + db[1] * L];
     // (Along each road's edge as it is drawn, not straight on: where the
     // road bends away, a sliver of ground opened between the two, which
     // the outline papered over.)
@@ -4853,7 +4858,7 @@ export async function buildPasirRisCourse(
       if (i === undefined) return null;
       const s1 = sAlong(i, p[0], p[1]), s0 = sAlong(i, p0[0], p0[1]);
       if (Math.abs(s1 - s0) < 0.05) return null;
-      const run = stripEdgeRun(i, s1, s1 + Math.sign(s1 - s0) * NOSE_L, other[0], other[1]);
+      const run = stripEdgeRun(i, s1, s1 + Math.sign(s1 - s0) * L, other[0], other[1]);
       // (Only where that is the edge the wedge's row lies on.)
       return run && Math.hypot(run[0][0] - p[0], run[0][1] - p[1]) < 0.05 ? run : null;
     };
@@ -4877,7 +4882,7 @@ export async function buildPasirRisCourse(
       const off = m1.tx * (p[1] - m1.c[1]) - m1.tz * (p[0] - m1.c[0]);
       const dir = Math.sign(s1 - s0);
       const out: XZ[] = [p];
-      for (let m = 1; m <= NOSE_L + 1e-6; m += 1) {
+      for (let m = 1; m <= L + 1e-6; m += 1) {
         const sq = s1 + dir * m;
         if (sq < 0 || sq > ELEN[i]) return null;
         const { c, tx, tz } = mid(sq);
@@ -4961,7 +4966,7 @@ export async function buildPasirRisCourse(
       return bad(q) ? shape(set, false) : q;
     };
     let got = tryAt(R);
-    for (let set = R + 0.25; set < NOSE_L - R && bad(got); set += 0.25) got = tryAt(set);
+    for (let set = R + 0.25; set < L - R && bad(got); set += 0.25) got = tryAt(set);
     // (Where the two roads' edges come together again within the 4 m, a
     // circle no wider than the gap left between their ends there; none,
     // the island coming to a point, where they meet.)
@@ -5043,13 +5048,14 @@ export async function buildPasirRisCourse(
         why(taken);
         continue;
       }
-      const nz = noseOf(r, q, d, gores[id], w < 0.9 ? w / 2 - 0.02 : NOSE_R);
+      let nz = noseOf(r, q, d, gores[id], w < 0.9 ? w / 2 - 0.02 : NOSE_R);
       // (Its sides running on ahead of its point, as an island's do: where
       // two roads' edges cross at a shallow angle, a wedge of two rows lay
       // lengthwise, and one side ran back past the point, a disc of a nose
       // standing beside the island's own point, the edge line hooked round.)
       const ahead = (p: XZ) => (p[0] - nz.C[0]) * d[0] + (p[1] - nz.C[1]) * d[1] > 0;
-      if (!ahead(nz.nose[0]) || !ahead(nz.nose[nz.nose.length - 1])) {
+      const behind = () => !ahead(nz.nose[0]) || !ahead(nz.nose[nz.nose.length - 1]);
+      if (behind()) {
         why('behind');
         continue;
       }
@@ -11974,12 +11980,13 @@ export async function buildPasirRisCourse(
             }
           }
           // (Its faces up from a kerb's top to the lawn stood over it are
-          // the lower road's own wall up to the island, rule B3: the wall's.
+          // the lower road's own wall up to the island, rule B3: the wall's
+          // colour, in a mesh of their own.
           // In the kerb's side's, 0.4 to 1.1 m tall, they stood beside the
           // Tampines Viaduct ramp's island as kerbs a metre high, 1778-1779,
           // 1428-1430 (the user's spot, 26 Nov). A kerb's side stays a
           // kerb's height.)
-          yield* islandSheet(ix, iz, w, lawn, acc('deck'));
+          yield* islandSheet(ix, iz, w, lawn, acc('lawnWall'));
           outWork.delete(k), fillTrisOf.delete(k);
         })(),
       );
