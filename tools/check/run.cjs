@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { chromium } = require('playwright');
 
-const PORT = 4179;
+const PORT = +(process.env.PORT || 4179);
 const DEPS = { 'fuel.js': ['bot.js'], 'edges.js': ['finish.js'], 'crossings.js': ['finish.js'], 'paths.js': ['finish.js'], 'marks.js': ['finish.js', 'edges.js'], 'drive.js': ['seams.js'], 'ride.js': ['seams.js'], 'lanes.js': ['seams.js'], 'gores.js': ['seams.js'], 'routes.js': ['bot.js'], 'walk.js': ['bot.js'], 'outline.js': ['finish.js'], 'watertight.js': ['finish.js'] };
 const CHECKS = [
   // [name, file, function, limit on the worst sample (m), known spots]
@@ -101,6 +101,10 @@ const CHECKS = [
   ['Every marking lies on the surface drawn under it, never more than 4 cm up off it', 'marks.js', '__checkMarkFloat', 0, { whole: 231, trial: 31 }],
   ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
   ['Every island narrows smoothly to its point: no corner of its outline turns more than 4 deg within 10 m of it', 'marks.js', '__checkNoseCorners', 0],
+  // (The nose fix, 27 Nov, plan "Lawn beside ramps and noses": the user's spots at the Tampines Viaduct ramp's nose, 1777,1426, and the TPE's.)
+  // (Held at these counts, the user's tap 28 Nov on PR 90: the ramp nose's kerb faces, up to 0.42 m at 1776.6,1423.8, and its 2.8 cm lawn step at 1778.43,1429.89, wait for the next change; the rest were there before.)
+  ['Within 6 m of a nose, no kerb face stands taller than a kerb (0.25 m): a bigger drop is a wall', 'noses.js', '__checkNoseKerbFaces', 0, { whole: 17549, trial: 565 }],
+  ['Within 6 m of a nose, no crease or step over 2 cm across the island\'s kerb or lawn', 'noses.js', '__checkNoseSteps', 0, { whole: 2, trial: 1 }],
   // (The user's rules 1 and 2 at every point, 18 Nov.)
   ['Two roads at different heights never fold into one point: at every point, the paving either side within 0.3 m of one height', 'marks.js', '__checkTipSteps', 0],
   ['A kerb runs wherever an edge line has ground beyond it', 'marks.js', '__checkKerbBeside', 0],
@@ -155,7 +159,7 @@ const CHECKS = [
   // UTC): steep ground beside ramps, kerb-height drops where kerbs end at
   // paths, high islands between ramps, none seen at eye level; main's own
   // lawn has 56 and 696 by this check. May only go down; follow-ups fix.)
-  ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0, { whole: 533, trial: 70 }],
+  ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0, { whole: 535, trial: 71 }],
   ['An island\'s grass stays inside its kerbs: no lawn more than 5 cm out over a road', 'outline.js', '__checkLawnInIsland', 0, { whole: 5 }],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
@@ -166,7 +170,28 @@ const CHECKS = [
 ];
 
 (async () => {
-  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' });
+  // (Only on a free port: with a server left over on it from an earlier run,
+  // this one's could not start, and the checks ran on that server's build,
+  // not this one, and passed or failed for it (27 Nov: hours of results on
+  // a stale build). And its own server stopped with it, all of it: npx's
+  // child, vite, outlived a kill of npx alone.)
+  const busy = await new Promise((r) => {
+    const t = require('node:net').createServer().once('error', () => r(true)).once('listening', () => t.close(() => r(false))).listen(PORT);
+  });
+  if (busy) {
+    console.log(`Port ${PORT} is in use (a server left over from an earlier run?): stop it, or run on another with PORT=.`);
+    process.exit(2);
+  }
+  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', detached: true });
+  // (Stopped part way, by Ctrl-C or a kill, its server stops too: in a group
+  // of its own, it no longer went with the runner's.)
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'])
+    process.once(sig, () => {
+      try {
+        process.kill(-server.pid);
+      } catch {}
+      process.exit(130);
+    });
   let failed = false;
   try {
     await new Promise((r) => setTimeout(r, 2500));
@@ -237,7 +262,11 @@ const CHECKS = [
     }
     await b.close();
   } finally {
-    server.kill();
+    try {
+      process.kill(-server.pid);
+    } catch {
+      server.kill();
+    }
   }
   process.exit(failed ? 1 : 0);
 })();
