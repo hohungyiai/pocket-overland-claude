@@ -399,7 +399,7 @@ window.__checkUprightsInKerb = (all = false, OUT = 0.02) => {
         return false;
       });
       const seen = uprightSeen(x, z);
-      if (r > OUT && !flush && !seen) pts.push({ x: +x.toFixed(2), z: +z.toFixed(2), out: +r.toFixed(2), value: +r.toFixed(2) });
+      if (r > OUT && !flush && !seen) pts.push({ x: +x.toFixed(2), z: +z.toFixed(2), out: +r.toFixed(2), value: +r.toFixed(2), lo: +lo.toFixed(2), hi: +hi.toFixed(2) });
     }
   }
   const bad = F.places(pts, 2);
