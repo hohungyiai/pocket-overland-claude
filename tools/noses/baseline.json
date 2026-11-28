@@ -78,5 +78,23 @@
   "An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step": 1,
   "An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top": 2,
   "An island's lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees": 3
+ },
+ "S3": {
+  "No gap in any road (seams, wedges)": 4,
+  "An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step": 1,
+  "An island is never lower than the road beside it: every kerb 3 cm over the road, the island level with its top": 2
+ },
+ "V1": {
+  "Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn": 1,
+  "An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step": 1,
+  "A raised road's edge never drops away with no parapet": 1
+ },
+ "V2": {
+  "Every top edge over a fall has a face down to what lies below: no slit, no square wall end, no floating lawn": 1,
+  "An island with both kerbs at one level is one flat lawn kerb to kerb: no fold, crease, trench, spike or step": 1,
+  "Within 6 m of a nose, no kerb face stands taller than a kerb (0.25 m): a bigger drop is a wall": 6,
+  "A raised road's edge never drops away with no parapet": 1,
+  "Within 6 m of a nose, no crease or step over 2 cm across the island's kerb or lawn": 1,
+  "An island's lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees": 9
  }
 }

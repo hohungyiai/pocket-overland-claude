@@ -12127,29 +12127,6 @@ export async function buildPasirRisCourse(
               });
               if (!drawIt) return;
               yield;
-              // (Each kerb whole, as before, where no part of the outline's
-              // kerbs is on such an island: in two by a capped nose, its
-              // pieces met the nose's paving 2 cm lower round the curve, at
-              // 1776.5,1423.78. Asked of them all together, across their
-              // width every half metre along (a narrow island runs on for
-              // metres): a run whole beside one in two, their ends did not
-              // meet, at -111.4,0.38.)
-              let isle = false;
-              runs(Q2, j0, j1, (a) => of2[a], isKerb, (lo, hi, a, b) => {
-                const kl = mk(of2[a])!.lvl, kr = mk(of2[a])!.road;
-                for (let j = a; j < b && !isle; j++) {
-                  const s0 = section(Q2, j, lo, hi, undefined, true), s1 = section(Q2, j + 1, lo, hi, undefined, true);
-                  const L = Math.hypot(Q2[j + 1][0] - Q2[j][0], Q2[j + 1][1] - Q2[j][1]), k = Math.max(1, Math.ceil(L / 0.5));
-                  for (let q = 0; q <= k && !isle; q++) {
-                    const u = q / k, x = lerp(Q2[j][0], Q2[j + 1][0], u), z = lerp(Q2[j][1], Q2[j + 1][1], u);
-                    const nx = lerp(s0.nx * s0.mm, s1.nx * s1.mm, u), nz = lerp(s0.nz * s0.mm, s1.nz * s1.mm, u);
-                    for (const o of [0.12, KERB_OUT]) {
-                      const y = islandTopAt(x - nx * o, z - nz * o, kl, kr);
-                      if (y === y) isle = true;
-                    }
-                  }
-                }
-              });
               runs(Q2, j0, j1, (a) => of2[a], isKerb, (lo, hi, a, b) => {
                 const kl = mk(of2[a])!.lvl, kr = mk(of2[a])!.road;
                 // (In two: its lip, ISLE_LIP across, and the rest, so that
@@ -12160,11 +12137,8 @@ export async function buildPasirRisCourse(
                   return ti === ti ? ti + KERB_UP : NaN;
                 };
                 const lipOff = -ISLE_LIP;
-                if (!isle) strip(kerb, Q2, qc2, a, b, 0.19, 0.07, { lo, hi, off: -0.16, yAt: (j) => hK2[j], bisect: true });
-                else {
-                  strip(kerb, Q2, qc2, a, b, (0.03 - lipOff) / 2, 0.07, { lo, hi, off: (0.03 + lipOff) / 2, yAt: (j) => hK2[j], bisect: true, yXZ });
-                  strip(kerb, Q2, qc2, a, b, (0.35 + lipOff) / 2, 0.07, { lo, hi, off: (lipOff - 0.35) / 2, yAt: (j) => hK2[j], bisect: true, yXZ });
-                }
+                strip(kerb, Q2, qc2, a, b, (0.03 - lipOff) / 2, 0.07, { lo, hi, off: (0.03 + lipOff) / 2, yAt: (j) => hK2[j], bisect: true, yXZ });
+                strip(kerb, Q2, qc2, a, b, (0.35 + lipOff) / 2, 0.07, { lo, hi, off: (lipOff - 0.35) / 2, yAt: (j) => hK2[j], bisect: true, yXZ });
                 // (Its outer edge, for the walls beside it: see wallsToKerb.)
                 const E: number[][] = [];
                 for (let j = a; j <= b; j++) {
