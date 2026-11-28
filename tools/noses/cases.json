@@ -19,5 +19,8 @@
   { "id": "W140", "x": -2687.9, "z": -2298.4, "kind": "wide nose, raised ground (gore 140 end 1)", "status": "control", "rules": ["S1", "S3"] },
   { "id": "W10", "x": -3505.8, "z": -1417.7, "kind": "wide nose (gore 10 end 1)", "status": "control", "rules": ["S1", "S3"] },
   { "id": "W37", "x": -1198.8, "z": 3568.7, "kind": "wide nose (gore 37 end 1)", "status": "control", "rules": ["S1"] },
-  { "id": "C1768", "x": 1768.2, "z": 2113.1, "kind": "curved island end", "status": "control", "rules": ["S1", "S5"] }
+  { "id": "C1768", "x": 1768.2, "z": 2113.1, "kind": "curved island end", "status": "control", "rules": ["S1", "S5"] },
+  { "id": "S3", "x": -438.6, "z": -1826.1, "kind": "nose kerb with a seam (PR 74 follow-up w3)", "status": "fault", "fault": "seam across the nose's kerb", "rules": ["S1", "S2"] },
+  { "id": "V1", "x": 1249.7, "z": 1898.0, "kind": "narrow channel, Tampines Viaduct to PIE (user 26 Nov)", "status": "fault", "fault": "wall blades on a low island; walls at two heights on one median", "rules": ["S3", "B3"] },
+  { "id": "V2", "x": 1134.9, "z": 1927.3, "kind": "narrow channel, Tampines Viaduct to PIE (user 26 Nov)", "status": "fault", "fault": "wall blades on a low island; walls at two heights on one median", "rules": ["S3", "B3"] }
 ]

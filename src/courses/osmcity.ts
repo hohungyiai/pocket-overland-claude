@@ -5286,6 +5286,27 @@ export async function buildPasirRisCourse(
             }
           }
           // Each nose's paving: from the wedge's last row along both roads' edges, round the island's point.
+          // (Where the wedge stops because the two roads part in height, its
+          // last row is an open edge, up to 0.3 m over the ground beyond it
+          // where no road runs under: a face down to the ground there, both
+          // ways round. Without one the grass showed through under the
+          // edge, the green sliver at the TPE's nose, 1327.8,564.9.)
+          const brkEnds = gores[id].brk;
+          for (const e of [0, rows.length - 1]) {
+            if (!brkEnds?.[e === 0 ? 0 : 1] || rows.length < 2) continue;
+            const r = rows[e];
+            const N = Math.max(1, Math.ceil(Math.hypot(r.b[0] - r.a[0], r.b[1] - r.a[1]) / 0.25));
+            const f0 = road.pos.length / 3;
+            for (let t = 0; t <= N; t++) {
+              const x = lerp(r.a[0], r.b[0], t / N), z = lerp(r.a[1], r.b[1], t / N), y = lerp(r.ya, r.yb, t / N) + 0.087;
+              road.pos.push(x, y, z, x, Math.min(y, heightAt(x, z) - 0.05), z);
+              road.uv.push(x / 6, y / 6, x / 6, (y - 0.3) / 6);
+            }
+            for (let t = 0; t < N; t++) {
+              const q = f0 + t * 2;
+              road.idx.push(q, q + 1, q + 2, q + 2, q + 1, q + 3, q, q + 2, q + 1, q + 2, q + 3, q + 1);
+            }
+          }
           for (const c of goreCaps(id)) {
             const f0 = road.pos.length / 3;
             for (const p of c.pave) {
@@ -8320,6 +8341,48 @@ export async function buildPasirRisCourse(
   // (Ground inside the outline that no piece paves (see outlineRings), or
   // a hole no kerb runs round: paved over, a few millimetres under the
   // roads about it.)
+  /**
+   * The top of a narrow island between two roads at different heights, at
+   * (x, z), as a road's height there (a kerb's top stands KERB_UP + 0.07
+   * over it); NaN where (x, z) is not between two such roads, under ISLE_NARROW
+   * across. Rule N (27 Nov): one surface from one kerb to the other, rising
+   * from each road's kerb no steeper than ISLE_TILT; where the two are further
+   * apart in height than that allows, the higher road's own face stands
+   * between them, rising from nothing where they part. (Each road's kerb
+   * flat at its own road's height, the two met in a step as tall as the
+   * whole difference, 0.23 m at the TPE's nose at 1327.8,564.9 and 0.75 m
+   * 15 m on, the step starting square at the island's point.)
+   */
+  const ISLE_NARROW = 1.3, ISLE_TILT = 1, ISLE_LIP = 0.12;
+  const islandTopAt = (x: number, z: number, lvl: number) => {
+    let ia = -1, oa = Infinity, ya = NaN, ib = -1, ob = Infinity, yb = NaN;
+    roads.each(x, z, 12, (o, seg, u, d) => {
+      if (JX.internal[o] || !onLvl(o, seg, lvl) || !outlined[o]) return;
+      const out = d - drawnHalf(o, seg, u);
+      if (out < -0.1 || out > ISLE_NARROW) return;
+      // (The road's surface as drawn at its edge nearest (x, z), as a kerb beside it finds it: see yOn.)
+      const h = stripTop(o, x, z, seg - 2, seg + 2);
+      if (h !== h) return;
+      if (o === ia || o === ib) {
+        if (o === ia && out < oa) (oa = out), (ya = h);
+        if (o === ib && out < ob) (ob = out), (yb = h);
+        return;
+      }
+      if (out < oa) (ib = ia), (ob = oa), (yb = ya), (ia = o), (oa = out), (ya = h);
+      else if (out < ob) (ib = o), (ob = out), (yb = h);
+    });
+    if (ib < 0 || !(Math.abs(ya - yb) > 0.02) || oa + ob > ISLE_NARROW) return NaN;
+    // (Each kerb's lip, ISLE_LIP across, flat at its own road's kerb
+    // height; the slope between the two. Sloped from the road's very edge,
+    // the higher road's kerb lay level with the road and under it 5 cm in,
+    // and from that road the island did not show at all, at the TPE's nose.)
+    const [yL, oL, yH, oH] = ya < yb ? [ya, Math.max(0, oa - ISLE_LIP), yb, Math.max(0, ob - ISLE_LIP)] : [yb, Math.max(0, ob - ISLE_LIP), ya, Math.max(0, oa - ISLE_LIP)];
+    const W = oL + oH;
+    if (W < 0.02) return NaN;
+    // (One slope across, where it is no steeper than ISLE_TILT; else each side up or down from its own road's kerb at that slope, the higher's face between.)
+    if (yH - yL <= W * ISLE_TILT) return yL + ((yH - yL) * oL) / W;
+    return oL <= oH ? yL + oL * ISLE_TILT : yH - oH * ISLE_TILT;
+  };
   /** The height a paving fill is laid at, at (x, z) of level lvl (without the road's lift; NaN: the ground's). */
   const fillY = (x: number, z: number, lvl: number) => {
     const near: Near = new Map([...nearRoads(x, z)].filter(([i, h]) => onLvl(i, h.seg, lvl)));
@@ -11935,6 +11998,19 @@ export async function buildPasirRisCourse(
                     const h = yOn(mm, Q2[v][0] + sx * o, Q2[v][1] + sz * o, true);
                     if (h === h && h > hY[v] && h - hY[v] < 0.1) hY[v] = h;
                   }
+                // (Never standing over what is drawn under it: round an
+                // island's point between two roads at different heights the
+                // line (raised as above) went on at the higher road's height past its edge,
+                // 0.2 m over the paving at the TPE's nose, 1327.9,564.8.)
+                {
+                  const ux = Q2[v][0] + sx * 0.35, uz = Q2[v][1] + sz * 0.35;
+                  if (hY[v] === hY[v] && islandTopAt(ux, uz, mm.lvl) === islandTopAt(ux, uz, mm.lvl)) {
+                    // (The lowest of what is drawn there: the wedge's paving, the outline's fill, a road's strip.)
+                    const hs = [goreTopAt(ux, uz) - ROAD_LIFT, fillTrisNow ? fillAt(ux, uz, mm.lvl) - ROAD_LIFT : NaN, drawnTopAt(mm, ux, uz, undefined, false)].filter((h) => h === h);
+                    const hd = hs.length ? Math.min(...hs) : NaN;
+                    if (hd === hd && hY[v] - hd > 0.05) hY[v] = hd;
+                  }
+                }
               }
               // (Each kerb and line by itself, square across at its ends: at a
               // bend in the outline where it stops, a cross-section on the
@@ -11988,19 +12064,32 @@ export async function buildPasirRisCourse(
                 const I: XZ[] = [], E: XZ[] = [], N: XZ[] = [], T: number[] = [];
                 for (let j = a; j <= b; j++) {
                   const { nx, nz, mm } = section(Q2, j, lo, hi, undefined, true);
-                  I.push(Q2[j]), E.push([Q2[j][0] - nx * KERB_OUT * mm, Q2[j][1] - nz * KERB_OUT * mm]), N.push([-nx, -nz]), T.push(hK2[j] + 0.07);
+                  const e: XZ = [Q2[j][0] - nx * KERB_OUT * mm, Q2[j][1] - nz * KERB_OUT * mm];
+                  const ti = islandTopAt(e[0], e[1], mk(of2[a])!.lvl);
+                  I.push(Q2[j]), E.push(e), N.push([-nx, -nz]), T.push((ti === ti ? ti + KERB_UP : hK2[j]) + 0.07);
                 }
                 (w.kerbRuns ??= []).push({ lvl: mk(of2[a])!.lvl, I, E, N, T });
               });
               if (!drawIt) return;
               yield;
               runs(Q2, j0, j1, (a) => of2[a], isKerb, (lo, hi, a, b) => {
-                strip(kerb, Q2, qc2, a, b, 0.19, 0.07, { lo, hi, off: -0.16, yAt: (j) => hK2[j], bisect: true });
+                const kl = mk(of2[a])!.lvl;
+                // (In two: its lip, ISLE_LIP across, and the rest, so that
+                // where its top slopes down across a narrow island (see
+                // islandTopAt) the lip stays flat at the kerb's height.)
+                const yXZ = (x: number, z: number) => {
+                  const ti = islandTopAt(x, z, kl);
+                  return ti === ti ? ti + KERB_UP : NaN;
+                };
+                const lipOff = -ISLE_LIP;
+                strip(kerb, Q2, qc2, a, b, (0.03 - lipOff) / 2, 0.07, { lo, hi, off: (0.03 + lipOff) / 2, yAt: (j) => hK2[j], bisect: true, yXZ });
+                strip(kerb, Q2, qc2, a, b, (0.35 + lipOff) / 2, 0.07, { lo, hi, off: (lipOff - 0.35) / 2, yAt: (j) => hK2[j], bisect: true, yXZ });
                 // (Its outer edge, for the walls beside it: see wallsToKerb.)
                 const E: number[][] = [];
                 for (let j = a; j <= b; j++) {
                   const { nx, nz, mm } = section(Q2, j, lo, hi, undefined, true);
-                  E.push([Q2[j][0] - nx * KERB_OUT * mm, Q2[j][1] - nz * KERB_OUT * mm, hK2[j] + 0.07, -nx, -nz, Q2[j][0], Q2[j][1]]);
+                  const ex = Q2[j][0] - nx * KERB_OUT * mm, ez = Q2[j][1] - nz * KERB_OUT * mm, ti = islandTopAt(ex, ez, kl);
+                  E.push([ex, ez, (ti === ti ? ti + KERB_UP : hK2[j]) + 0.07, -nx, -nz, Q2[j][0], Q2[j][1]]);
                 }
                 const ko = kerbOuter.get(k) ?? kerbOuter.set(k, []).get(k)!;
                 for (let j = 1; j < E.length; j++) {
@@ -13779,6 +13868,7 @@ export async function buildPasirRisCourse(
       fillY,
       drawnHalf: (o: number, seg: number, u: number) => drawnHalf(o, seg, u),
       outlineY: (x: number, z: number, lvl = -1) => outlineY(x, z, nearRoads(x, z), lvl),
+      islandTopAt,
       onLvl,
       surfacePoly: (i: number) => surfacePoly(i),
       outSources: () => outSources(),

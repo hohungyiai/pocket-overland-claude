@@ -182,7 +182,8 @@ const CHECKS = [
     console.log(`Port ${PORT} is in use (a server left over from an earlier run?): stop it, or run on another with PORT=.`);
     process.exit(2);
   }
-  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', detached: true });
+  // (DIST=dir serves that build instead of dist: a trial build beside main's.)
+  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort', ...(process.env.DIST ? ['--outDir', process.env.DIST] : [])], { stdio: 'ignore', detached: true });
   // (Stopped part way, by Ctrl-C or a kill, its server stops too: in a group
   // of its own, it no longer went with the runner's.)
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'])
