@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type RAPIER_NS from '@dimforge/rapier3d-compat';
+import { TileRecorder, replay, type Shared, type TileTag } from './tilerecord';
 
 // Tile streaming. The world is a grid of square tiles; each tile has three
 // layers that load and unload on their own:
@@ -16,6 +17,8 @@ import type RAPIER_NS from '@dimforge/rapier3d-compat';
 
 export const TILE = 200;
 
+const CLONE_RECORDS = /[?&]clonerec\b/.test(globalThis.location?.search ?? '');
+
 export interface TileKit {
   /**
    * Add a mesh (or other object) that belongs to this tile layer. Horizon
@@ -28,7 +31,13 @@ export interface TileKit {
   body(desc?: RAPIER_NS.RigidBodyDesc): RAPIER_NS.RigidBody;
 }
 
-export type LayerBuilder = (i: number, j: number, kit: TileKit) => Generator<void, void, void>;
+/**
+ * A recorded streamer's builders are handed a TileRecorder instead: what
+ * they make is written down as plain data and made real when the tile is
+ * done (see tilerecord.ts). The others get a TileKit, which puts each thing
+ * into the scene as it is made.
+ */
+export type LayerBuilder<K = TileKit> = (i: number, j: number, kit: K) => Generator<void, void, void>;
 
 interface TileLayer {
   objects: THREE.Object3D[];
@@ -45,22 +54,30 @@ export type Layer = 'near' | 'far' | 'horizon';
 type LayerName = Layer;
 const LAYERS: LayerName[] = ['near', 'far', 'horizon'];
 
-export class TileStreamer {
+export class TileStreamer<K extends TileKit | TileRecorder = TileKit> {
   private loaded = new Map<string, TileLayer>(); // key: "near:i,j" / "far:i,j"
   private queue: { key: string; layer: LayerName; i: number; j: number; d: number }[] = [];
   /**
    * Built tile counts, and the longest single build slice (with which tile
-   * and slice it was), for the debug overlay and tests.
+   * and slice it was), for the debug overlay and tests. replayMs: the
+   * longest a finished tile's record took to be made real (one slice of
+   * its own), so the checks can show what handing tiles over costs.
    */
-  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0, slowest: '' };
+  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0, slowest: '', replayMs: 0 };
 
   constructor(
     private scene: THREE.Scene,
     private world: RAPIER_NS.World,
     private RAPIER: typeof RAPIER_NS,
-    private builders: Record<LayerName, LayerBuilder>,
+    private builders: Record<LayerName, LayerBuilder<K>>,
     private bounds: { minX: number; maxX: number; minZ: number; maxZ: number },
     private radius: Record<LayerName, number> = { near: 620, far: 900, horizon: 1750 },
+    /**
+     * For builders handed a TileRecorder: the materials and geometries tiles
+     * share, by name, and who hears of each tagged mesh as a tile's record
+     * is made real.
+     */
+    private record?: { shared: Shared; onTag?: (o: THREE.Mesh, tag: TileTag) => void },
   ) {}
 
   private tilesAround(x: number, z: number, r: number) {
@@ -102,6 +119,21 @@ export class TileStreamer {
         return b;
       },
     };
+  }
+
+  /** The tile's builder, then (recorded) its record made real, a slice of its own. */
+  private *job(q: { layer: LayerName; i: number; j: number }, layer: TileLayer): Generator<void, void, void> {
+    const r = this.record;
+    if (!r) return yield* this.builders[q.layer](q.i, q.j, this.kit(layer) as K);
+    const rec = new TileRecorder(r.shared);
+    yield* this.builders[q.layer](q.i, q.j, rec as K);
+    yield;
+    // (?clonerec: the record copied the way a message from a worker would
+    // be, to show it holds nothing but plain data.)
+    const s0 = performance.now();
+    const ops = CLONE_RECORDS ? structuredClone(rec.ops) : rec.ops;
+    replay(ops, r.shared, this.scene, this.world, this.RAPIER, !!layer.hidden, r.onTag, layer);
+    this.stats.replayMs = Math.max(this.stats.replayMs, performance.now() - s0);
   }
 
   /** Work out what should be loaded around (x, z); queue builds, drop far tiles. */
@@ -164,7 +196,7 @@ export class TileStreamer {
           const f = this.loaded.get('far' + q.key.slice(7));
           layer.hidden = !!f && !f.job;
         }
-        layer.job = this.builders[q.layer](q.i, q.j, this.kit(layer));
+        layer.job = this.job(q, layer);
         this.loaded.set(q.key, layer);
         this.stats[q.layer]++;
       }
