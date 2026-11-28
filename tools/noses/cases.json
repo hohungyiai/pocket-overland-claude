@@ -1,0 +1,23 @@
+[
+  { "id": "N1", "x": 1327.8, "z": 564.9, "kind": "roads part in height, 1.0 m wide (gore 73 end 1)", "status": "fault", "fault": "spiked tip, blade at the point, green sliver outside the yellow line, step in the wall top", "rules": ["S1", "S3", "S5", "B3"], "car": [1328.1, 569.2] },
+  { "id": "N2", "x": 1776.5, "z": 1424.0, "kind": "narrow 0.5 m, roads part in height, raised (gore 186 end 0)", "status": "fault", "fault": "small kerb shard at the tip", "rules": ["S1", "S3", "S4"], "car": [1772.0, 1431.4] },
+  { "id": "N2-wall", "x": 1794.3, "z": 1473.0, "kind": "ramp wall past the nose", "status": "check", "fault": "wall foot 3.7 m off the ground from 1792.4,1466.8 to 1796.2,1479 (possible see-through)", "rules": ["S4"] },
+  { "id": "LG", "x": -118.5, "z": -23.5, "kind": "two ends side by side (gore 213 end 0, gore 109 end 0)", "status": "fault", "fault": "square block, stray line, kinked yellow line", "rules": ["S1", "S6"] },
+  { "id": "E85", "x": -802.3, "z": 1033.6, "kind": "wide end, no nose (gore 85 end 0)", "status": "fault", "fault": "blunt end, no nose", "rules": ["S1"] },
+  { "id": "E120-136", "x": -3306.0, "z": -3243.4, "kind": "two ends at one corner (gores 120, 136 end 1)", "status": "fault", "fault": "corners, no nose", "rules": ["S1"] },
+  { "id": "E103", "x": -1524.3, "z": 265.5, "kind": "wide end under a tree (gore 103 end 0)", "status": "fault", "fault": "no nose", "rules": ["S1"] },
+  { "id": "E31", "x": 36.3, "z": -1403.4, "kind": "end beside a rounded island (gore 31 end 1)", "status": "check", "fault": "no nose: confirm open road", "rules": ["S1"] },
+  { "id": "E54", "x": 272.8, "z": 2300.1, "kind": "end beside a rounded island (gore 54 end 1)", "status": "check", "fault": "no nose: confirm open road", "rules": ["S1"] },
+  { "id": "E75", "x": 461.1, "z": 1400.2, "kind": "end beside a rounded island (gore 75 end 0)", "status": "check", "fault": "no nose: confirm open road", "rules": ["S1"] },
+  { "id": "E157", "x": 1159.8, "z": 1575.9, "kind": "end beside a rounded island (gore 157 end 0)", "status": "check", "fault": "no nose: confirm open road", "rules": ["S1"] },
+  { "id": "E161", "x": 2280.4, "z": 2878.4, "kind": "end beside a rounded island (gore 161 end 1)", "status": "check", "fault": "no nose: confirm open road", "rules": ["S1"] },
+  { "id": "E307", "x": 637.6, "z": 2824.1, "kind": "end beside a rounded island (gore 307 end 1)", "status": "check", "fault": "no nose: confirm open road", "rules": ["S1"] },
+  { "id": "F198", "x": 3089.8, "z": 3150.1, "kind": "flush painted nose, narrow", "status": "control", "rules": ["S1"] },
+  { "id": "F253", "x": 909.9, "z": 1787.3, "kind": "flush painted noses, narrow (253, 368)", "status": "control", "rules": ["S1"] },
+  { "id": "F366", "x": 945.3, "z": 1849.1, "kind": "flush painted noses, narrow (366, 367)", "status": "control", "rules": ["S1"] },
+  { "id": "W74", "x": -416.9, "z": -101.5, "kind": "wide nose on the ground (gore 74 end 1)", "status": "control", "rules": ["S1", "S3"] },
+  { "id": "W140", "x": -2687.9, "z": -2298.4, "kind": "wide nose, raised ground (gore 140 end 1)", "status": "control", "rules": ["S1", "S3"] },
+  { "id": "W10", "x": -3505.8, "z": -1417.7, "kind": "wide nose (gore 10 end 1)", "status": "control", "rules": ["S1", "S3"] },
+  { "id": "W37", "x": -1198.8, "z": 3568.7, "kind": "wide nose (gore 37 end 1)", "status": "control", "rules": ["S1"] },
+  { "id": "C1768", "x": 1768.2, "z": 2113.1, "kind": "curved island end", "status": "control", "rules": ["S1", "S5"] }
+]

@@ -208,20 +208,36 @@ const CHECKS = [
       q.on('pageerror', (e) => console.log('page error:', e.message));
       return q;
     };
+    // (TILES="i,j;i,j" runs the map-wide checks on those 200 m tiles only:
+    // the nose bench gives the tiles about its cases, and its far roads,
+    // kept whole for their shape, are left to the full-map checks.)
+    const tiles = process.env.TILES ? process.env.TILES.split(';') : null;
+    const limitTiles = (q) =>
+      tiles &&
+      q.evaluate((keep) => {
+        const d = globalThis.__osm, all = d.farTiles, set = new Set(keep);
+        d.farTiles = () => all().filter((k) => set.has(k));
+      }, tiles);
     let p = await open();
     const t0 = Date.now();
     await p.goto(`http://localhost:${PORT}/?course=${process.env.COURSE || 'pasirris'}&debug`);
     await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
+    await limitTiles(p);
     // (How long the game took to start, for the performance budget.)
     await p.evaluate((ms) => (window.__startMs = ms), Date.now() - t0);
     const loaded = new Set();
     // (ONLY=regex runs just the matching checks.)
     const only = process.env.ONLY ? new RegExp(process.env.ONLY, 'i') : null;
     const course = process.env.COURSE || 'pasirris';
+    // (SHARD=i/n runs every n-th of the matching checks, from the i-th, so
+    // n runners on n ports share one list: the nose bench runs three.)
+    const [shard, shards] = (process.env.SHARD || '0/1').split('/').map(Number);
+    let nth = -1;
     const FRESH = new Set(['__checkWatertight', '__checkIslandTops', '__checkLevelIslands', '__checkLevelIslandHoles', '__checkLawnSeams', '__checkLawnFolds', '__checkLawnInIsland']);
     for (const [name, file, fn, limit, knownAt = 0] of CHECKS) {
       const known = typeof knownAt === 'number' ? knownAt : knownAt[course] ?? 0;
       if (only && !only.test(name)) continue;
+      if (++nth % shards !== shard) continue;
       // (The island and lawn checks on a fresh page: every check before them
       // leaves its own index of the whole map in memory, and with the
       // whole map's lawn one sheet the page ran out at the first of them.
@@ -234,6 +250,7 @@ const CHECKS = [
         p = await open();
         await p.goto(`http://localhost:${PORT}/?course=${course}&debug`);
         await p.waitForFunction(() => window.game && globalThis.__osm, null, { timeout: 240000 });
+        await limitTiles(p);
         loaded.clear();
       };
       if (FRESH.has(fn) && loaded.size) await fresh();
@@ -245,8 +262,14 @@ const CHECKS = [
       // (A page that runs out of memory fails its check, and the run goes on
       // on a fresh page, so one crash doesn't hide every check after it.)
       let r;
+      const tc = Date.now();
       try {
-        r = await p.evaluate((fn) => window[fn](), fn);
+        // (LIST=1 asks each check for every spot it finds, not only its worst:
+        // only a check whose first argument is that switch, `all`.)
+        r = await p.evaluate(([fn, all]) => {
+          const f = window[fn];
+          return all && /^\s*(async\s*)?\(\s*all\b/.test(String(f)) ? f(true) : f();
+        }, [fn, !!process.env.LIST]);
       } catch (e) {
         failed = true;
         console.log(`FAIL  ${name}: the page crashed (${String(e.message).split('\n')[0]})`);
@@ -257,7 +280,7 @@ const CHECKS = [
       const ok = known > 0 ? r.bad <= known : worst <= limit && (limit > 0 || r.bad === 0);
       if (!ok) failed = true;
       const tail = known > 0 ? `(known: ${known}, may not grow)` : `(limit ${limit})`;
-      console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}: ${r.bad} of ${r.samples} samples off, worst ${worst} ${r.unit ?? 'm'} ${tail}${r.note ? ` [${r.note}]` : ''}`);
+      console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}: ${r.bad} of ${r.samples} samples off, worst ${worst} ${r.unit ?? 'm'} ${tail}${r.note ? ` [${r.note}]` : ''}${process.env.LIST ? ` {${Math.round((Date.now() - tc) / 1000)} s}` : ''}`);
       if (!ok || known > 0) for (const w of r.worst.slice(0, process.env.ALL ? Infinity : ok ? 3 : 12)) console.log('      ', JSON.stringify(w));
     }
     await b.close();

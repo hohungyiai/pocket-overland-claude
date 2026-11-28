@@ -36,7 +36,9 @@
 //          [fraction of its length where a width starts, width].
 //
 // --box keeps only the roads (and the buildings, paths and land) that
-// touch a box in game metres: a trial area.
+// touch a box in game metres: a trial area. Several boxes, `;` between
+// them, keep what touches any; `@cases.json` makes a box `r` m (default
+// 75) each way round every case's x, z (the nose test map, tools/noses).
 //
 // Map data © OpenStreetMap contributors, ODbL 1.0.
 
@@ -50,7 +52,14 @@ const flag = (name) => {
   const k = args.indexOf(`--${name}`);
   return k >= 0 ? args.splice(k, 2)[1] : null;
 };
-const box = flag('box')?.split(',').map(Number) ?? null;
+const boxArg = flag('box');
+const boxes = !boxArg
+  ? null
+  : boxArg.startsWith('@')
+    ? JSON.parse(fs.readFileSync(boxArg.slice(1), 'utf8')).map((c) => [c.x - (c.r ?? 75), c.x + (c.r ?? 75), c.z - (c.r ?? 75), c.z + (c.r ?? 75)])
+    : boxArg.split(';').map((b) => b.split(',').map(Number));
+const box = boxes?.[0] ?? null;
+const inAnyBox = (p, m = 0) => boxes.some((b) => p[0] >= b[0] - m && p[0] <= b[1] + m && p[1] >= b[2] - m && p[1] <= b[3] + m);
 const steps = new Set((flag('steps') ?? '').split(',').filter(Boolean));
 const [IN, OUT] = args;
 if (!IN || !OUT) {
@@ -822,7 +831,7 @@ if (steps.has('pair')) {
   // Why the sides still left were not paired (inside the box, if there is one).
   const why = { lone: 0, endsApart: 0, noTwin: 0 };
   const eg = [];
-  const inB = (p) => !box || (p[0] >= box[0] && p[0] <= box[1] && p[1] >= box[2] && p[1] <= box[3]);
+  const inB = (p) => !box || inAnyBox(p);
   for (const e of edges) {
     if (!side(e) || !e.pts.some(inB)) continue;
     const k = e.pts.length >> 1;
@@ -1299,9 +1308,37 @@ if (steps.has('roads')) {
 }
 
 // ---------- box ----------
-const inBox = box ? (p) => p[0] >= box[0] && p[0] <= box[1] && p[1] >= box[2] && p[1] <= box[3] : () => true;
-const near = box ? (p) => p[0] >= box[0] - 150 && p[0] <= box[1] + 150 && p[1] >= box[2] - 150 && p[1] <= box[3] + 150 : () => true;
-if (box) edges = edges.filter((e) => e.pts.some(inBox));
+const inBox = box ? (p) => inAnyBox(p) : () => true;
+const near = box ? (p) => inAnyBox(p, 150) : () => true;
+if (box) {
+  // (With several boxes, each road kept whole as one line: every piece a
+  // kept piece carries straight on into, and on, is kept too. Cut where a
+  // box took the next piece, the game drew the line's curve again from
+  // there, and the roads stood up to 5 m off where the whole map has them,
+  // the nose test map no longer the whole map's noses.)
+  const keep = new Set(edges.filter((e) => e.pts.some(inBox)));
+  if (boxes.length > 1) {
+    // (And every road at a joint of one: a junction short of an arm was
+    // drawn smaller, and the island beside it began 5 m sooner, -416.9,-101.5.)
+    const byJ = new Map();
+    for (const e of edges) for (const j of [e.a, e.b]) (byJ.get(j) ?? byJ.set(j, []).get(j)).push(e);
+    for (const e of [...keep]) for (const j of [e.a, e.b]) for (const o of byJ.get(j)) keep.add(o);
+    const at = new Map();
+    for (const e of edges) {
+      if (e.ta) (at.get(e.a) ?? at.set(e.a, []).get(e.a)).push(e);
+      if (e.tb) (at.get(e.b) ?? at.set(e.b, []).get(e.b)).push(e);
+    }
+    const todo = [...keep];
+    while (todo.length) {
+      const e = todo.pop();
+      for (const [j, f] of [[e.a, e.ta], [e.b, e.tb]]) {
+        if (!f) continue;
+        for (const o of at.get(j) ?? []) if (!keep.has(o)) (keep.add(o), todo.push(o));
+      }
+    }
+  }
+  edges = edges.filter((e) => keep.has(e));
+}
 // (A road marked as carrying straight on past a joint needs both its pieces: the box may have taken one.)
 {
   const marks = new Map();

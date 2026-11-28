@@ -31,6 +31,11 @@ const COURSES = {
   // The same redraw over the whole map: a preview beside today's map.
   whole: ((scene, world, RAPIER, opts) =>
     buildPasirRisCourse(scene, world, RAPIER, { ...opts, map: 'maps/east-redrawn.json', name: 'Redrawn roads: the whole map (preview)' })) as typeof buildPasirRisCourse,
+  // The nose test bench (tools/noses): only the island ends in
+  // tools/noses/cases.json, cut from the redrawn map where they stand, so a
+  // nose fix is proven on them in minutes. Not in the menu: ?course=noses.
+  noses: ((scene, world, RAPIER, opts) =>
+    buildPasirRisCourse(scene, world, RAPIER, { ...opts, map: 'maps/noses.json', name: 'Nose test bench', startAt: [1328.1, 569.2] })) as typeof buildPasirRisCourse,
   eastcoast: buildEastCoastCourse,
   // The first off-road trail: Pulau Ubin, round Ketam Quarry.
   ubintrail: buildUbinTrailCourse,
