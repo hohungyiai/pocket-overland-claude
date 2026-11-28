@@ -4832,7 +4832,7 @@ export async function buildPasirRisCourse(
   // walls of the two roads start from one nose, not each from its own
   // square end with a hole between them.
   /** A nose: nose is the island's outline from A's edge round to B's; pave the whole of its paving, from the wedge's last row (a, b) along both roads' drawn edges to the nose and round, and tris its triangles (indices into pave). */
-  interface GoreCap { a: XZ; b: XZ; ya: number; yb: number; d: XZ; drop: number; nose: XZ[]; sideA: XZ[]; sideB: XZ[]; pave: XZ[]; tris: [number, number, number][]; C: XZ; yAt: (p: XZ) => number }
+  interface GoreCap { a: XZ; b: XZ; ya: number; yb: number; d: XZ; drop: number; part?: boolean; nose: XZ[]; sideA: XZ[]; sideB: XZ[]; pave: XZ[]; tris: [number, number, number][]; C: XZ; yAt: (p: XZ) => number }
   // A nose: the island the two roads part round ends in a small rounded
   // point, not square across the wedge. The paving runs on NOSE_L m along
   // both roads' edges past the wedge's last row, and the island's end is a
@@ -5080,7 +5080,7 @@ export async function buildPasirRisCourse(
         continue;
       }
       why(brk?.[e === 0 ? 0 : 1] ? 'capped, roads part in height' : 'capped');
-      out.push({ a: r.a, b: r.b, ya: r.ya, yb: r.yb, d, drop: deck > 0 ? 99 : deck < 0 ? 0 : y + 0.09 - heightAt(mx + d[0] * 1.05, mz + d[1] * 1.05), ...nz });
+      out.push({ a: r.a, b: r.b, ya: r.ya, yb: r.yb, d, part: !!brk?.[e === 0 ? 0 : 1], drop: deck > 0 ? 99 : deck < 0 ? 0 : y + 0.09 - heightAt(mx + d[0] * 1.05, mz + d[1] * 1.05), ...nz });
     }
     return out;
   };
@@ -5228,13 +5228,23 @@ export async function buildPasirRisCourse(
               // the island there, 1 m tall over no drop at all. The user's
               // rule, 18 Nov: a bridge's parapets and walls begin where the
               // ground drops. On the ground, as a raised road's below.)
+              // (Its parapet, where the two roads part in height, sized as
+              // theirs are: by the drop to the lower road, not to the ground
+              // under the island. The higher road's parapet comes down to
+              // nothing at the point beside the lower road; the nose's,
+              // standing full height round the point, met it in a V with the
+              // ramp's underside showing through, at the Tampines Viaduct
+              // ramp's nose, 1776.6,1423.8 (review of PR 90, 28 Nov).)
+              const lowY = Math.min(c.ya, c.yb) + ROAD_LIFT;
+              const pd = (q: number) => (c.part ? Math.min(nd[q], ny(q) - lowY) : nd[q]);
               if (dk > 0 && Math.max(...nd) >= LOW_DECK) {
                 band(deck, NW, nc, 0, NW.length - 1, 0, ny, dk, 0, () => true);
-                band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, PARAPET_H, () => true);
+                if (c.part) band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, (q) => parapetTop(pd(q)), (q) => Math.max(pd(q), pd(q + 1)) > PARAPET_FROM);
+                else band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, PARAPET_H, () => true);
                 continue;
               }
               band(deck, NW, nc, 0, NW.length - 1, 0, ny, (q) => Math.max(0, nd[q]) + 0.3, (q) => wallTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > WALL_FROM || onA(q) || onB(q), [0, 0], (q) => (nd[q] > WALL_FROM ? Infinity : -nd[q]));
-              band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, (q) => parapetTop(nd[q]), (q) => Math.max(nd[q], nd[q + 1]) > PARAPET_FROM);
+              band(deck, NW, nc, 0, NW.length - 1, 0, ny, 0, (q) => parapetTop(pd(q)), (q) => Math.max(pd(q), pd(q + 1)) > PARAPET_FROM);
             } else if (wd > WALL_FROM) {
               band(deck, W, cw, 0, 1, 0, yk, Math.max(0, wd) + 0.3, wallTop(wd), () => true);
               if (wd > PARAPET_FROM) band(deck, W, cw, 0, 1, 0, yk, 0, parapetTop(wd), () => true);
