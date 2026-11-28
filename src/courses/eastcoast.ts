@@ -1253,7 +1253,7 @@ export function buildEastCoastCourse(
     update(time, dt, cam, player) {
       wind.value = time;
       const focus = player ?? cam;
-      if (focus) streamer.update(focus.x, focus.z);
+      if (focus) streamer.update(focus.x, focus.z, dt);
       traffic.update(dt, player ?? null);
       if (cam)
         for (const g of nearOnly) {

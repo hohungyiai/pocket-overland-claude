@@ -15,6 +15,12 @@ import type RAPIER_NS from '@dimforge/rapier3d-compat';
 // per-tile seed, so a tile rebuilt later is identical.
 
 export const TILE = 200;
+/** How far ahead (seconds at the car's speed) the solid ground must be built: see TileStreamer.update. */
+const AHEAD_S = 1.5;
+/** The most a frame gives the builder while the solid ground under or ahead of the car is not built (ms). */
+const URGENT_MS = 12;
+/** The most a frame gives the builder otherwise, however long the frame (ms). */
+const SHARE_MAX_MS = 8;
 
 export interface TileKit {
   /**
@@ -52,7 +58,7 @@ export class TileStreamer {
    * Built tile counts, and the longest single build slice (with which tile
    * and slice it was), for the debug overlay and tests.
    */
-  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0, slowest: '' };
+  stats = { near: 0, far: 0, horizon: 0, pending: 0, maxStepMs: 0, slowest: '', urgent: 0 };
 
   constructor(
     private scene: THREE.Scene,
@@ -153,9 +159,9 @@ export class TileStreamer {
   }
 
   /** Advance builds for up to `budgetMs`. Returns true when nothing is pending. */
-  private work(budgetMs: number) {
+  private work(budgetMs: number, tiles = Infinity) {
     const t0 = performance.now();
-    while (this.queue.length) {
+    while (this.queue.length && tiles-- > 0) {
       const q = this.queue[0];
       let layer = this.loaded.get(q.key);
       if (!layer) {
@@ -189,13 +195,51 @@ export class TileStreamer {
   }
 
   private lastPlan = { x: Infinity, z: Infinity };
-  /** Call every frame with the camera (or car) position. */
-  update(x: number, z: number, budgetMs = 3) {
+  private lastAt = { x: NaN, z: NaN };
+  /**
+   * Call every frame with the camera (or car) position, and how long the
+   * frame took (s).
+   *
+   * The builder's share scales with the frame: `budgetMs` is for a 60 Hz
+   * frame, and a frame twice as long (the car twice as far along) gives it
+   * twice that, up to SHARE_MAX_MS. So the map builds as fast per second of
+   * driving on a slow phone as on a fast one.
+   *
+   * Solid ground first: where the near tile under the car, or under where
+   * it will be within AHEAD_S seconds at its speed, is not built yet, that
+   * tile goes to the front of the queue and the builder gets up to
+   * URGENT_MS this frame. On the redrawn map a far tile costs about 0.28 s
+   * to build; at 20 frames a second the fixed 3 ms a frame fell behind until
+   * the car drove off the built ground and fell through the road at
+   * 1877.7,1609.3 (the reviewer's drive, 27 Nov; the same drive at 60 frames
+   * a second never did). A frame held up is better than a fall.
+   */
+  update(x: number, z: number, dt = 1 / 60, budgetMs = 3) {
     if (Math.hypot(x - this.lastPlan.x, z - this.lastPlan.z) > 25) {
       this.lastPlan = { x, z };
       this.plan(x, z);
     }
-    if (this.queue.length) this.work(budgetMs);
+    const frame = dt > 0 ? Math.min(dt, 0.1) : 1 / 60;
+    let vx = (x - this.lastAt.x) / frame, vz = (z - this.lastAt.z) / frame;
+    this.lastAt = { x, z };
+    // (A jump, a teleport or the first call: no way ahead to look.)
+    if (!(Math.hypot(vx, vz) < 60)) vx = vz = 0;
+    const need: string[] = [];
+    for (const f of [0, 0.5, 1]) {
+      const key = `near:${Math.floor((x + vx * AHEAD_S * f) / TILE)},${Math.floor((z + vz * AHEAD_S * f) / TILE)}`;
+      const l = this.loaded.get(key);
+      if ((!l || l.job) && !need.includes(key) && this.queue.some((q) => q.key === key)) need.push(key);
+    }
+    if (need.length) {
+      // (Those tiles first, the one under the car before the ones ahead.)
+      const front = need.map((key) => this.queue.find((q) => q.key === key)!);
+      this.queue = [...front, ...this.queue.filter((q) => !need.includes(q.key))];
+      this.stats.urgent++;
+      // (Only those: the rest of the queue waits for the next frame's share.)
+      this.work(URGENT_MS, need.length);
+      return;
+    }
+    if (this.queue.length) this.work(Math.min(SHARE_MAX_MS, budgetMs * frame * 60));
   }
 
   /**
