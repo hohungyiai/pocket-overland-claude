@@ -1,7 +1,7 @@
 [
   { "id": "N1", "x": 1327.8, "z": 564.9, "kind": "roads part in height, 1.0 m wide (gore 73 end 1)", "status": "fault", "fault": "spiked tip, blade at the point, green sliver outside the yellow line, step in the wall top", "rules": ["S1", "S3", "S5", "B3"], "car": [1328.1, 569.2] },
   { "id": "N2", "x": 1776.5, "z": 1424.0, "kind": "narrow 0.5 m, roads part in height, raised (gore 186 end 0)", "status": "fault", "fault": "small kerb shard at the tip", "rules": ["S1", "S3", "S4"], "car": [1772.0, 1431.4] },
-  { "id": "N2-wall", "x": 1794.3, "z": 1473.0, "kind": "ramp wall past the nose", "status": "check", "fault": "wall foot 3.7 m off the ground from 1792.4,1466.8 to 1796.2,1479 (possible see-through)", "rules": ["S4"] },
+  { "id": "N2-wall", "x": 1794.3, "z": 1473.0, "deck": true, "kind": "ramp wall past the nose", "status": "check", "fault": "wall foot 3.7 m off the ground from 1792.4,1466.8 to 1796.2,1479 (possible see-through)", "rules": ["S4"] },
   { "id": "LG", "x": -118.5, "z": -23.5, "kind": "two ends side by side (gore 213 end 0, gore 109 end 0)", "status": "fault", "fault": "square block, stray line, kinked yellow line", "rules": ["S1", "S6"] },
   { "id": "E85", "x": -802.3, "z": 1033.6, "kind": "wide end, no nose (gore 85 end 0)", "status": "fault", "fault": "blunt end, no nose", "rules": ["S1"] },
   { "id": "E120-136", "x": -3306.0, "z": -3243.4, "kind": "two ends at one corner (gores 120, 136 end 1)", "status": "fault", "fault": "corners, no nose", "rules": ["S1"] },
