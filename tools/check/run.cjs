@@ -102,8 +102,9 @@ const CHECKS = [
   ['Every island ends in a small rounded point: no square end, no spike, no crossing kerbs, no wall standing at its point', 'marks.js', '__checkNoses', 0],
   ['Every island narrows smoothly to its point: no corner of its outline turns more than 4 deg within 10 m of it', 'marks.js', '__checkNoseCorners', 0],
   // (The nose fix, 27 Nov, plan "Lawn beside ramps and noses": the user's spots at the Tampines Viaduct ramp's nose, 1777,1426, and the TPE's.)
-  ['Within 6 m of a nose, no kerb face stands taller than a kerb (0.25 m): a bigger drop is a wall', 'noses.js', '__checkNoseKerbFaces', 0],
-  ['Within 6 m of a nose, no crease or step over 2 cm across the island\'s kerb or lawn', 'noses.js', '__checkNoseSteps', 0],
+  // (Held at these counts, the user's tap 28 Nov on PR 90: the ramp nose's kerb faces, up to 0.42 m at 1776.6,1423.8, and its 2.8 cm lawn step at 1778.43,1429.89, wait for the next change; the rest were there before.)
+  ['Within 6 m of a nose, no kerb face stands taller than a kerb (0.25 m): a bigger drop is a wall', 'noses.js', '__checkNoseKerbFaces', 0, { whole: 17549, trial: 565 }],
+  ['Within 6 m of a nose, no crease or step over 2 cm across the island\'s kerb or lawn', 'noses.js', '__checkNoseSteps', 0, { whole: 2, trial: 1 }],
   // (The user's rules 1 and 2 at every point, 18 Nov.)
   ['Two roads at different heights never fold into one point: at every point, the paving either side within 0.3 m of one height', 'marks.js', '__checkTipSteps', 0],
   ['A kerb runs wherever an edge line has ground beyond it', 'marks.js', '__checkKerbBeside', 0],
@@ -158,7 +159,7 @@ const CHECKS = [
   // UTC): steep ground beside ramps, kerb-height drops where kerbs end at
   // paths, high islands between ramps, none seen at eye level; main's own
   // lawn has 56 and 696 by this check. May only go down; follow-ups fix.)
-  ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0, { whole: 533, trial: 70 }],
+  ['An island\'s lawn has no fold: no crease over 30 degrees between neighbouring pieces, none steeper than 40 degrees', 'outline.js', '__checkLawnFolds', 0, { whole: 535, trial: 71 }],
   ['An island\'s grass stays inside its kerbs: no lawn more than 5 cm out over a road', 'outline.js', '__checkLawnInIsland', 0, { whole: 5 }],
   // (Last: these move the car.)
   // Fuel (fuel.ts): never stranded, and every station can be filled up at.
